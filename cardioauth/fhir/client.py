@@ -1,15 +1,20 @@
-"""Epic FHIR R4 client for extracting patient clinical data."""
+"""Epic FHIR R4 client with automatic JWT-based token management."""
 
 from __future__ import annotations
 
+import json
 import logging
+import time
+import uuid
 from typing import Any
 
+import jwt
 import requests
+
+from cardioauth.config import Config
 
 logger = logging.getLogger(__name__)
 
-# FHIR resource types relevant to cardiology prior auth
 RESOURCE_TYPES = [
     "Patient",
     "Condition",
@@ -22,15 +27,64 @@ RESOURCE_TYPES = [
 
 
 class FHIRClient:
-    def __init__(self, base_url: str, bearer_token: str) -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.base_url = config.epic_base_url.rstrip("/")
         self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {bearer_token}",
-            "Accept": "application/fhir+json",
-        })
+        self.session.headers.update({"Accept": "application/fhir+json"})
+        self._token: str | None = None
+        self._token_expires: float = 0
+
+    def _get_token(self) -> str:
+        """Get a bearer token using Epic's Backend System JWT flow."""
+        if self._token and time.time() < self._token_expires - 30:
+            return self._token
+
+        now = int(time.time())
+        private_key = self.config.get_private_key()
+        if not private_key:
+            raise RuntimeError("No Epic private key configured")
+
+        # Build the JWT assertion
+        claims = {
+            "iss": self.config.epic_client_id,
+            "sub": self.config.epic_client_id,
+            "aud": self.config.epic_token_url,
+            "jti": str(uuid.uuid4()),
+            "iat": now,
+            "exp": now + 300,  # 5 min max per Epic spec
+        }
+
+        assertion = jwt.encode(
+            claims,
+            private_key,
+            algorithm="RS384",
+            headers={"kid": "cardioauth-1"},
+        )
+
+        # Exchange JWT for access token
+        resp = requests.post(
+            self.config.epic_token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                "client_assertion": assertion,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        token_data = resp.json()
+
+        self._token = token_data["access_token"]
+        self._token_expires = now + token_data.get("expires_in", 300)
+
+        logger.info("FHIR: obtained access token (expires in %ds)", token_data.get("expires_in", 300))
+        return self._token
 
     def _get(self, resource_type: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        token = self._get_token()
+        self.session.headers["Authorization"] = f"Bearer {token}"
         url = f"{self.base_url}/{resource_type}"
         resp = self.session.get(url, params=params, timeout=30)
         resp.raise_for_status()

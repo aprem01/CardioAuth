@@ -50,7 +50,7 @@ class ChartAgent:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
-        self.fhir = FHIRClient(config.epic_base_url, config.epic_bearer_token)
+        self.fhir = FHIRClient(config)
 
     def run(self, patient_id: str, procedure_code: str, payer_id: str) -> ChartData:
         logger.info("CHART_AGENT: extracting data for patient=%s procedure=%s", patient_id, procedure_code)

@@ -2,5 +2,6 @@ anthropic>=0.40.0
 pydantic>=2.0
 requests>=2.31
 pinecone-client>=3.0
+PyJWT[crypto]>=2.8
 fastapi>=0.115.0
 uvicorn>=0.32.0
