@@ -85,20 +85,10 @@ class Orchestrator:
         logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT (demo data)")
         policy_data = get_demo_policy(procedure_code, payer_name)
 
-        # Step 3: Use real Claude reasoning agent if API key available, else demo reasoning
-        logger.info("ORCHESTRATOR: Step 3 — REASONING_AGENT")
-        if self.config.anthropic_api_key:
-            from cardioauth.agents.reasoning_agent import ReasoningAgent
-            reasoning_agent = ReasoningAgent(self.config)
-            try:
-                reasoning = reasoning_agent.run(chart_data, policy_data)
-            except Exception as e:
-                logger.warning("REASONING_AGENT failed, using demo reasoning: %s", e)
-                from cardioauth.demo import get_demo_reasoning
-                reasoning = get_demo_reasoning(chart_data, policy_data)
-        else:
-            from cardioauth.demo import get_demo_reasoning
-            reasoning = get_demo_reasoning(chart_data, policy_data)
+        # Step 3: Use demo reasoning for fast, reliable demo experience
+        logger.info("ORCHESTRATOR: Step 3 — REASONING_AGENT (demo)")
+        from cardioauth.demo import get_demo_reasoning
+        reasoning = get_demo_reasoning(chart_data, policy_data)
 
         requires_human_action: list[str] = []
 
