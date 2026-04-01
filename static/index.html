@@ -450,51 +450,38 @@
       }
     }
 
-    // Start stepping animation
-    advanceStep();
-    const stepInterval = setInterval(() => {
-      if (currentStep < steps.length && (!apiDone || currentStep < 3)) {
-        advanceStep();
-      } else if (apiDone) {
-        clearInterval(stepInterval);
-      }
-    }, minStepTime);
+    // Fire the API call, then animate steps with guaranteed timing
+    const apiPromise = apiPost('/api/pa/request', req).catch(err => ({ _error: err }));
 
-    // Fire the API call
-    try {
-      apiResult = await apiPost('/api/pa/request', req);
-      apiDone = true;
-    } catch (err) {
-      apiDone = true;
-      apiError = err;
-      clearInterval(stepInterval);
-      // Show error
+    // Animate each step with minimum display time
+    for (let i = 0; i < steps.length; i++) {
+      if (i > 0) setStep(i - 1, 'done');
+      setStep(i, 'active');
+      await new Promise(r => setTimeout(r, minStepTime));
+    }
+
+    // Wait for API if still running
+    const result = await apiPromise;
+
+    if (result && result._error) {
       const errDiv = document.getElementById('pipeline-error');
       if (errDiv) {
         errDiv.className = 'text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4';
         errDiv.innerHTML = `
           <p class="font-semibold mb-1">Pipeline Error</p>
-          <p>${apiError.message}</p>
+          <p>${result._error.message}</p>
           <div class="mt-3 flex gap-3">
             <button onclick="navigate('#new')" class="px-4 py-1.5 rounded-lg border border-surface-border text-slate-300 hover:bg-surface-hover transition text-sm">Back to Form</button>
-            <button onclick="navigate('#review')" class="px-4 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 transition text-sm">View Demo Review</button>
           </div>`;
       }
       return;
     }
 
-    // Wait for stepping animation to finish
-    await new Promise(resolve => {
-      const check = setInterval(() => {
-        if (currentStep >= steps.length) { clearInterval(check); resolve(); }
-      }, 200);
-    });
-
     // Mark last step done
     setStep(steps.length - 1, 'done');
 
     // Transform API response to frontend shape
-    state.currentReview = transformApiResponse(apiResult);
+    state.currentReview = transformApiResponse(result);
     await new Promise(r => setTimeout(r, 600));
     navigate('#review');
   }
