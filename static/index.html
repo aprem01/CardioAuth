@@ -343,6 +343,69 @@
     runPipeline(state._pendingRequest);
   }
 
+  function transformApiResponse(api) {
+    const cd = api.chart_data || {};
+    const pd = api.policy_data || {};
+    const patientNames = {
+      'DEMO-001': { name: 'Robert Chen', age: '67', sex: 'M' },
+      'DEMO-002': { name: 'Margaret Williams', age: '72', sex: 'F' },
+      'DEMO-003': { name: 'James Rodriguez', age: '55', sex: 'M' },
+    };
+    const pInfo = patientNames[cd.patient_id] || {};
+    // Map labs
+    const labs = (cd.relevant_labs || []).map(l => ({
+      name: l.name, value: `${l.value} ${l.unit}`, date: l.date,
+      flag: l.flag || (l.value && parseFloat(l.value) > 0 ? 'normal' : '')
+    }));
+    // Map imaging to summary string
+    const imaging = (cd.relevant_imaging || []).map(i =>
+      `${i.type} (${i.date}): ${i.result_summary}`
+    ).join('\n\n') || 'No imaging data';
+    // Map medications
+    const medications = (cd.relevant_medications || []).map(m => `${m.name} ${m.dose}`);
+    // Map diagnoses
+    const diagnoses = (cd.diagnosis_codes || []).map(code => ({
+      code, description: code  // ICD-10 code as description fallback
+    }));
+
+    return {
+      request_id: api.request_id,
+      confidence: { score: api.approval_likelihood?.score ?? 0, label: api.approval_likelihood?.label ?? 'LOW' },
+      patient: {
+        id: cd.patient_id || '',
+        name: pInfo.name || cd.patient_id || 'Patient',
+        age: pInfo.age || '', sex: pInfo.sex || '',
+        mrn: cd.patient_id || ''
+      },
+      procedure: {
+        code: cd.procedure_code || '',
+        name: cd.procedure_requested || ''
+      },
+      payer: { id: pd.payer || '', name: pd.payer || '' },
+      clinical_summary: {
+        diagnoses,
+        labs,
+        imaging,
+        medications,
+        prior_treatments: cd.prior_treatments || []
+      },
+      criteria_match: {
+        met: (api.criteria_met || []).map(c => ({
+          criterion: c.criterion, evidence: c.evidence, confidence: c.confidence
+        })),
+        not_met: (api.criteria_not_met || []).map(c => ({
+          criterion: c.criterion, gap: c.gap, recommendation: c.recommendation
+        }))
+      },
+      narrative: api.narrative_draft || '',
+      action_items: api.requires_human_action || [],
+      guideline_citations: api.guideline_citations || [],
+      audit_trail: [
+        { action: 'Pipeline completed', timestamp: new Date().toISOString(), actor: 'CardioAuth' }
+      ]
+    };
+  }
+
   async function runPipeline(req) {
     const steps = [
       { idx: 0, name: 'CHART_AGENT', desc: 'Extracting clinical data from patient records...' },
@@ -425,8 +488,8 @@
     // Mark last step done
     setStep(steps.length - 1, 'done');
 
-    // Store result and navigate
-    state.currentReview = apiResult;
+    // Transform API response to frontend shape
+    state.currentReview = transformApiResponse(apiResult);
     await new Promise(r => setTimeout(r, 600));
     navigate('#review');
   }
