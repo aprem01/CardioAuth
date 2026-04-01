@@ -8,6 +8,7 @@ live Pinecone index.
 from __future__ import annotations
 
 from cardioauth.models.chart import ChartData, ImagingResult, LabResult, Medication
+from cardioauth.models.reasoning import CriterionEvaluation, CriterionGap, ReasoningResult
 from cardioauth.models.policy import ClinicalCriterion, PolicyData
 
 # ---------------------------------------------------------------------------
@@ -587,4 +588,146 @@ def get_demo_policy(procedure_code: str, payer_name: str) -> PolicyData:
         appeal_success_factors=pol["appeal_success_factors"],
         policy_source=pol["policy_source"],
         policy_last_updated=pol["policy_last_updated"],
+    )
+
+
+def get_demo_reasoning(chart_data: ChartData, policy_data: PolicyData) -> ReasoningResult:
+    """Generate a realistic demo reasoning result by mapping chart against policy."""
+    criteria_met = []
+    criteria_not_met = []
+
+    # Map each policy criterion against chart data
+    for criterion in policy_data.clinical_criteria:
+        evidence = _find_evidence(chart_data, criterion.criterion)
+        if evidence:
+            criteria_met.append(CriterionEvaluation(
+                criterion=criterion.criterion,
+                met=True,
+                evidence=evidence,
+                confidence=0.95,
+            ))
+        else:
+            criteria_not_met.append(CriterionGap(
+                criterion=criterion.criterion,
+                gap=f"No direct evidence found in chart for: {criterion.criterion}",
+                recommendation=f"Add documentation for {criterion.evidence_type}: {criterion.acceptable_values}",
+            ))
+
+    total = len(policy_data.clinical_criteria)
+    met_count = len(criteria_met)
+    score = met_count / total if total > 0 else 0.0
+
+    if score >= 0.8:
+        label = "HIGH"
+    elif score >= 0.6:
+        label = "MEDIUM"
+    elif score >= 0.4:
+        label = "LOW"
+    else:
+        label = "DO NOT SUBMIT"
+
+    # Build narrative from chart data
+    narrative = _build_narrative(chart_data, policy_data, criteria_met)
+
+    return ReasoningResult(
+        criteria_met=criteria_met,
+        criteria_not_met=criteria_not_met,
+        approval_likelihood_score=round(score, 2),
+        approval_likelihood_label=label,
+        missing_documentation=[],
+        pa_narrative_draft=narrative,
+        narrative_tone="clinical",
+        guideline_citations=[
+            "ACC/AHA 2021 Guideline for Coronary Artery Revascularization",
+            "ACC/AHA 2020 Guideline for Management of Valvular Heart Disease",
+            "2023 ACC/AHA/ACCP/HRS Guideline for Diagnosis and Management of Atrial Fibrillation",
+        ],
+        cardiologist_review_flags=[],
+    )
+
+
+def _find_evidence(chart: ChartData, criterion: str) -> str:
+    """Find supporting evidence in chart for a given criterion."""
+    criterion_lower = criterion.lower()
+
+    # Check labs
+    if any(kw in criterion_lower for kw in ["lab", "bnp", "troponin", "creatinine", "hemoglobin", "tsh", "thyroid", "inr"]):
+        for lab in chart.relevant_labs:
+            if any(kw in lab.name.lower() for kw in criterion_lower.split()):
+                return f"{lab.name}: {lab.value} {lab.unit} ({lab.date})"
+        if chart.relevant_labs:
+            return f"Labs available: {', '.join(f'{l.name}={l.value} {l.unit}' for l in chart.relevant_labs[:3])}"
+
+    # Check imaging
+    if any(kw in criterion_lower for kw in ["echo", "imaging", "ct", "stress", "angiog", "catheter", "monitor", "ecg", "holter"]):
+        for img in chart.relevant_imaging:
+            return f"{img.type} ({img.date}): {img.result_summary}"
+
+    # Check medications
+    if any(kw in criterion_lower for kw in ["medication", "drug", "antiarrhythmic", "therapy", "medical", "anticoagul"]):
+        if chart.relevant_medications:
+            return f"Current medications: {', '.join(f'{m.name} {m.dose}' for m in chart.relevant_medications[:3])}"
+
+    # Check prior treatments
+    if any(kw in criterion_lower for kw in ["fail", "prior", "trial", "intolerance", "attempt"]):
+        if chart.prior_treatments:
+            return f"Prior treatments: {'; '.join(chart.prior_treatments[:3])}"
+
+    # Check diagnoses and comorbidities
+    if any(kw in criterion_lower for kw in ["symptom", "diagnosis", "nyha", "class", "document", "severe", "atrial"]):
+        if chart.diagnosis_codes:
+            return f"Documented diagnoses: {', '.join(chart.diagnosis_codes[:3])}. Comorbidities: {', '.join(chart.comorbidities[:3])}"
+
+    # Check for structural/assessment criteria
+    if any(kw in criterion_lower for kw in ["risk", "life expectancy", "heart team", "assessment", "evaluation"]):
+        if chart.relevant_imaging:
+            return f"Clinical assessment with imaging: {chart.relevant_imaging[0].result_summary}"
+
+    # Generic fallback — try to find any relevant data
+    if chart.relevant_imaging:
+        return f"{chart.relevant_imaging[0].type}: {chart.relevant_imaging[0].result_summary}"
+
+    return ""
+
+
+def _build_narrative(chart: ChartData, policy: PolicyData, criteria_met: list) -> str:
+    """Build a clinical PA narrative from chart data."""
+    dx = ", ".join(chart.diagnosis_codes[:2]) if chart.diagnosis_codes else "cardiac condition"
+    comorbidities = ", ".join(chart.comorbidities[:3]) if chart.comorbidities else "no significant comorbidities"
+
+    labs_text = ""
+    if chart.relevant_labs:
+        labs_text = " Pertinent laboratory findings include " + ", ".join(
+            f"{l.name} of {l.value} {l.unit} ({l.date})" for l in chart.relevant_labs[:4]
+        ) + "."
+
+    imaging_text = ""
+    if chart.relevant_imaging:
+        imaging_text = " " + " ".join(
+            f"{img.type} performed on {img.date} demonstrated {img.result_summary}."
+            for img in chart.relevant_imaging[:2]
+        )
+
+    meds_text = ""
+    if chart.relevant_medications:
+        meds_text = " Current medical therapy includes " + ", ".join(
+            f"{m.name} {m.dose}" for m in chart.relevant_medications[:4]
+        ) + "."
+
+    prior_text = ""
+    if chart.prior_treatments:
+        prior_text = " Prior treatment attempts include " + "; ".join(chart.prior_treatments[:3]) + "."
+
+    return (
+        f"This letter is to request prior authorization for {chart.procedure_requested} "
+        f"(CPT {chart.procedure_code}) for this patient with {dx}. "
+        f"Relevant comorbidities include {comorbidities}."
+        f"{labs_text}{imaging_text}{meds_text}{prior_text} "
+        f"Based on the clinical presentation, diagnostic findings, and failure of conservative management, "
+        f"{chart.procedure_requested} is medically necessary. This request meets the criteria outlined in "
+        f"{policy.policy_source}. "
+        f"{len(criteria_met)} of {len(policy.clinical_criteria)} payer-specified clinical criteria are satisfied "
+        f"by the documented clinical evidence. "
+        f"We respectfully request approval for this procedure as it represents the appropriate standard of care "
+        f"per current ACC/AHA guidelines."
     )
