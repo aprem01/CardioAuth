@@ -107,7 +107,7 @@
     else { app.innerHTML = renderDashboard(); }
   }
 
-  window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', () => route());
   window.addEventListener('DOMContentLoaded', () => { route(); checkHealth(); });
 
   // ──────────────────────────── API ────────────────────────────
