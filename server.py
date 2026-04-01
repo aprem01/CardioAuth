@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from cardioauth.config import Config
@@ -52,6 +53,80 @@ class ApprovalRequest(BaseModel):
 class PayerResponseRequest(BaseModel):
     submission_id: str
     payer_response: dict[str, Any]
+
+
+@app.get("/", response_class=HTMLResponse)
+def root() -> str:
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CardioAuth</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:#0a0e1a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.container{max-width:720px;padding:3rem 2rem;text-align:center}
+.logo{font-size:3rem;font-weight:700;background:linear-gradient(135deg,#3b82f6,#06b6d4);
+-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:.5rem}
+.tagline{color:#94a3b8;font-size:1.1rem;margin-bottom:3rem}
+.pipeline{display:flex;flex-direction:column;gap:1rem;margin-bottom:3rem;text-align:left}
+.step{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1rem 1.25rem;
+display:flex;align-items:center;gap:1rem;transition:border-color .2s}
+.step:hover{border-color:#3b82f6}
+.num{background:linear-gradient(135deg,#3b82f6,#06b6d4);color:#fff;width:32px;height:32px;
+border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem;flex-shrink:0}
+.step-text strong{color:#f1f5f9}
+.step-text span{color:#94a3b8;font-size:.9rem}
+.arrow{text-align:center;color:#475569;font-size:1.2rem}
+.endpoints{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:2.5rem}
+.ep{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:.85rem 1rem;text-align:left}
+.ep .method{font-size:.7rem;font-weight:700;padding:2px 6px;border-radius:4px;margin-right:.5rem}
+.ep .get{background:#065f46;color:#6ee7b7}
+.ep .post{background:#1e3a5f;color:#7dd3fc}
+.ep .path{color:#e2e8f0;font-family:monospace;font-size:.85rem}
+.ep .desc{color:#64748b;font-size:.78rem;margin-top:.25rem}
+.links{display:flex;gap:1rem;justify-content:center}
+.links a{display:inline-block;padding:.65rem 1.5rem;border-radius:8px;text-decoration:none;
+font-weight:600;font-size:.9rem;transition:opacity .2s}
+.links a:hover{opacity:.85}
+.btn-primary{background:linear-gradient(135deg,#3b82f6,#06b6d4);color:#fff}
+.btn-secondary{background:#1e293b;border:1px solid #334155;color:#e2e8f0}
+.footer{margin-top:3rem;color:#475569;font-size:.8rem}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="logo">CardioAuth</div>
+<p class="tagline">Cardiology Prior Authorization Automation</p>
+
+<div class="pipeline">
+  <div class="step"><div class="num">1</div><div class="step-text"><strong>CHART_AGENT</strong><br><span>Extracts clinical data from Epic FHIR</span></div></div>
+  <div class="arrow">&#8595;</div>
+  <div class="step"><div class="num">2</div><div class="step-text"><strong>POLICY_AGENT</strong><br><span>Retrieves payer-specific coverage criteria</span></div></div>
+  <div class="arrow">&#8595;</div>
+  <div class="step"><div class="num">3</div><div class="step-text"><strong>REASONING_AGENT</strong><br><span>Maps clinical facts against criteria &amp; drafts narrative</span></div></div>
+  <div class="arrow">&#8595;</div>
+  <div class="step"><div class="num">4</div><div class="step-text"><strong>SUBMISSION_AGENT</strong><br><span>Packages, submits &amp; tracks outcomes</span></div></div>
+</div>
+
+<div class="endpoints">
+  <div class="ep"><span class="method post">POST</span><span class="path">/api/pa/request</span><div class="desc">Start PA pipeline</div></div>
+  <div class="ep"><span class="method post">POST</span><span class="path">/api/pa/approve</span><div class="desc">Physician approval</div></div>
+  <div class="ep"><span class="method post">POST</span><span class="path">/api/pa/outcome</span><div class="desc">Process payer decision</div></div>
+  <div class="ep"><span class="method get">GET</span><span class="path">/health</span><div class="desc">Health check</div></div>
+</div>
+
+<div class="links">
+  <a href="/docs" class="btn-primary">API Docs</a>
+  <a href="https://github.com/aprem01/CardioAuth" class="btn-secondary">GitHub</a>
+</div>
+
+<p class="footer">Human-in-the-loop required before every submission.</p>
+</div>
+</body>
+</html>"""
 
 
 @app.get("/health")
