@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
-from cardioauth.agents.chart_agent import ChartAgent
-from cardioauth.agents.policy_agent import PolicyAgent
-from cardioauth.agents.reasoning_agent import ReasoningAgent
 from cardioauth.agents.submission_agent import SubmissionAgent
 from cardioauth.config import Config
 from cardioauth.models.chart import ChartData
@@ -18,6 +16,10 @@ from cardioauth.models.submission import OutcomeResult, SubmissionResult
 from cardioauth.vector_store.client import VectorStoreClient
 
 logger = logging.getLogger(__name__)
+
+
+def _is_demo_mode() -> bool:
+    return os.environ.get("DEMO_MODE", "true").lower() == "true"
 
 
 @dataclass
@@ -32,14 +34,20 @@ class ReviewPackage:
 class Orchestrator:
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
-        missing = self.config.validate()
-        if missing:
-            logger.warning("Missing config: %s", missing)
-
-        self.chart_agent = ChartAgent(self.config)
-        self.policy_agent = PolicyAgent(self.config)
-        self.reasoning_agent = ReasoningAgent(self.config)
         self.submission_agent = SubmissionAgent(self.config)
+
+        if not _is_demo_mode():
+            from cardioauth.agents.chart_agent import ChartAgent
+            from cardioauth.agents.policy_agent import PolicyAgent
+            from cardioauth.agents.reasoning_agent import ReasoningAgent
+
+            missing = self.config.validate()
+            if missing:
+                logger.warning("Missing config: %s", missing)
+
+            self.chart_agent = ChartAgent(self.config)
+            self.policy_agent = PolicyAgent(self.config)
+            self.reasoning_agent = ReasoningAgent(self.config)
 
     def process_request(
         self,
@@ -48,15 +56,91 @@ class Orchestrator:
         payer_id: str,
         payer_name: str,
     ) -> ReviewPackage:
-        """Run the full pipeline up to human review.
-
-        Returns a ReviewPackage for the cardiologist to approve/edit.
-        Does NOT submit — that requires explicit human approval.
-        """
+        """Run the full pipeline up to human review."""
         logger.info("=" * 60)
         logger.info("ORCHESTRATOR: starting PA request — patient=%s procedure=%s payer=%s",
                      patient_id, procedure_code, payer_name)
 
+        if _is_demo_mode():
+            return self._process_demo(patient_id, procedure_code, payer_name)
+
+        return self._process_live(patient_id, procedure_code, payer_id, payer_name)
+
+    def _process_demo(
+        self,
+        patient_id: str,
+        procedure_code: str,
+        payer_name: str,
+    ) -> ReviewPackage:
+        """Run pipeline with demo/mock data + real Claude reasoning."""
+        from cardioauth.demo import get_demo_chart, get_demo_policy
+
+        logger.info("ORCHESTRATOR: DEMO MODE")
+
+        # Step 1: Get demo chart data
+        logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT (demo data)")
+        chart_data = get_demo_chart(patient_id, procedure_code)
+
+        # Step 2: Get demo policy
+        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT (demo data)")
+        policy_data = get_demo_policy(procedure_code, payer_name)
+
+        # Step 3: Use real Claude reasoning agent if API key available, else demo reasoning
+        logger.info("ORCHESTRATOR: Step 3 — REASONING_AGENT")
+        if self.config.anthropic_api_key:
+            from cardioauth.agents.reasoning_agent import ReasoningAgent
+            reasoning_agent = ReasoningAgent(self.config)
+            try:
+                reasoning = reasoning_agent.run(chart_data, policy_data)
+            except Exception as e:
+                logger.warning("REASONING_AGENT failed, using demo reasoning: %s", e)
+                from cardioauth.demo import get_demo_reasoning
+                reasoning = get_demo_reasoning(chart_data, policy_data)
+        else:
+            from cardioauth.demo import get_demo_reasoning
+            reasoning = get_demo_reasoning(chart_data, policy_data)
+
+        requires_human_action: list[str] = []
+
+        if chart_data.confidence_score < self.config.chart_confidence_threshold:
+            requires_human_action.append(
+                f"Chart data confidence is {chart_data.confidence_score:.0%} "
+                f"(threshold: {self.config.chart_confidence_threshold:.0%}). "
+                f"Missing: {', '.join(chart_data.missing_fields)}"
+            )
+
+        if reasoning.approval_likelihood_score < self.config.approval_likelihood_threshold:
+            requires_human_action.append(
+                f"Approval likelihood is {reasoning.approval_likelihood_label} "
+                f"({reasoning.approval_likelihood_score:.0%}). "
+                "Consider strengthening the chart before submission."
+            )
+
+        if reasoning.cardiologist_review_flags:
+            requires_human_action.extend(reasoning.cardiologist_review_flags)
+
+        logger.info(
+            "ORCHESTRATOR: review package ready — approval_likelihood=%s (%s), flags=%d",
+            reasoning.approval_likelihood_score,
+            reasoning.approval_likelihood_label,
+            len(requires_human_action),
+        )
+
+        return ReviewPackage(
+            chart_data=chart_data,
+            policy_data=policy_data,
+            reasoning=reasoning,
+            requires_human_action=requires_human_action,
+        )
+
+    def _process_live(
+        self,
+        patient_id: str,
+        procedure_code: str,
+        payer_id: str,
+        payer_name: str,
+    ) -> ReviewPackage:
+        """Run the full live pipeline with real FHIR + vector store."""
         # Step 1: Extract chart data
         logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT")
         chart_data = self.chart_agent.run(patient_id, procedure_code, payer_id)
@@ -113,10 +197,7 @@ class Orchestrator:
         review: ReviewPackage,
         approved_by: str,
     ) -> SubmissionResult:
-        """Submit the PA after the cardiologist has approved.
-
-        This MUST only be called after explicit human approval.
-        """
+        """Submit the PA after the cardiologist has approved."""
         if not approved_by:
             raise ValueError("Cannot submit without an identified approver")
 
@@ -141,7 +222,6 @@ class Orchestrator:
 
         outcome = self.submission_agent.process_outcome(submission, payer_response)
 
-        # Feed learning back to vector store
         if outcome.learning_payload:
             vector_store = VectorStoreClient(self.config)
             vector_store.ingest_learning(outcome.learning_payload.model_dump())

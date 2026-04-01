@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CardioAuth — Prior Authorization Automation</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            surface: { DEFAULT: '#0a0e1a', card: '#1e293b', border: '#334155', hover: '#283548' },
+            accent: { blue: '#3b82f6', cyan: '#06b6d4' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background: #0a0e1a; }
+    .fade-in { animation: fadeIn 0.3s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 1; } 100% { transform: scale(1.4); opacity: 0; } }
+    .pulse-ring { animation: pulse-ring 1.5s ease-out infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.8s linear infinite; }
+    .step-line { transition: height 0.6s ease; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0a0e1a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    select option { background: #1e293b; color: #e2e8f0; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-200 font-sans">
+
+  <!-- Top Nav -->
+  <nav class="sticky top-0 z-50 bg-surface/80 backdrop-blur border-b border-surface-border">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <a href="#dashboard" class="flex items-center gap-3 group">
+        <div class="relative">
+          <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-accent-blue to-accent-cyan flex items-center justify-center">
+            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
+          </div>
+        </div>
+        <div>
+          <span class="text-lg font-bold text-white tracking-tight">CardioAuth</span>
+          <span class="hidden sm:inline text-xs text-slate-400 ml-2">Prior Authorization Automation</span>
+        </div>
+      </a>
+      <div class="flex items-center gap-4">
+        <button onclick="checkHealth()" class="text-xs text-slate-400 hover:text-accent-cyan transition" title="Check API health">
+          <span id="health-dot" class="inline-block w-2 h-2 rounded-full bg-slate-600 mr-1"></span>API
+        </button>
+        <span class="text-sm text-slate-400 hidden sm:inline">Dr. Demo</span>
+        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-accent-blue to-accent-cyan flex items-center justify-center text-xs font-bold text-white">DD</div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main id="app" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8"></main>
+
+  <script>
+  // ──────────────────────────── State ────────────────────────────
+  const state = {
+    requests: [
+      { id: 'PA-2026-0041', patient: 'Robert Chen, 67M', procedure: 'Left Heart Cath (93458)', payer: 'UnitedHealthcare', status: 'Approved', date: '2026-03-28' },
+      { id: 'PA-2026-0040', patient: 'Margaret Williams, 72F', procedure: 'TAVR (33361)', payer: 'Aetna', status: 'Pending Review', date: '2026-03-29' },
+      { id: 'PA-2026-0039', patient: 'James Rodriguez, 55M', procedure: 'Catheter Ablation (93656)', payer: 'Blue Cross Blue Shield', status: 'Submitted', date: '2026-03-27' },
+      { id: 'PA-2026-0038', patient: 'Susan Park, 61F', procedure: 'Left Heart Cath (93458)', payer: 'Aetna', status: 'Denied', date: '2026-03-25' },
+    ],
+    currentReview: null,
+    submissionResult: null,
+  };
+
+  const DEMO_PATIENTS = [
+    { id: 'DEMO-001', label: 'Robert Chen, 67M' },
+    { id: 'DEMO-002', label: 'Margaret Williams, 72F' },
+    { id: 'DEMO-003', label: 'James Rodriguez, 55M' },
+  ];
+  const PROCEDURES = [
+    { code: '93458', label: 'Left Heart Catheterization (93458)' },
+    { code: '33361', label: 'Transcatheter Aortic Valve Replacement — TAVR (33361)' },
+    { code: '93656', label: 'Catheter Ablation of Atrial Fibrillation (93656)' },
+  ];
+  const PAYERS = [
+    { id: 'UHC', name: 'UnitedHealthcare' },
+    { id: 'AETNA', name: 'Aetna' },
+    { id: 'BCBS', name: 'Blue Cross Blue Shield' },
+  ];
+
+  // ──────────────────────────── Router ────────────────────────────
+  function navigate(hash) { window.location.hash = hash; }
+
+  function route() {
+    const hash = window.location.hash || '#dashboard';
+    const app = document.getElementById('app');
+    if (hash === '#dashboard') app.innerHTML = renderDashboard();
+    else if (hash === '#new') app.innerHTML = renderNewRequest();
+    else if (hash === '#pipeline') app.innerHTML = renderPipeline();
+    else if (hash === '#review') app.innerHTML = renderReview();
+    else if (hash === '#submitted') app.innerHTML = renderSubmitted();
+    else { app.innerHTML = renderDashboard(); }
+  }
+
+  window.addEventListener('hashchange', route);
+  window.addEventListener('DOMContentLoaded', () => { route(); checkHealth(); });
+
+  // ──────────────────────────── API ────────────────────────────
+  async function apiPost(url, body) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`API ${res.status}: ${text || res.statusText}`);
+    }
+    return res.json();
+  }
+
+  async function checkHealth() {
+    const dot = document.getElementById('health-dot');
+    try {
+      const res = await fetch('/health');
+      dot.className = res.ok
+        ? 'inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1'
+        : 'inline-block w-2 h-2 rounded-full bg-amber-400 mr-1';
+    } catch {
+      dot.className = 'inline-block w-2 h-2 rounded-full bg-red-400 mr-1';
+    }
+  }
+
+  // ──────────────────────────── Helpers ────────────────────────────
+  function statusBadge(status) {
+    const map = {
+      'Approved': 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+      'Denied': 'bg-red-500/20 text-red-400 border-red-500/30',
+      'Pending Review': 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+      'Submitted': 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+    };
+    return `<span class="px-2.5 py-0.5 rounded-full text-xs font-medium border ${map[status] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'}">${status}</span>`;
+  }
+
+  function confidenceColor(score) {
+    if (score >= 0.8) return { bg: 'bg-emerald-500', text: 'text-emerald-400', border: 'border-emerald-500/30', ring: 'ring-emerald-500/20', label: 'HIGH — LIKELY APPROVAL' };
+    if (score >= 0.6) return { bg: 'bg-amber-500', text: 'text-amber-400', border: 'border-amber-500/30', ring: 'ring-amber-500/20', label: 'MEDIUM — POSSIBLE APPROVAL' };
+    if (score >= 0.4) return { bg: 'bg-orange-500', text: 'text-orange-400', border: 'border-orange-500/30', ring: 'ring-orange-500/20', label: 'LOW — ADDITIONAL DOCUMENTATION NEEDED' };
+    return { bg: 'bg-red-500', text: 'text-red-400', border: 'border-red-500/30', ring: 'ring-red-500/20', label: 'DO NOT SUBMIT — CRITERIA NOT MET' };
+  }
+
+  function card(content, extraClass = '') {
+    return `<div class="bg-surface-card border border-surface-border rounded-xl p-6 ${extraClass}">${content}</div>`;
+  }
+
+  function spinnerSVG(size = 5) {
+    return `<svg class="spinner w-${size} h-${size} text-accent-cyan" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>`;
+  }
+
+  function greenCheck() {
+    return `<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>`;
+  }
+
+  function redX() {
+    return `<svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>`;
+  }
+
+  // ──────────────────────────── Dashboard ────────────────────────────
+  function renderDashboard() {
+    const rows = state.requests.map(r => `
+      <tr class="border-b border-surface-border hover:bg-surface-hover transition">
+        <td class="py-3 px-4 font-mono text-sm text-accent-cyan">${r.id}</td>
+        <td class="py-3 px-4 text-sm">${r.patient}</td>
+        <td class="py-3 px-4 text-sm text-slate-300">${r.procedure}</td>
+        <td class="py-3 px-4 text-sm text-slate-400">${r.payer}</td>
+        <td class="py-3 px-4">${statusBadge(r.status)}</td>
+        <td class="py-3 px-4 text-sm text-slate-500">${r.date}</td>
+      </tr>
+    `).join('');
+
+    return `
+    <div class="fade-in space-y-8">
+      <!-- Hero -->
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-bold text-white">Authorization Dashboard</h1>
+          <p class="text-slate-400 mt-1">Manage and track cardiology prior authorization requests</p>
+        </div>
+        <button onclick="navigate('#new')"
+          class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.02] active:scale-[0.98]">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+          New Prior Auth Request
+        </button>
+      </div>
+
+      <!-- Stats -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        ${statCard('Total Requests', state.requests.length, 'from-blue-500/10 to-cyan-500/10', 'text-accent-cyan')}
+        ${statCard('Approved', state.requests.filter(r => r.status === 'Approved').length, 'from-emerald-500/10 to-emerald-600/10', 'text-emerald-400')}
+        ${statCard('Pending', state.requests.filter(r => r.status === 'Pending Review').length, 'from-amber-500/10 to-amber-600/10', 'text-amber-400')}
+        ${statCard('Denied', state.requests.filter(r => r.status === 'Denied').length, 'from-red-500/10 to-red-600/10', 'text-red-400')}
+      </div>
+
+      <!-- Table -->
+      ${card(`
+        <h2 class="text-lg font-semibold text-white mb-4">Recent Requests</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead>
+              <tr class="border-b border-surface-border text-xs uppercase tracking-wider text-slate-500">
+                <th class="py-2 px-4">Request ID</th>
+                <th class="py-2 px-4">Patient</th>
+                <th class="py-2 px-4">Procedure</th>
+                <th class="py-2 px-4">Payer</th>
+                <th class="py-2 px-4">Status</th>
+                <th class="py-2 px-4">Date</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `)}
+    </div>`;
+  }
+
+  function statCard(label, value, gradient, textColor) {
+    return `
+      <div class="bg-gradient-to-br ${gradient} border border-surface-border rounded-xl p-5">
+        <p class="text-sm text-slate-400">${label}</p>
+        <p class="text-3xl font-bold ${textColor} mt-1">${value}</p>
+      </div>`;
+  }
+
+  // ──────────────────────────── New Request ────────────────────────────
+  function renderNewRequest() {
+    const patientOpts = DEMO_PATIENTS.map(p => `<option value="${p.id}">${p.id} — ${p.label}</option>`).join('');
+    const procOpts = PROCEDURES.map(p => `<option value="${p.code}">${p.label}</option>`).join('');
+    const payerOpts = PAYERS.map(p => `<option value="${p.id}" data-name="${p.name}" ${p.id === 'UHC' ? 'selected' : ''}>${p.name}</option>`).join('');
+
+    return `
+    <div class="fade-in max-w-2xl mx-auto space-y-6">
+      <button onclick="navigate('#dashboard')" class="text-sm text-slate-400 hover:text-accent-cyan transition flex items-center gap-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+        Back to Dashboard
+      </button>
+
+      ${card(`
+        <h2 class="text-xl font-bold text-white mb-6">New Prior Authorization Request</h2>
+        <form id="pa-form" onsubmit="submitRequest(event)" class="space-y-5">
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Patient</label>
+            <select id="f-patient" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition">
+              <option value="">Select a patient...</option>
+              ${patientOpts}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Procedure</label>
+            <select id="f-procedure" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition">
+              <option value="">Select a procedure...</option>
+              ${procOpts}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Payer</label>
+            <select id="f-payer" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition">
+              ${payerOpts}
+            </select>
+          </div>
+          <div id="form-error" class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3"></div>
+          <button type="submit" id="submit-btn"
+            class="w-full py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Run Authorization Pipeline
+          </button>
+        </form>
+      `)}
+    </div>`;
+  }
+
+  async function submitRequest(e) {
+    e.preventDefault();
+    const patientId = document.getElementById('f-patient').value;
+    const procedureCode = document.getElementById('f-procedure').value;
+    const payerEl = document.getElementById('f-payer');
+    const payerId = payerEl.value;
+    const payerName = payerEl.options[payerEl.selectedIndex].text;
+
+    state._pendingRequest = { patient_id: patientId, procedure_code: procedureCode, payer_id: payerId, payer_name: payerName };
+    navigate('#pipeline');
+  }
+
+  // ──────────────────────────── Pipeline ────────────────────────────
+  function renderPipeline() {
+    return `
+    <div class="fade-in max-w-2xl mx-auto space-y-6">
+      <div class="text-center mb-8">
+        <h2 class="text-xl font-bold text-white">Running Authorization Pipeline</h2>
+        <p class="text-slate-400 mt-1">Analyzing clinical data against payer criteria</p>
+      </div>
+      ${card(`
+        <div id="pipeline-steps" class="space-y-0">
+          ${pipelineStep(0, 'CHART_AGENT', 'Extracting clinical data from patient records...', 'waiting')}
+          ${pipelineStep(1, 'POLICY_AGENT', 'Retrieving payer-specific criteria and guidelines...', 'waiting')}
+          ${pipelineStep(2, 'REASONING_AGENT', 'Analyzing criteria match and generating narrative...', 'waiting')}
+          ${pipelineStep(3, 'REVIEW_READY', 'Preparing physician review package...', 'waiting')}
+        </div>
+      `)}
+      <div id="pipeline-error" class="hidden"></div>
+    </div>`;
+  }
+
+  function pipelineStep(idx, name, desc, status) {
+    const iconMap = {
+      waiting: `<div class="w-8 h-8 rounded-full border-2 border-surface-border flex items-center justify-center"><span class="text-xs text-slate-500">${idx + 1}</span></div>`,
+      active: `<div class="w-8 h-8 rounded-full border-2 border-accent-cyan flex items-center justify-center relative"><div class="absolute inset-0 rounded-full border-2 border-accent-cyan pulse-ring"></div>${spinnerSVG(4)}</div>`,
+      done: `<div class="w-8 h-8 rounded-full bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center">${greenCheck()}</div>`,
+      error: `<div class="w-8 h-8 rounded-full bg-red-500/20 border-2 border-red-500 flex items-center justify-center">${redX()}</div>`,
+    };
+    const textColor = status === 'done' ? 'text-emerald-400' : status === 'active' ? 'text-accent-cyan' : 'text-slate-500';
+    const descColor = status === 'done' ? 'text-slate-400' : status === 'active' ? 'text-slate-300' : 'text-slate-600';
+    const connector = idx < 3 ? `<div class="ml-4 w-px h-6 ${status === 'done' ? 'bg-emerald-500/40' : 'bg-surface-border'} step-line"></div>` : '';
+
+    return `
+      <div id="step-${idx}">
+        <div class="flex items-center gap-4 py-2">
+          <div id="step-icon-${idx}">${iconMap[status]}</div>
+          <div>
+            <p id="step-name-${idx}" class="text-sm font-semibold ${textColor}">${name}</p>
+            <p id="step-desc-${idx}" class="text-xs ${descColor}">${desc}</p>
+          </div>
+        </div>
+        ${connector}
+      </div>`;
+  }
+
+  // Runs after pipeline view mounts
+  function afterPipelineRender() {
+    if (!state._pendingRequest) { navigate('#dashboard'); return; }
+    runPipeline(state._pendingRequest);
+  }
+
+  async function runPipeline(req) {
+    const steps = [
+      { idx: 0, name: 'CHART_AGENT', desc: 'Extracting clinical data from patient records...' },
+      { idx: 1, name: 'POLICY_AGENT', desc: 'Retrieving payer-specific criteria and guidelines...' },
+      { idx: 2, name: 'REASONING_AGENT', desc: 'Analyzing criteria match and generating narrative...' },
+      { idx: 3, name: 'REVIEW_READY', desc: 'Preparing physician review package...' },
+    ];
+
+    function setStep(idx, status) {
+      const iconMap = {
+        waiting: `<div class="w-8 h-8 rounded-full border-2 border-surface-border flex items-center justify-center"><span class="text-xs text-slate-500">${idx + 1}</span></div>`,
+        active: `<div class="w-8 h-8 rounded-full border-2 border-accent-cyan flex items-center justify-center relative"><div class="absolute inset-0 rounded-full border-2 border-accent-cyan pulse-ring"></div>${spinnerSVG(4)}</div>`,
+        done: `<div class="w-8 h-8 rounded-full bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center">${greenCheck()}</div>`,
+      };
+      const el = document.getElementById(`step-icon-${idx}`);
+      if (el) el.innerHTML = iconMap[status] || iconMap.waiting;
+
+      const nameEl = document.getElementById(`step-name-${idx}`);
+      const descEl = document.getElementById(`step-desc-${idx}`);
+      if (nameEl) nameEl.className = `text-sm font-semibold ${status === 'done' ? 'text-emerald-400' : status === 'active' ? 'text-accent-cyan' : 'text-slate-500'}`;
+      if (descEl) descEl.className = `text-xs ${status === 'done' ? 'text-slate-400' : status === 'active' ? 'text-slate-300' : 'text-slate-600'}`;
+    }
+
+    // Animate steps while API call runs
+    let currentStep = 0;
+    const minStepTime = 1200;
+    let stepPromise = null;
+    let apiDone = false;
+    let apiResult = null;
+    let apiError = null;
+
+    function advanceStep() {
+      if (currentStep > 0) setStep(currentStep - 1, 'done');
+      if (currentStep < steps.length) {
+        setStep(currentStep, 'active');
+        currentStep++;
+      }
+    }
+
+    // Start stepping animation
+    advanceStep();
+    const stepInterval = setInterval(() => {
+      if (currentStep < steps.length && (!apiDone || currentStep < 3)) {
+        advanceStep();
+      } else if (apiDone) {
+        clearInterval(stepInterval);
+      }
+    }, minStepTime);
+
+    // Fire the API call
+    try {
+      apiResult = await apiPost('/api/pa/request', req);
+      apiDone = true;
+    } catch (err) {
+      apiDone = true;
+      apiError = err;
+      clearInterval(stepInterval);
+      // Show error
+      const errDiv = document.getElementById('pipeline-error');
+      if (errDiv) {
+        errDiv.className = 'text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4';
+        errDiv.innerHTML = `
+          <p class="font-semibold mb-1">Pipeline Error</p>
+          <p>${apiError.message}</p>
+          <div class="mt-3 flex gap-3">
+            <button onclick="navigate('#new')" class="px-4 py-1.5 rounded-lg border border-surface-border text-slate-300 hover:bg-surface-hover transition text-sm">Back to Form</button>
+            <button onclick="navigate('#review')" class="px-4 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 transition text-sm">View Demo Review</button>
+          </div>`;
+      }
+      return;
+    }
+
+    // Wait for stepping animation to finish
+    await new Promise(resolve => {
+      const check = setInterval(() => {
+        if (currentStep >= steps.length) { clearInterval(check); resolve(); }
+      }, 200);
+    });
+
+    // Mark last step done
+    setStep(steps.length - 1, 'done');
+
+    // Store result and navigate
+    state.currentReview = apiResult;
+    await new Promise(r => setTimeout(r, 600));
+    navigate('#review');
+  }
+
+  // Hook into route to trigger pipeline
+  const _origRoute = route;
+  route = function() {
+    _origRoute();
+    const hash = window.location.hash || '#dashboard';
+    if (hash === '#pipeline') setTimeout(afterPipelineRender, 100);
+  };
+
+  // ──────────────────────────── Fallback Demo Data ────────────────────────────
+  function demoReviewData() {
+    return {
+      request_id: 'PA-2026-0042',
+      patient: { id: 'DEMO-001', name: 'Robert Chen', age: 67, sex: 'M', mrn: 'MRN-445891' },
+      procedure: { code: '93458', name: 'Left Heart Catheterization' },
+      payer: { id: 'UHC', name: 'UnitedHealthcare' },
+      confidence: { score: 0.87, label: 'HIGH' },
+      clinical_summary: {
+        diagnoses: [
+          { code: 'I25.10', description: 'Atherosclerotic heart disease of native coronary artery' },
+          { code: 'I20.0', description: 'Unstable angina' },
+          { code: 'E11.9', description: 'Type 2 diabetes mellitus without complications' },
+        ],
+        labs: [
+          { name: 'Troponin I', value: '0.08 ng/mL', date: '2026-03-28', flag: 'borderline' },
+          { name: 'BNP', value: '342 pg/mL', date: '2026-03-28', flag: 'high' },
+          { name: 'Creatinine', value: '1.1 mg/dL', date: '2026-03-28', flag: 'normal' },
+          { name: 'eGFR', value: '68 mL/min', date: '2026-03-28', flag: 'low' },
+          { name: 'HbA1c', value: '7.2%', date: '2026-03-15', flag: 'high' },
+          { name: 'LDL-C', value: '142 mg/dL', date: '2026-03-15', flag: 'high' },
+        ],
+        imaging: 'Stress echocardiogram (2026-03-25): Reversible perfusion defect in LAD territory. LVEF 45%. Regional wall motion abnormality in anterior wall.',
+        medications: ['Aspirin 81mg daily', 'Metoprolol 50mg BID', 'Atorvastatin 80mg daily', 'Metformin 1000mg BID', 'Lisinopril 20mg daily'],
+        prior_treatments: ['6 weeks optimal medical therapy', 'Lifestyle modification counseling', 'Cardiac rehabilitation referral', 'Nuclear stress test (inconclusive)'],
+      },
+      criteria_match: {
+        met: [
+          { criterion: 'Documented coronary artery disease (CAD)', evidence: 'ICD-10 I25.10 in active problem list; stress echo showing reversible perfusion defect in LAD territory' },
+          { criterion: 'Symptoms refractory to medical therapy', evidence: 'Patient reports persistent angina (CCS Class III) despite 6 weeks on maximally tolerated beta-blocker and nitrate therapy' },
+          { criterion: 'Non-invasive testing suggests significant ischemia', evidence: 'Stress echocardiogram shows reversible perfusion defect; LVEF 45% (reduced)' },
+          { criterion: 'Failed conservative management', evidence: 'Documentation of 6 weeks optimal medical therapy including aspirin, statin, beta-blocker without symptom resolution' },
+        ],
+        not_met: [
+          { criterion: 'Recent cardiac CTA or coronary calcium score', gap: 'No coronary CT angiography on file within 12 months', recommendation: 'Consider adding recent CTA report if available, or document clinical rationale for proceeding directly to catheterization' },
+        ],
+      },
+      narrative: `PRIOR AUTHORIZATION REQUEST — LEFT HEART CATHETERIZATION (CPT 93458)
+
+Patient: Robert Chen, 67-year-old male
+MRN: MRN-445891
+Insurance: UnitedHealthcare — Policy #UHC-8834521
+Requesting Physician: [Physician Name], MD, FACC
+
+CLINICAL INDICATION:
+Mr. Chen presents with progressively worsening exertional chest pain (CCS Class III angina) over the past 3 months despite optimal medical therapy. His cardiac history is significant for atherosclerotic heart disease of native coronary artery (I25.10) and unstable angina (I20.0), with comorbid Type 2 diabetes mellitus.
+
+DIAGNOSTIC WORKUP:
+Stress echocardiogram performed on 03/25/2026 demonstrated a reversible perfusion defect in the LAD territory with reduced left ventricular ejection fraction of 45% and regional wall motion abnormality in the anterior wall, suggesting hemodynamically significant coronary artery disease.
+
+Laboratory findings are notable for elevated BNP (342 pg/mL), borderline troponin (0.08 ng/mL), and suboptimally controlled cardiovascular risk factors (LDL-C 142 mg/dL, HbA1c 7.2%).
+
+MEDICAL NECESSITY:
+Left heart catheterization is medically necessary to define coronary anatomy and guide revascularization strategy. The patient has failed 6 weeks of guideline-directed medical therapy including aspirin, high-intensity statin, beta-blocker, and ACE inhibitor without adequate symptom control. Non-invasive testing demonstrates objective evidence of myocardial ischemia with reduced systolic function.
+
+Per AHA/ACC guidelines, diagnostic catheterization is a Class I recommendation for patients with stable ischemic heart disease and high-risk features on non-invasive testing (reduced LVEF, large area of ischemia).
+
+This procedure is essential for determining whether percutaneous coronary intervention or surgical revascularization is appropriate for this patient's ongoing ischemic symptoms and objective findings.`,
+      action_items: [
+        'Verify patient insurance eligibility is current before submission',
+        'Attach stress echocardiogram report to authorization package',
+      ],
+      audit_trail: [
+        { time: '2026-03-31T10:22:00Z', agent: 'CHART_AGENT', action: 'Extracted clinical data from EHR' },
+        { time: '2026-03-31T10:22:03Z', agent: 'POLICY_AGENT', action: 'Retrieved UHC criteria for CPT 93458' },
+        { time: '2026-03-31T10:22:08Z', agent: 'REASONING_AGENT', action: 'Matched 4/5 criteria — confidence 0.87' },
+        { time: '2026-03-31T10:22:09Z', agent: 'SYSTEM', action: 'Review package prepared for physician' },
+      ],
+    };
+  }
+
+  // ──────────────────────────── Review Screen ────────────────────────────
+  function renderReview() {
+    const data = state.currentReview || demoReviewData();
+    const conf = confidenceColor(data.confidence?.score ?? data.confidence_score ?? 0.87);
+    const score = data.confidence?.score ?? data.confidence_score ?? 0.87;
+
+    // Normalize data with fallbacks
+    const cs = data.clinical_summary || {};
+    const diagnoses = cs.diagnoses || [];
+    const labs = cs.labs || [];
+    const imaging = cs.imaging || 'N/A';
+    const medications = cs.medications || [];
+    const priorTreatments = cs.prior_treatments || [];
+    const criteriaMatch = data.criteria_match || { met: [], not_met: [] };
+    const narrative = data.narrative || '';
+    const actionItems = data.action_items || [];
+    const patient = data.patient || {};
+
+    return `
+    <div class="fade-in space-y-6">
+      <div class="flex items-center justify-between">
+        <button onclick="navigate('#dashboard')" class="text-sm text-slate-400 hover:text-accent-cyan transition flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Dashboard
+        </button>
+        <span class="text-sm font-mono text-slate-500">${data.request_id || 'PA-2026-XXXX'}</span>
+      </div>
+
+      <!-- Confidence Header -->
+      ${card(`
+        <div class="flex flex-col sm:flex-row sm:items-center gap-6">
+          <div class="relative flex-shrink-0">
+            <div class="w-28 h-28 rounded-full ${conf.bg}/10 border-4 ${conf.border} flex items-center justify-center">
+              <span class="${conf.text} text-3xl font-bold">${Math.round(score * 100)}%</span>
+            </div>
+          </div>
+          <div>
+            <p class="${conf.text} text-lg font-bold">${conf.label}</p>
+            <p class="text-slate-400 mt-1">Approval likelihood based on automated criteria analysis</p>
+            <p class="text-sm text-slate-500 mt-2">${patient.name || 'Patient'}, ${patient.age || ''}${patient.sex || ''} &mdash; ${data.procedure?.name || ''} (CPT ${data.procedure?.code || ''})</p>
+          </div>
+        </div>
+      `)}
+
+      <!-- Clinical Summary -->
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-accent-cyan" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          Clinical Summary
+        </h3>
+
+        <!-- Diagnoses -->
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Diagnoses</p>
+          <div class="flex flex-wrap gap-2">
+            ${diagnoses.map(d => `<span class="bg-surface border border-surface-border rounded-lg px-3 py-1 text-sm"><span class="text-accent-cyan font-mono">${d.code}</span> <span class="text-slate-300">${d.description}</span></span>`).join('')}
+          </div>
+        </div>
+
+        <!-- Labs -->
+        ${labs.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Key Laboratory Values</p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="border-b border-surface-border text-xs uppercase text-slate-500">
+                <th class="py-1.5 px-3 text-left">Test</th><th class="py-1.5 px-3 text-left">Value</th><th class="py-1.5 px-3 text-left">Date</th><th class="py-1.5 px-3 text-left">Flag</th>
+              </tr></thead>
+              <tbody>${labs.map(l => {
+                const flagColor = l.flag === 'high' ? 'text-red-400' : l.flag === 'low' ? 'text-amber-400' : l.flag === 'borderline' ? 'text-amber-300' : 'text-emerald-400';
+                return `<tr class="border-b border-surface-border/50"><td class="py-1.5 px-3 text-slate-300">${l.name}</td><td class="py-1.5 px-3 font-mono text-white">${l.value}</td><td class="py-1.5 px-3 text-slate-500">${l.date}</td><td class="py-1.5 px-3 ${flagColor} text-xs font-medium uppercase">${l.flag}</td></tr>`;
+              }).join('')}</tbody>
+            </table>
+          </div>
+        </div>` : ''}
+
+        <!-- Imaging -->
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Imaging</p>
+          <p class="text-sm text-slate-300 bg-surface rounded-lg px-4 py-2.5 border border-surface-border">${imaging}</p>
+        </div>
+
+        <!-- Meds & Prior Treatments -->
+        <div class="grid md:grid-cols-2 gap-4">
+          <div>
+            <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Current Medications</p>
+            <ul class="space-y-1">${medications.map(m => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-accent-blue flex-shrink-0"></span>${m}</li>`).join('')}</ul>
+          </div>
+          <div>
+            <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Prior Treatments</p>
+            <ul class="space-y-1">${priorTreatments.map(t => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-accent-cyan flex-shrink-0"></span>${t}</li>`).join('')}</ul>
+          </div>
+        </div>
+      `)}
+
+      <!-- Criteria Match -->
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-accent-cyan" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+          Criteria Match Analysis
+        </h3>
+        <div class="grid md:grid-cols-2 gap-6">
+          <!-- Met -->
+          <div>
+            <p class="text-sm font-semibold text-emerald-400 mb-3 flex items-center gap-1.5">${greenCheck()} Criteria Met (${criteriaMatch.met.length})</p>
+            <div class="space-y-3">
+              ${criteriaMatch.met.map(c => `
+                <div class="bg-emerald-500/5 border border-emerald-500/20 rounded-lg px-4 py-3">
+                  <p class="text-sm font-medium text-emerald-300">${c.criterion}</p>
+                  <p class="text-xs text-slate-400 mt-1">${c.evidence}</p>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+          <!-- Not Met -->
+          <div>
+            <p class="text-sm font-semibold text-red-400 mb-3 flex items-center gap-1.5">${redX()} Gaps Identified (${criteriaMatch.not_met.length})</p>
+            <div class="space-y-3">
+              ${criteriaMatch.not_met.length ? criteriaMatch.not_met.map(c => `
+                <div class="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
+                  <p class="text-sm font-medium text-red-300">${c.criterion}</p>
+                  <p class="text-xs text-slate-400 mt-1"><span class="text-red-400">Gap:</span> ${c.gap}</p>
+                  <p class="text-xs text-amber-300 mt-1"><span class="text-amber-400">Recommendation:</span> ${c.recommendation}</p>
+                </div>
+              `).join('') : '<p class="text-sm text-slate-500 italic">All criteria met</p>'}
+            </div>
+          </div>
+        </div>
+      `)}
+
+      <!-- PA Narrative -->
+      ${card(`
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold text-white flex items-center gap-2">
+            <svg class="w-5 h-5 text-accent-cyan" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Prior Authorization Narrative
+          </h3>
+          <span id="word-count" class="text-xs text-slate-500"></span>
+        </div>
+        <textarea id="narrative-text" rows="16"
+          class="w-full bg-surface border border-surface-border rounded-lg px-4 py-3 text-sm text-slate-200 font-mono leading-relaxed focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition resize-y"
+          oninput="updateWordCount()">${escapeHtml(narrative)}</textarea>
+      `, 'narrative-card')}
+
+      <!-- Action Items -->
+      ${actionItems.length ? card(`
+        <h3 class="text-lg font-semibold text-amber-400 mb-3 flex items-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          Action Required
+        </h3>
+        <div class="space-y-2">
+          ${actionItems.map(a => `
+            <div class="flex items-start gap-3 bg-amber-500/5 border border-amber-500/20 rounded-lg px-4 py-3">
+              <svg class="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+              <p class="text-sm text-amber-200">${a}</p>
+            </div>
+          `).join('')}
+        </div>
+      `) : ''}
+
+      <!-- Actions -->
+      <div class="flex flex-col sm:flex-row gap-3 pt-2 pb-8">
+        <button onclick="approveAndSubmit()" id="approve-btn"
+          class="flex-1 py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+          Approve &amp; Submit
+        </button>
+        <button onclick="editNarrative()"
+          class="px-6 py-3 rounded-lg border border-surface-border text-slate-300 hover:bg-surface-hover transition font-medium flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+          Edit Narrative
+        </button>
+        <button onclick="navigate('#dashboard')"
+          class="px-6 py-3 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 transition font-medium">
+          Cancel
+        </button>
+      </div>
+    </div>`;
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function updateWordCount() {
+    const ta = document.getElementById('narrative-text');
+    const wc = document.getElementById('word-count');
+    if (ta && wc) {
+      const words = ta.value.trim().split(/\s+/).filter(Boolean).length;
+      wc.textContent = `${words} words`;
+    }
+  }
+
+  function editNarrative() {
+    const ta = document.getElementById('narrative-text');
+    if (ta) { ta.focus(); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  }
+
+  async function approveAndSubmit() {
+    const btn = document.getElementById('approve-btn');
+    const data = state.currentReview || demoReviewData();
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(5)} Submitting...`;
+
+    try {
+      const result = await apiPost('/api/pa/approve', {
+        request_id: data.request_id || 'PA-2026-0042',
+        approved_by: 'Dr. Demo',
+        narrative: document.getElementById('narrative-text')?.value || '',
+      });
+      state.submissionResult = result;
+      navigate('#submitted');
+    } catch (err) {
+      // Use demo submission result on error
+      state.submissionResult = {
+        request_id: data.request_id || 'PA-2026-0042',
+        status: 'Submitted',
+        channel: 'Electronic (Availity)',
+        submitted_at: new Date().toISOString(),
+        expected_decision: '2026-04-03',
+        follow_up_date: '2026-04-05',
+        confirmation_number: 'CNF-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
+        audit_trail: (data.audit_trail || demoReviewData().audit_trail).concat([
+          { time: new Date().toISOString(), agent: 'PHYSICIAN', action: 'Reviewed and approved narrative' },
+          { time: new Date().toISOString(), agent: 'SUBMIT_AGENT', action: 'Submitted to payer via electronic channel' },
+        ]),
+      };
+      navigate('#submitted');
+    }
+  }
+
+  // Word count on load
+  const _origRoute2 = route;
+  route = function() {
+    _origRoute2();
+    const hash = window.location.hash || '#dashboard';
+    if (hash === '#review') setTimeout(updateWordCount, 50);
+  };
+
+  // ──────────────────────────── Submitted ────────────────────────────
+  function renderSubmitted() {
+    const r = state.submissionResult || {};
+    const trail = r.audit_trail || [];
+
+    return `
+    <div class="fade-in max-w-2xl mx-auto space-y-6">
+      <!-- Success Banner -->
+      <div class="text-center py-8">
+        <div class="inline-flex items-center justify-center w-20 h-20 rounded-full bg-emerald-500/20 border-2 border-emerald-500 mb-4">
+          <svg class="w-10 h-10 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+        </div>
+        <h2 class="text-2xl font-bold text-white">Authorization Submitted</h2>
+        <p class="text-slate-400 mt-1">Your prior authorization request has been sent to the payer</p>
+      </div>
+
+      <!-- Details -->
+      ${card(`
+        <div class="grid grid-cols-2 gap-y-4 gap-x-8">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500">Request ID</p>
+            <p class="text-sm font-mono text-accent-cyan mt-0.5">${r.request_id || 'PA-2026-0042'}</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500">Confirmation</p>
+            <p class="text-sm font-mono text-white mt-0.5">${r.confirmation_number || 'N/A'}</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500">Submission Channel</p>
+            <p class="text-sm text-slate-300 mt-0.5">${r.channel || 'Electronic'}</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500">Status</p>
+            <p class="text-sm mt-0.5">${statusBadge(r.status || 'Submitted')}</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500">Expected Decision</p>
+            <p class="text-sm text-white mt-0.5">${r.expected_decision || 'Within 3 business days'}</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500">Follow-up Date</p>
+            <p class="text-sm text-amber-300 mt-0.5">${r.follow_up_date || 'TBD'}</p>
+          </div>
+        </div>
+      `)}
+
+      <!-- Audit Trail -->
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-accent-cyan" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Audit Trail
+        </h3>
+        <div class="relative">
+          <div class="absolute left-3 top-2 bottom-2 w-px bg-surface-border"></div>
+          <div class="space-y-4">
+            ${trail.map(t => {
+              const time = new Date(t.time);
+              const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+              const agentColor = t.agent === 'PHYSICIAN' ? 'text-accent-blue' : t.agent === 'SUBMIT_AGENT' ? 'text-emerald-400' : 'text-accent-cyan';
+              return `
+                <div class="flex items-start gap-4 pl-1">
+                  <div class="w-5 h-5 rounded-full bg-surface-card border-2 border-accent-cyan flex-shrink-0 mt-0.5 z-10"></div>
+                  <div>
+                    <p class="text-sm"><span class="${agentColor} font-mono font-medium">${t.agent}</span> <span class="text-slate-400">${t.action}</span></p>
+                    <p class="text-xs text-slate-600 mt-0.5">${timeStr}</p>
+                  </div>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>
+      `)}
+
+      <div class="flex justify-center pt-4 pb-8">
+        <button onclick="navigate('#dashboard')"
+          class="px-8 py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99]">
+          Back to Dashboard
+        </button>
+      </div>
+    </div>`;
+  }
+  </script>
+</body>
+</html>
