@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -64,6 +65,13 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/reference")
+def get_reference_data() -> dict[str, Any]:
+    """Return ICD-10 descriptions and demo patient info for frontend lookups."""
+    from cardioauth.demo import ICD10_DESCRIPTIONS, DEMO_PATIENT_INFO
+    return {"icd10": ICD10_DESCRIPTIONS, "patients": DEMO_PATIENT_INFO}
+
+
 @app.post("/api/pa/request")
 def create_pa_request(req: PARequest) -> dict[str, Any]:
     """Step 1-3: Extract chart data, get payer criteria, reason, and draft narrative."""
@@ -81,8 +89,11 @@ def create_pa_request(req: PARequest) -> dict[str, Any]:
     request_id = review.chart_data.patient_id + "-" + review.chart_data.procedure_code
     _reviews[request_id] = review
 
+    from cardioauth.demo import DEMO_PATIENT_INFO
+
     return {
         "request_id": request_id,
+        "patient_info": DEMO_PATIENT_INFO.get(req.patient_id, {}),
         "approval_likelihood": {
             "score": review.reasoning.approval_likelihood_score,
             "label": review.reasoning.approval_likelihood_label,
@@ -138,6 +149,99 @@ def process_outcome(req: PayerResponseRequest) -> dict[str, Any]:
 
     return outcome.model_dump()
 
+
+class AppealRequest(BaseModel):
+    request_id: str
+    denial_reason: str
+
+
+@app.post("/api/pa/appeal")
+def generate_appeal(req: AppealRequest) -> dict[str, Any]:
+    """Generate an appeal draft for a denied PA."""
+    review = _reviews.get(req.request_id)
+    if review:
+        chart_data = review.chart_data
+        policy_data = review.policy_data
+    else:
+        # Parse request_id format: "DEMO-001-93458"
+        from cardioauth.demo import get_demo_chart, get_demo_policy
+        parts = req.request_id.rsplit("-", 1)
+        patient_id = parts[0] if len(parts) > 0 else "DEMO-001"
+        proc_code = parts[1] if len(parts) > 1 else "93458"
+        try:
+            chart_data = get_demo_chart(patient_id, proc_code)
+            policy_data = get_demo_policy(proc_code, chart_data.payer_name)
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=f"No demo data found: {e}")
+
+    from cardioauth.demo import get_demo_appeal
+    appeal_text = get_demo_appeal(chart_data, policy_data, req.denial_reason)
+
+    return {
+        "request_id": req.request_id,
+        "denial_reason": req.denial_reason,
+        "appeal_draft": appeal_text,
+        "appeal_deadline": "2026-04-15",
+        "recommendation": "Submit appeal with peer-to-peer review request",
+    }
+
+
+@app.post("/api/pa/export-pdf")
+def export_pdf(req: ApprovalRequest):
+    """Export the PA review package as a PDF letter."""
+    review = _reviews.get(req.request_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review package not found")
+
+    from cardioauth.pdf_generator import generate_pa_letter
+
+    pdf_bytes = generate_pa_letter(
+        chart_data=review.chart_data.model_dump(),
+        policy_data=review.policy_data.model_dump(),
+        reasoning=review.reasoning.model_dump(),
+    )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=PA-{req.request_id}.pdf"
+        },
+    )
+
+
+@app.get("/api/analytics")
+def get_analytics():
+    """Return mock analytics data for the dashboard."""
+    return {
+        "total_requests": 47,
+        "approved": 38,
+        "denied": 5,
+        "pending": 4,
+        "approval_rate": 0.88,
+        "avg_turnaround_days": 4.2,
+        "denial_reasons": [
+            {"reason": "Incomplete documentation", "count": 2},
+            {"reason": "Medical necessity not established", "count": 1},
+            {"reason": "Prior treatment requirement not met", "count": 1},
+            {"reason": "Outdated imaging studies", "count": 1},
+        ],
+        "monthly_trend": [
+            {"month": "Oct", "approved": 8, "denied": 1},
+            {"month": "Nov", "approved": 10, "denied": 2},
+            {"month": "Dec", "approved": 9, "denied": 1},
+            {"month": "Jan", "approved": 11, "denied": 1},
+        ],
+        "payer_breakdown": [
+            {"payer": "UnitedHealthcare", "total": 20, "approved": 17},
+            {"payer": "Aetna", "total": 15, "approved": 12},
+            {"payer": "Blue Cross Blue Shield", "total": 12, "approved": 9},
+        ],
+    }
+
+
+# Mount static files for favicon and assets
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Serve frontend — must be last so it doesn't shadow API routes
 @app.get("/", response_class=HTMLResponse)

@@ -6,6 +6,11 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>CardioAuth — Prior Authorization Automation</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <meta property="og:title" content="CardioAuth — Prior Authorization Automation">
+  <meta property="og:description" content="AI-powered cardiology prior authorization with multi-agent pipeline">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#0a0e1a">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -125,6 +130,34 @@
     return res.json();
   }
 
+  async function loadAnalytics() {
+    try {
+      const res = await fetch('/api/analytics');
+      const a = await res.json();
+      const cards = document.getElementById('analytics-cards');
+      if (cards) {
+        cards.innerHTML = `
+          ${statCard('Total Requests', a.total_requests, 'from-blue-500/10 to-cyan-500/10', 'text-accent-cyan')}
+          ${statCard('Approved', a.approved, 'from-emerald-500/10 to-emerald-600/10', 'text-emerald-400')}
+          ${statCard('Pending', a.pending, 'from-amber-500/10 to-amber-600/10', 'text-amber-400')}
+          ${statCard('Denied', a.denied, 'from-red-500/10 to-red-600/10', 'text-red-400')}`;
+      }
+      const rateEl = document.getElementById('analytics-rate');
+      if (rateEl) rateEl.textContent = Math.round(a.approval_rate * 100) + '%';
+      const turnEl = document.getElementById('analytics-turnaround');
+      if (turnEl) turnEl.textContent = a.avg_turnaround_days + ' days';
+      const denialEl = document.getElementById('analytics-denials');
+      if (denialEl) denialEl.innerHTML = a.denial_reasons.map(d =>
+        `<div class="flex justify-between"><span>${d.reason}</span><span class="text-red-400 font-mono">${d.count}</span></div>`
+      ).join('');
+      const payerEl = document.getElementById('analytics-payers');
+      if (payerEl) payerEl.innerHTML = a.payer_breakdown.map(p => {
+        const pct = Math.round(p.approved / p.total * 100);
+        return `<div class="flex justify-between items-center"><span>${p.payer}</span><div class="flex items-center gap-2"><div class="w-24 h-2 bg-surface rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:${pct}%"></div></div><span class="text-emerald-400 font-mono">${pct}%</span></div></div>`;
+      }).join('');
+    } catch(e) { console.warn('Analytics load failed:', e); }
+  }
+
   async function checkHealth() {
     const dot = document.getElementById('health-dot');
     try {
@@ -184,6 +217,9 @@
       </tr>
     `).join('');
 
+    // Load analytics asynchronously
+    setTimeout(loadAnalytics, 100);
+
     return `
     <div class="fade-in space-y-8">
       <!-- Hero -->
@@ -200,11 +236,28 @@
       </div>
 
       <!-- Stats -->
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        ${statCard('Total Requests', state.requests.length, 'from-blue-500/10 to-cyan-500/10', 'text-accent-cyan')}
-        ${statCard('Approved', state.requests.filter(r => r.status === 'Approved').length, 'from-emerald-500/10 to-emerald-600/10', 'text-emerald-400')}
-        ${statCard('Pending', state.requests.filter(r => r.status === 'Pending Review').length, 'from-amber-500/10 to-amber-600/10', 'text-amber-400')}
-        ${statCard('Denied', state.requests.filter(r => r.status === 'Denied').length, 'from-red-500/10 to-red-600/10', 'text-red-400')}
+      <div id="analytics-cards" class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        ${statCard('Total Requests', '...', 'from-blue-500/10 to-cyan-500/10', 'text-accent-cyan')}
+        ${statCard('Approved', '...', 'from-emerald-500/10 to-emerald-600/10', 'text-emerald-400')}
+        ${statCard('Pending', '...', 'from-amber-500/10 to-amber-600/10', 'text-amber-400')}
+        ${statCard('Denied', '...', 'from-red-500/10 to-red-600/10', 'text-red-400')}
+      </div>
+
+      <!-- Analytics Row -->
+      <div id="analytics-detail" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="bg-surface-card border border-surface-border rounded-xl p-5">
+          <p class="text-sm text-slate-400 mb-3">Approval Rate</p>
+          <div id="analytics-rate" class="text-3xl font-bold text-emerald-400">...</div>
+          <p class="text-xs text-slate-500 mt-1">Avg turnaround: <span id="analytics-turnaround">...</span></p>
+        </div>
+        <div class="bg-surface-card border border-surface-border rounded-xl p-5">
+          <p class="text-sm text-slate-400 mb-3">Top Denial Reasons</p>
+          <div id="analytics-denials" class="space-y-2 text-xs text-slate-300">Loading...</div>
+        </div>
+        <div class="bg-surface-card border border-surface-border rounded-xl p-5">
+          <p class="text-sm text-slate-400 mb-3">By Payer</p>
+          <div id="analytics-payers" class="space-y-2 text-xs text-slate-300">Loading...</div>
+        </div>
       </div>
 
       <!-- Table -->
@@ -352,12 +405,7 @@
   function transformApiResponse(api) {
     const cd = api.chart_data || {};
     const pd = api.policy_data || {};
-    const patientNames = {
-      'DEMO-001': { name: 'Robert Chen', age: '67', sex: 'M' },
-      'DEMO-002': { name: 'Margaret Williams', age: '72', sex: 'F' },
-      'DEMO-003': { name: 'James Rodriguez', age: '55', sex: 'M' },
-    };
-    const pInfo = patientNames[cd.patient_id] || {};
+    const pInfo = api.patient_info || {};
     // Map labs
     const labs = (cd.relevant_labs || []).map(l => ({
       name: l.name, value: `${l.value} ${l.unit}`, date: l.date,
@@ -798,19 +846,24 @@ This procedure is essential for determining whether percutaneous coronary interv
       `) : ''}
 
       <!-- Actions -->
-      <div class="flex flex-col sm:flex-row gap-3 pt-2 pb-8">
+      <div class="flex flex-wrap gap-3 pt-2 pb-8">
         <button onclick="approveAndSubmit()" id="approve-btn"
-          class="flex-1 py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
+          class="flex-1 min-w-[200px] py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
           Approve &amp; Submit
         </button>
+        <button onclick="exportPDF()" id="pdf-btn"
+          class="px-5 py-3 rounded-lg border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/10 transition font-medium flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          Export PDF
+        </button>
         <button onclick="editNarrative()"
-          class="px-6 py-3 rounded-lg border border-surface-border text-slate-300 hover:bg-surface-hover transition font-medium flex items-center justify-center gap-2">
+          class="px-5 py-3 rounded-lg border border-surface-border text-slate-300 hover:bg-surface-hover transition font-medium flex items-center justify-center gap-2">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
           Edit Narrative
         </button>
         <button onclick="navigate('#dashboard')"
-          class="px-6 py-3 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 transition font-medium">
+          class="px-5 py-3 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 transition font-medium">
           Cancel
         </button>
       </div>
@@ -830,6 +883,32 @@ This procedure is essential for determining whether percutaneous coronary interv
       const words = ta.value.trim().split(/\s+/).filter(Boolean).length;
       wc.textContent = `${words} words`;
     }
+  }
+
+  async function exportPDF() {
+    const btn = document.getElementById('pdf-btn');
+    const data = state.currentReview || {};
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(5)} Generating...`;
+    try {
+      const res = await fetch('/api/pa/export-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: data.request_id || 'DEMO-001-93458', approved_by: 'Dr. Demo' }),
+      });
+      if (!res.ok) throw new Error('PDF generation failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `PA-${data.request_id || 'export'}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch(e) {
+      alert('PDF export failed: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg> Export PDF`;
   }
 
   function editNarrative() {
