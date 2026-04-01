@@ -14,7 +14,34 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from cardioauth.config import Config
+from cardioauth.engines.auth_tracker import (
+    get_all_authorizations,
+    get_expiring_soon,
+)
+from cardioauth.engines.device_monitor import (
+    get_device_patients,
+    get_upcoming_eligible,
+)
+from cardioauth.engines.pre_procedure import (
+    get_blocked_procedures,
+    get_upcoming_procedures,
+)
 from cardioauth.orchestrator import Orchestrator, ReviewPackage
+from cardioauth.engines.payer_rules import (
+    check_auth_required,
+    get_payer_matrix,
+    flag_at_order_time,
+)
+from cardioauth.engines.icd10_checker import (
+    check_code_pairing,
+    suggest_stronger_codes,
+    estimate_clean_claim_impact,
+)
+from cardioauth.engines.medical_necessity import (
+    analyze_documentation,
+    generate_recommendations,
+    score_documentation_strength as score_doc_strength,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -150,6 +177,27 @@ def process_outcome(req: PayerResponseRequest) -> dict[str, Any]:
     return outcome.model_dump()
 
 
+class ModifierCheckRequest(BaseModel):
+    cpt_codes: list[str]
+    modifiers: list[str] = []
+
+
+class BundlingCheckRequest(BaseModel):
+    cpt_codes: list[str]
+
+
+class P2PRequest(BaseModel):
+    patient_id: str
+    procedure_code: str
+    payer: str
+
+
+class StrengthScoreRequest(BaseModel):
+    patient_id: str
+    procedure_code: str
+    payer: str
+
+
 class AppealRequest(BaseModel):
     request_id: str
     denial_reason: str
@@ -186,6 +234,54 @@ def generate_appeal(req: AppealRequest) -> dict[str, Any]:
     }
 
 
+class AuthCheckRequest(BaseModel):
+    cpt_code: str
+    payer: str
+
+
+class CodeCheckRequest(BaseModel):
+    cpt_code: str
+    icd10_codes: list[str]
+
+
+class DocCheckRequest(BaseModel):
+    patient_id: str
+    procedure_code: str
+
+
+@app.get("/api/payer-matrix")
+def get_payer_matrix(payer: str | None = None) -> dict[str, Any]:
+    """Get the full payer authorization matrix."""
+    from cardioauth.engines.payer_rules import get_payer_matrix as _get
+    return {"matrix": _get(payer)}
+
+
+@app.post("/api/check-auth")
+def check_auth(req: AuthCheckRequest) -> dict[str, Any]:
+    """Check if a procedure requires auth for a specific payer."""
+    from cardioauth.engines.payer_rules import check_auth_required
+    return check_auth_required(req.cpt_code, req.payer)
+
+
+@app.post("/api/check-codes")
+def check_codes(req: CodeCheckRequest) -> dict[str, Any]:
+    """Validate CPT + ICD-10 code pairings for clean claims."""
+    from cardioauth.engines.icd10_checker import check_code_pairing
+    return check_code_pairing(req.cpt_code, req.icd10_codes)
+
+
+@app.post("/api/check-documentation")
+def check_documentation(req: DocCheckRequest) -> dict[str, Any]:
+    """Analyze medical necessity documentation completeness."""
+    from cardioauth.engines.medical_necessity import analyze_documentation
+    from cardioauth.demo import get_demo_chart
+    try:
+        chart = get_demo_chart(req.patient_id, req.procedure_code)
+        return analyze_documentation(chart.model_dump(), req.procedure_code)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @app.post("/api/pa/export-pdf")
 def export_pdf(req: ApprovalRequest):
     """Export the PA review package as a PDF letter."""
@@ -208,6 +304,42 @@ def export_pdf(req: ApprovalRequest):
             "Content-Disposition": f"attachment; filename=PA-{req.request_id}.pdf"
         },
     )
+
+
+@app.get("/api/authorizations")
+def list_authorizations():
+    """Return all tracked authorizations with computed alert fields."""
+    return get_all_authorizations()
+
+
+@app.get("/api/authorizations/expiring")
+def list_expiring_authorizations(days: int = 5):
+    """Return authorizations expiring within the given number of days."""
+    return get_expiring_soon(days)
+
+
+@app.get("/api/devices")
+def list_device_patients():
+    """Return all monitored device patients with billing status."""
+    return get_device_patients()
+
+
+@app.get("/api/devices/eligible")
+def list_eligible_devices(days: int = 14):
+    """Return device patients becoming billing-eligible soon."""
+    return get_upcoming_eligible(days)
+
+
+@app.get("/api/pre-check")
+def list_pre_checks(days: int = 7):
+    """Return upcoming procedures with pre-procedure check status."""
+    return get_upcoming_procedures(days)
+
+
+@app.get("/api/pre-check/blocked")
+def list_blocked_procedures():
+    """Return procedures that cannot proceed due to unresolved issues."""
+    return get_blocked_procedures()
 
 
 @app.get("/api/analytics")
@@ -238,6 +370,265 @@ def get_analytics():
             {"payer": "Blue Cross Blue Shield", "total": 12, "approved": 9},
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Modifier Checker & P2P Prevention Endpoints
+# ---------------------------------------------------------------------------
+
+from cardioauth.engines.modifier_checker import (
+    check_modifiers,
+    check_bundling,
+    suggest_modifiers,
+)
+from cardioauth.engines.p2p_prevention import (
+    predict_p2p_likelihood,
+    get_strength_recommendations,
+    score_documentation_strength,
+    estimate_approval_without_p2p,
+)
+
+
+@app.post("/api/check-modifiers")
+def api_check_modifiers(req: ModifierCheckRequest) -> dict[str, Any]:
+    """Validate CPT code + modifier combinations against NCCI edit pairs."""
+    result = check_modifiers(req.cpt_codes, req.modifiers)
+    suggestions = suggest_modifiers(req.cpt_codes)
+    result["modifier_suggestions"] = suggestions
+    return result
+
+
+@app.post("/api/check-bundling")
+def api_check_bundling(req: BundlingCheckRequest) -> dict[str, Any]:
+    """Identify bundled code pairs that cannot be billed together."""
+    return check_bundling(req.cpt_codes)
+
+
+@app.post("/api/predict-p2p")
+def api_predict_p2p(req: P2PRequest) -> dict[str, Any]:
+    """Predict likelihood of peer-to-peer review for a patient/procedure/payer."""
+    from cardioauth.demo import get_demo_chart, get_demo_policy
+
+    try:
+        chart_data = get_demo_chart(req.patient_id, req.procedure_code)
+    except (KeyError, Exception) as e:
+        raise HTTPException(status_code=404, detail=f"Patient/procedure not found: {e}")
+
+    try:
+        policy_data = get_demo_policy(req.procedure_code, req.payer)
+    except (KeyError, Exception):
+        policy_data = None
+
+    result = predict_p2p_likelihood(chart_data, policy_data, req.payer, req.procedure_code)
+    return result
+
+
+@app.post("/api/strength-score")
+def api_strength_score(req: StrengthScoreRequest) -> dict[str, Any]:
+    """Score documentation strength and return improvement recommendations."""
+    from cardioauth.demo import get_demo_chart
+
+    try:
+        chart_data = get_demo_chart(req.patient_id, req.procedure_code)
+    except (KeyError, Exception) as e:
+        raise HTTPException(status_code=404, detail=f"Patient/procedure not found: {e}")
+
+    doc_score = score_documentation_strength(chart_data)
+    recommendations = get_strength_recommendations(chart_data, req.procedure_code, req.payer)
+    projected = estimate_approval_without_p2p(
+        current_score=doc_score,
+        fixes_applied=[r["recommended_language"] for r in recommendations],
+        payer=req.payer,
+        cpt_code=req.procedure_code,
+    )
+
+    return {
+        "patient_id": req.patient_id,
+        "procedure_code": req.procedure_code,
+        "payer": req.payer,
+        "documentation_strength": doc_score,
+        "strength_label": (
+            "Strong" if doc_score >= 0.75 else
+            "Moderate" if doc_score >= 0.50 else
+            "Weak" if doc_score >= 0.25 else
+            "Critical — significant gaps"
+        ),
+        "projected_approval_after_fixes": projected,
+        "recommendations": recommendations,
+        "recommendation_count": len(recommendations),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Payer Rules / ICD-10 Checker / Medical Necessity Endpoints
+# ---------------------------------------------------------------------------
+
+
+class CheckAuthRequest(BaseModel):
+    cpt_code: str
+    payer: str
+
+
+class CheckCodesRequest(BaseModel):
+    cpt_code: str
+    icd10_codes: list[str]
+
+
+class CheckDocumentationRequest(BaseModel):
+    patient_id: str
+    procedure_code: str
+
+
+@app.get("/api/payer-matrix")
+def api_payer_matrix(payer: str | None = None) -> dict[str, Any]:
+    """Return the full payer authorization matrix, optionally filtered by payer name."""
+    return get_payer_matrix(payer=payer)
+
+
+@app.post("/api/check-auth")
+def api_check_auth(req: CheckAuthRequest) -> dict[str, Any]:
+    """Check whether prior auth is required for a CPT code + payer combination."""
+    auth_result = check_auth_required(req.cpt_code, req.payer)
+    flag_result = flag_at_order_time(req.cpt_code, req.payer)
+    return {
+        "auth_check": auth_result,
+        "order_alert": flag_result,
+    }
+
+
+@app.post("/api/check-codes")
+def api_check_codes(req: CheckCodesRequest) -> dict[str, Any]:
+    """Validate CPT + ICD-10 code pairings and return strength assessment."""
+    pairing_result = check_code_pairing(req.cpt_code, req.icd10_codes)
+
+    # If there are weak codes, include upgrade suggestions and impact estimate
+    upgrade_suggestions = []
+    for assessment in pairing_result.get("code_assessments", []):
+        if assessment.get("strength") == "weak":
+            suggestions = suggest_stronger_codes(req.cpt_code, assessment["icd10_code"])
+            upgrade_suggestions.append({
+                "weak_code": assessment["icd10_code"],
+                "suggestions": suggestions,
+            })
+
+    # Estimate clean claim impact if upgrades are available
+    impact = None
+    if upgrade_suggestions:
+        suggested_codes = []
+        for item in upgrade_suggestions:
+            if item["suggestions"]:
+                suggested_codes.append(item["suggestions"][0]["code"])
+            else:
+                suggested_codes.append(item["weak_code"])
+        # Replace weak codes with suggested; keep strong codes as-is
+        current = req.icd10_codes
+        impact = estimate_clean_claim_impact(current, suggested_codes)
+
+    pairing_result["detailed_upgrade_suggestions"] = upgrade_suggestions
+    pairing_result["clean_claim_impact"] = impact
+    return pairing_result
+
+
+@app.post("/api/check-documentation")
+def api_check_documentation(req: CheckDocumentationRequest) -> dict[str, Any]:
+    """Analyze chart documentation completeness for a procedure and return gaps + recommendations."""
+    from cardioauth.demo import get_demo_chart
+
+    try:
+        chart = get_demo_chart(req.patient_id, req.procedure_code)
+        chart_data = chart.model_dump()
+    except (KeyError, Exception) as e:
+        raise HTTPException(status_code=404, detail=f"Patient/procedure not found: {e}")
+
+    analysis = analyze_documentation(chart_data, req.procedure_code)
+
+    # Generate recommendations for missing elements
+    recommendations = []
+    if analysis.get("found") and analysis.get("missing_elements"):
+        recommendations = generate_recommendations(analysis["missing_elements"])
+
+    # Score
+    doc_score = score_doc_strength(chart_data, req.procedure_code)
+
+    return {
+        "patient_id": req.patient_id,
+        "procedure_code": req.procedure_code,
+        "analysis": analysis,
+        "documentation_score": doc_score,
+        "recommendations": recommendations,
+        "recommendation_count": len(recommendations),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Denial Analytics Endpoints
+# ---------------------------------------------------------------------------
+
+from cardioauth.engines.denial_analytics import (
+    get_denial_summary,
+    get_denials_by_payer,
+    get_denials_by_procedure,
+    get_denials_by_physician,
+    get_denials_by_reason,
+    get_denial_trends,
+    identify_patterns,
+    get_pending_at_risk,
+    calculate_revenue_impact,
+)
+
+
+@app.get("/api/denials/summary")
+def denials_summary():
+    """Overall denial statistics — total denials, appeal rate, overturn rate."""
+    return get_denial_summary()
+
+
+@app.get("/api/denials/by-payer")
+def denials_by_payer():
+    """Denial breakdown by insurance payer with rates and top reasons."""
+    return get_denials_by_payer()
+
+
+@app.get("/api/denials/by-procedure")
+def denials_by_procedure():
+    """Denial breakdown by cardiology procedure type."""
+    return get_denials_by_procedure()
+
+
+@app.get("/api/denials/by-physician")
+def denials_by_physician():
+    """Denial breakdown by physician with documentation scores."""
+    return get_denials_by_physician()
+
+
+@app.get("/api/denials/by-reason")
+def denials_by_reason():
+    """Denials grouped by category (documentation, coding, medical necessity, etc.)."""
+    return get_denials_by_reason()
+
+
+@app.get("/api/denials/trends")
+def denials_trends(months: int = 6):
+    """Monthly denial trend data."""
+    return get_denial_trends(months=months)
+
+
+@app.get("/api/denials/patterns")
+def denials_patterns():
+    """AI-detected denial patterns with actionable insights."""
+    return identify_patterns()
+
+
+@app.get("/api/denials/at-risk")
+def denials_at_risk():
+    """Pending requests that match historical denial patterns."""
+    return get_pending_at_risk()
+
+
+@app.get("/api/denials/revenue-impact")
+def denials_revenue_impact():
+    """Revenue impact analysis — lost, recovered, and preventable amounts."""
+    return calculate_revenue_impact()
 
 
 # Mount static files for favicon and assets
