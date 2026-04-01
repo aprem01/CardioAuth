@@ -24,6 +24,7 @@
     body { background: #0a0e1a; }
     .fade-in { animation: fadeIn 0.3s ease-in-out; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fadeIn { animation: fadeIn 0.4s ease-out; }
     @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 1; } 100% { transform: scale(1.4); opacity: 0; } }
     .pulse-ring { animation: pulse-ring 1.5s ease-out infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -332,11 +333,12 @@
       <div id="step-${idx}">
         <div class="flex items-center gap-4 py-2">
           <div id="step-icon-${idx}">${iconMap[status]}</div>
-          <div>
+          <div class="flex-1">
             <p id="step-name-${idx}" class="text-sm font-semibold ${textColor}">${name}</p>
             <p id="step-desc-${idx}" class="text-xs ${descColor}">${desc}</p>
           </div>
         </div>
+        <div id="step-output-${idx}" class="ml-12 mb-2 hidden"></div>
         ${connector}
       </div>`;
   }
@@ -419,7 +421,7 @@
       { idx: 3, name: 'REVIEW_READY', desc: 'Preparing physician review package...' },
     ];
 
-    function setStep(idx, status) {
+    function setStep(idx, status, output) {
       const iconMap = {
         waiting: `<div class="w-8 h-8 rounded-full border-2 border-surface-border flex items-center justify-center"><span class="text-xs text-slate-500">${idx + 1}</span></div>`,
         active: `<div class="w-8 h-8 rounded-full border-2 border-accent-cyan flex items-center justify-center relative"><div class="absolute inset-0 rounded-full border-2 border-accent-cyan pulse-ring"></div>${spinnerSVG(4)}</div>`,
@@ -432,6 +434,59 @@
       const descEl = document.getElementById(`step-desc-${idx}`);
       if (nameEl) nameEl.className = `text-sm font-semibold ${status === 'done' ? 'text-emerald-400' : status === 'active' ? 'text-accent-cyan' : 'text-slate-500'}`;
       if (descEl) descEl.className = `text-xs ${status === 'done' ? 'text-slate-400' : status === 'active' ? 'text-slate-300' : 'text-slate-600'}`;
+
+      // Show output when step is done
+      const outEl = document.getElementById(`step-output-${idx}`);
+      if (outEl && status === 'done' && output) {
+        outEl.className = 'ml-12 mb-2 bg-surface-card/50 border border-surface-border rounded-lg px-4 py-3 text-xs font-mono text-slate-400 space-y-1 animate-fadeIn';
+        outEl.innerHTML = output;
+      }
+    }
+
+    function buildChartOutput(cd) {
+      if (!cd) return '';
+      const dx = (cd.diagnosis_codes || []).slice(0, 3).map(c => `<span class="text-accent-cyan">${c}</span>`).join(', ');
+      const labs = (cd.relevant_labs || []).slice(0, 3).map(l => `${l.name}: <span class="text-white">${l.value} ${l.unit}</span>`).join(' | ');
+      const imgs = (cd.relevant_imaging || []).slice(0, 1).map(i => `${i.type}: <span class="text-white">${i.result_summary.substring(0, 80)}...</span>`).join('');
+      const meds = (cd.relevant_medications || []).slice(0, 3).map(m => m.name).join(', ');
+      return `
+        <div><span class="text-slate-500">Patient:</span> <span class="text-white">${cd.patient_id}</span> | <span class="text-slate-500">Procedure:</span> <span class="text-white">${cd.procedure_requested}</span></div>
+        <div><span class="text-slate-500">Diagnoses:</span> ${dx}</div>
+        <div><span class="text-slate-500">Labs:</span> ${labs}</div>
+        ${imgs ? `<div><span class="text-slate-500">Imaging:</span> ${imgs}</div>` : ''}
+        <div><span class="text-slate-500">Medications:</span> <span class="text-slate-300">${meds}</span></div>
+        <div><span class="text-slate-500">Confidence:</span> <span class="text-emerald-400">${(cd.confidence_score * 100).toFixed(0)}%</span></div>`;
+    }
+
+    function buildPolicyOutput(pd) {
+      if (!pd) return '';
+      const criteria = (pd.clinical_criteria || []).length;
+      const docs = (pd.documentation_required || []).length;
+      const denials = (pd.common_denial_reasons || []).slice(0, 2).map(d => `<span class="text-amber-300">${d}</span>`).join('; ');
+      return `
+        <div><span class="text-slate-500">Payer:</span> <span class="text-white">${pd.payer}</span> | <span class="text-slate-500">Auth Required:</span> <span class="${pd.auth_required ? 'text-amber-400' : 'text-emerald-400'}">${pd.auth_required ? 'Yes' : 'No'}</span></div>
+        <div><span class="text-slate-500">Clinical Criteria:</span> <span class="text-white">${criteria} requirements</span> | <span class="text-slate-500">Documents:</span> <span class="text-white">${docs} required</span></div>
+        <div><span class="text-slate-500">Submission:</span> <span class="text-slate-300">${pd.submission_format}</span> | <span class="text-slate-500">Turnaround:</span> <span class="text-slate-300">${pd.typical_turnaround_days} days</span></div>
+        <div><span class="text-slate-500">Top Denial Reasons:</span> ${denials}</div>`;
+    }
+
+    function buildReasoningOutput(api) {
+      const met = (api.criteria_met || []).length;
+      const notMet = (api.criteria_not_met || []).length;
+      const total = met + notMet;
+      const score = api.approval_likelihood?.score ?? 0;
+      const label = api.approval_likelihood?.label ?? 'N/A';
+      const scoreColor = score >= 0.8 ? 'text-emerald-400' : score >= 0.6 ? 'text-amber-400' : 'text-red-400';
+      const words = (api.narrative_draft || '').split(/\s+/).filter(Boolean).length;
+      const citations = (api.guideline_citations || []).length;
+      return `
+        <div><span class="text-slate-500">Criteria:</span> <span class="text-emerald-400">${met} met</span> / <span class="${notMet > 0 ? 'text-red-400' : 'text-slate-400'}">${notMet} gaps</span> out of ${total}</div>
+        <div><span class="text-slate-500">Approval Likelihood:</span> <span class="${scoreColor} font-semibold">${label} (${(score * 100).toFixed(0)}%)</span></div>
+        <div><span class="text-slate-500">Narrative:</span> <span class="text-slate-300">${words} words drafted</span> | <span class="text-slate-500">Citations:</span> <span class="text-slate-300">${citations} guidelines</span></div>`;
+    }
+
+    function buildReviewOutput() {
+      return `<div class="text-emerald-400">Review package assembled. Ready for physician review.</div>`;
     }
 
     // Animate steps while API call runs
@@ -450,18 +505,35 @@
       }
     }
 
-    // Fire the API call, then animate steps with guaranteed timing
+    // Fire the API call concurrently with animation
     const apiPromise = apiPost('/api/pa/request', req).catch(err => ({ _error: err }));
 
-    // Animate each step with minimum display time
-    for (let i = 0; i < steps.length; i++) {
-      if (i > 0) setStep(i - 1, 'done');
-      setStep(i, 'active');
-      await new Promise(r => setTimeout(r, minStepTime));
-    }
-
-    // Wait for API if still running
+    // Step 0: CHART_AGENT
+    setStep(0, 'active');
+    await new Promise(r => setTimeout(r, 1500));
     const result = await apiPromise;
+
+    if (result && !result._error) {
+      setStep(0, 'done', buildChartOutput(result.chart_data));
+      await new Promise(r => setTimeout(r, 800));
+
+      // Step 1: POLICY_AGENT
+      setStep(1, 'active');
+      await new Promise(r => setTimeout(r, 1500));
+      setStep(1, 'done', buildPolicyOutput(result.policy_data));
+      await new Promise(r => setTimeout(r, 800));
+
+      // Step 2: REASONING_AGENT
+      setStep(2, 'active');
+      await new Promise(r => setTimeout(r, 2000));
+      setStep(2, 'done', buildReasoningOutput(result));
+      await new Promise(r => setTimeout(r, 800));
+
+      // Step 3: REVIEW_READY
+      setStep(3, 'active');
+      await new Promise(r => setTimeout(r, 1000));
+      setStep(3, 'done', buildReviewOutput());
+    }
 
     if (result && result._error) {
       const errDiv = document.getElementById('pipeline-error');
