@@ -39,14 +39,37 @@
     ::-webkit-scrollbar-track { background: #0a0e1a; }
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
     select option { background: #1e293b; color: #e2e8f0; }
+    .sidebar { width: 260px; transition: transform 0.3s ease; }
+    .sidebar-link { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 0.5rem; font-size: 0.875rem; color: #94a3b8; transition: all 0.15s; }
+    .sidebar-link:hover { background: #283548; color: #e2e8f0; }
+    .sidebar-link.active { background: rgba(6,182,212,0.1); color: #06b6d4; border: 1px solid rgba(6,182,212,0.2); }
+    .sidebar-group-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: #475569; padding: 0.5rem 0.75rem 0.25rem; font-weight: 600; }
+    @media (max-width: 1023px) {
+      .sidebar { position: fixed; left: 0; top: 4rem; bottom: 0; z-index: 40; background: #0a0e1a; border-right: 1px solid #334155; transform: translateX(-100%); }
+      .sidebar.open { transform: translateX(0); }
+    }
+    .main-with-sidebar { margin-left: 260px; }
+    @media (max-width: 1023px) { .main-with-sidebar { margin-left: 0; } }
+    .gauge-bg { stroke: #334155; }
+    .gauge-fill { transition: stroke-dashoffset 1s ease; }
+    .tab-btn { padding: 0.5rem 1rem; font-size: 0.875rem; border-radius: 0.5rem; transition: all 0.15s; }
+    .tab-btn.active { background: rgba(6,182,212,0.15); color: #06b6d4; }
+    .tab-btn:not(.active) { color: #94a3b8; }
+    .tab-btn:not(.active):hover { background: #283548; color: #e2e8f0; }
+    .sortable { cursor: pointer; user-select: none; }
+    .sortable:hover { color: #06b6d4; }
   </style>
 </head>
 <body class="min-h-screen text-slate-200 font-sans">
 
   <!-- Top Nav -->
   <nav class="sticky top-0 z-50 bg-surface/80 backdrop-blur border-b border-surface-border">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      <a href="#dashboard" class="flex items-center gap-3 group">
+    <div class="max-w-full mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <button onclick="toggleSidebar()" class="lg:hidden p-1.5 rounded-lg hover:bg-surface-hover transition text-slate-400">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <a href="#dashboard" class="flex items-center gap-3 group">
         <div class="relative">
           <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-accent-blue to-accent-cyan flex items-center justify-center">
             <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
@@ -57,6 +80,7 @@
           <span class="hidden sm:inline text-xs text-slate-400 ml-2">Prior Authorization Automation</span>
         </div>
       </a>
+      </div>
       <div class="flex items-center gap-4">
         <button onclick="checkHealth()" class="text-xs text-slate-400 hover:text-accent-cyan transition" title="Check API health">
           <span id="health-dot" class="inline-block w-2 h-2 rounded-full bg-slate-600 mr-1"></span>API
@@ -67,8 +91,72 @@
     </div>
   </nav>
 
+  <!-- Sidebar -->
+  <aside id="sidebar" class="sidebar fixed top-16 bottom-0 left-0 overflow-y-auto bg-surface border-r border-surface-border hidden lg:block">
+    <nav class="p-3 space-y-1">
+      <!-- Core -->
+      <div class="sidebar-group-label">Core</div>
+      <a href="#dashboard" class="sidebar-link" data-route="dashboard">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1"/></svg>
+        Dashboard
+      </a>
+      <a href="#new" class="sidebar-link" data-route="new">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+        New PA Request
+      </a>
+
+      <!-- Pre-Submission Tools -->
+      <div class="sidebar-group-label mt-4">Pre-Submission Tools</div>
+      <a href="#payer-matrix" class="sidebar-link" data-route="payer-matrix">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+        Payer Matrix
+      </a>
+      <a href="#code-checker" class="sidebar-link" data-route="code-checker">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+        Code Checker
+      </a>
+      <a href="#doc-checker" class="sidebar-link" data-route="doc-checker">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        Doc Checker
+      </a>
+      <a href="#p2p-prevention" class="sidebar-link" data-route="p2p-prevention">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+        P2P Prevention
+      </a>
+
+      <!-- Tracking -->
+      <div class="sidebar-group-label mt-4">Tracking</div>
+      <a href="#auth-tracker" class="sidebar-link" data-route="auth-tracker">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        Auth Tracker
+      </a>
+      <a href="#devices" class="sidebar-link" data-route="devices">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+        Device Monitoring
+      </a>
+      <a href="#pre-check" class="sidebar-link" data-route="pre-check">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+        Pre-Procedure Check
+      </a>
+      <a href="#modifiers" class="sidebar-link" data-route="modifiers">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/></svg>
+        Modifier Checker
+      </a>
+
+      <!-- Analytics -->
+      <div class="sidebar-group-label mt-4">Analytics</div>
+      <a href="#denials" class="sidebar-link" data-route="denials">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        Denial Analytics
+      </a>
+    </nav>
+  </aside>
+
+  <!-- Mobile sidebar overlay -->
+  <div id="sidebar-overlay" class="fixed inset-0 bg-black/50 z-30 hidden lg:hidden" onclick="toggleSidebar()"></div>
+
   <!-- Main Content -->
-  <main id="app" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8"></main>
+  <main id="app" class="main-with-sidebar px-4 sm:px-6 lg:px-8 py-8 max-w-7xl"></main>
 
   <script>
   // ──────────────────────────── State ────────────────────────────
@@ -102,14 +190,44 @@
   // ──────────────────────────── Router ────────────────────────────
   function navigate(hash) { window.location.hash = hash; }
 
+  function toggleSidebar() {
+    const sb = document.getElementById('sidebar');
+    const ov = document.getElementById('sidebar-overlay');
+    sb.classList.toggle('open');
+    sb.classList.toggle('hidden');
+    ov.classList.toggle('hidden');
+  }
+
+  function updateSidebarActive(hash) {
+    const route = hash.replace('#','');
+    document.querySelectorAll('.sidebar-link').forEach(el => {
+      if (el.dataset.route === route) el.classList.add('active');
+      else el.classList.remove('active');
+    });
+  }
+
   function route() {
     const hash = window.location.hash || '#dashboard';
     const app = document.getElementById('app');
+    updateSidebarActive(hash);
+    // Close mobile sidebar on nav
+    const sb = document.getElementById('sidebar');
+    if (sb && sb.classList.contains('open')) toggleSidebar();
+
     if (hash === '#dashboard') app.innerHTML = renderDashboard();
     else if (hash === '#new') app.innerHTML = renderNewRequest();
     else if (hash === '#pipeline') app.innerHTML = renderPipeline();
     else if (hash === '#review') app.innerHTML = renderReview();
     else if (hash === '#submitted') app.innerHTML = renderSubmitted();
+    else if (hash === '#payer-matrix') { app.innerHTML = renderLoading('Payer Authorization Matrix'); loadPayerMatrix(); }
+    else if (hash === '#code-checker') app.innerHTML = renderCodeChecker();
+    else if (hash === '#doc-checker') app.innerHTML = renderDocChecker();
+    else if (hash === '#p2p-prevention') app.innerHTML = renderP2PPrevention();
+    else if (hash === '#auth-tracker') { app.innerHTML = renderLoading('Authorization Tracker'); loadAuthTracker(); }
+    else if (hash === '#devices') { app.innerHTML = renderLoading('Device Monitoring'); loadDevices(); }
+    else if (hash === '#pre-check') { app.innerHTML = renderLoading('Pre-Procedure Check'); loadPreCheck(); }
+    else if (hash === '#modifiers') app.innerHTML = renderModifierChecker();
+    else if (hash === '#denials') { app.innerHTML = renderLoading('Denial Analytics'); loadDenials(); }
     else { app.innerHTML = renderDashboard(); }
   }
 
@@ -606,13 +724,7 @@
     navigate('#review');
   }
 
-  // Hook into route to trigger pipeline
-  const _origRoute = route;
-  route = function() {
-    _origRoute();
-    const hash = window.location.hash || '#dashboard';
-    if (hash === '#pipeline') setTimeout(afterPipelineRender, 100);
-  };
+  // Pipeline hook is merged into the main route override below
 
   // ──────────────────────────── Fallback Demo Data ────────────────────────────
   function demoReviewData() {
@@ -949,12 +1061,13 @@ This procedure is essential for determining whether percutaneous coronary interv
     }
   }
 
-  // Word count on load
+  // Word count on load + pipeline trigger
   const _origRoute2 = route;
   route = function() {
     _origRoute2();
     const hash = window.location.hash || '#dashboard';
     if (hash === '#review') setTimeout(updateWordCount, 50);
+    if (hash === '#pipeline') setTimeout(afterPipelineRender, 100);
   };
 
   // ──────────────────────────── Submitted ────────────────────────────
@@ -1037,6 +1150,1021 @@ This procedure is essential for determining whether percutaneous coronary interv
       </div>
     </div>`;
   }
+  // ──────────────────────────── Shared: Loading & Breadcrumb ────────────────────────────
+  function renderLoading(title) {
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb(title)}
+      <div class="flex flex-col items-center justify-center py-20">
+        ${spinnerSVG(8)}
+        <p class="text-slate-400 mt-4">Loading ${title}...</p>
+      </div>
+    </div>`;
+  }
+
+  function breadcrumb(title) {
+    return `
+    <div class="flex items-center justify-between">
+      <button onclick="navigate('#dashboard')" class="text-sm text-slate-400 hover:text-accent-cyan transition flex items-center gap-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+        Dashboard
+      </button>
+      <h1 class="text-xl font-bold text-white">${title}</h1>
+    </div>`;
+  }
+
+  async function apiFetch(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    return res.json();
+  }
+
+  // ──────────────────────────── Payer Matrix (#payer-matrix) ────────────────────────────
+  async function loadPayerMatrix() {
+    const app = document.getElementById('app');
+    try {
+      const data = await apiFetch('/api/payer-matrix');
+      app.innerHTML = renderPayerMatrixPage(data);
+    } catch(e) {
+      app.innerHTML = renderError('Payer Matrix', e.message);
+    }
+  }
+
+  function renderPayerMatrixPage(data) {
+    const matrix = data.matrix || data;
+    // Extract payers and CPT codes
+    let payers = data.payers || [];
+    let cptCodes = data.cpt_codes || [];
+    let rows = data.matrix || [];
+
+    // If the API returns a flat array of objects
+    if (Array.isArray(data) && data.length > 0) {
+      rows = data;
+      payers = [...new Set(data.map(r => r.payer))];
+      cptCodes = [...new Set(data.map(r => r.cpt_code))];
+    }
+
+    // If data.matrix is an object keyed by CPT
+    if (!Array.isArray(rows) && typeof rows === 'object') {
+      const entries = [];
+      for (const [cpt, payerMap] of Object.entries(rows)) {
+        for (const [payer, info] of Object.entries(payerMap)) {
+          entries.push({ cpt_code: cpt, payer, ...info });
+        }
+      }
+      rows = entries;
+      if (!payers.length) payers = [...new Set(entries.map(r => r.payer))];
+      if (!cptCodes.length) cptCodes = [...new Set(entries.map(r => r.cpt_code))];
+    }
+
+    // Build lookup
+    const lookup = {};
+    rows.forEach(r => {
+      const key = `${r.cpt_code}|${r.payer}`;
+      lookup[key] = r;
+    });
+
+    function cellColor(entry) {
+      if (!entry) return 'bg-slate-700/30 text-slate-500';
+      const req = (entry.auth_required === true || entry.auth_required === 'yes' || entry.auth_required === 'Yes');
+      const cond = (entry.auth_required === 'conditional' || entry.conditions || entry.auth_required === 'Conditional');
+      if (!req && !cond) return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/20';
+      if (cond) return 'bg-amber-500/20 text-amber-400 border-amber-500/20';
+      return 'bg-red-500/20 text-red-400 border-red-500/20';
+    }
+
+    function cellText(entry) {
+      if (!entry) return '?';
+      const req = (entry.auth_required === true || entry.auth_required === 'yes' || entry.auth_required === 'Yes');
+      const cond = (entry.auth_required === 'conditional' || entry.conditions || entry.auth_required === 'Conditional');
+      if (!req && !cond) return 'No Auth';
+      if (cond) return 'Cond.';
+      return 'Required';
+    }
+
+    const payerHeaders = payers.map(p => `<th class="py-2 px-3 text-xs font-medium text-slate-400 text-center whitespace-nowrap">${p}</th>`).join('');
+
+    const tableRows = cptCodes.map(cpt => {
+      const cells = payers.map(p => {
+        const entry = lookup[`${cpt}|${p}`];
+        const color = cellColor(entry);
+        const text = cellText(entry);
+        const tooltip = entry?.conditions ? ` title="${escapeHtml(entry.conditions)}"` : '';
+        return `<td class="py-2 px-3 text-center"><span class="inline-block px-2 py-0.5 rounded text-xs font-medium border ${color}"${tooltip}>${text}</span></td>`;
+      }).join('');
+      return `<tr class="border-b border-surface-border/50 hover:bg-surface-hover transition"><td class="py-2 px-3 font-mono text-sm text-accent-cyan">${cpt}</td>${cells}</tr>`;
+    }).join('');
+
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Payer Authorization Matrix')}
+      <div class="flex items-center gap-4 flex-wrap">
+        <input id="matrix-search" type="text" placeholder="Search CPT code..." oninput="filterMatrix()" class="bg-surface border border-surface-border rounded-lg px-4 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none w-64">
+        <div class="flex items-center gap-3 text-xs">
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-emerald-500/30 border border-emerald-500/30"></span> No Auth</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-amber-500/30 border border-amber-500/30"></span> Conditional</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-500/30 border border-red-500/30"></span> Required</span>
+        </div>
+      </div>
+      ${card(`
+        <div class="overflow-x-auto">
+          <table id="matrix-table" class="w-full text-left">
+            <thead><tr class="border-b border-surface-border">
+              <th class="py-2 px-3 text-xs font-medium text-slate-400">CPT Code</th>
+              ${payerHeaders}
+            </tr></thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+      `)}
+      <p class="text-xs text-slate-500">${cptCodes.length} CPT codes across ${payers.length} payers. Hover conditional cells for details.</p>
+    </div>`;
+  }
+
+  function filterMatrix() {
+    const q = document.getElementById('matrix-search').value.toLowerCase();
+    const rows = document.querySelectorAll('#matrix-table tbody tr');
+    rows.forEach(row => {
+      const cpt = row.querySelector('td')?.textContent?.toLowerCase() || '';
+      row.style.display = cpt.includes(q) ? '' : 'none';
+    });
+  }
+
+  // ──────────────────────────── Code Checker (#code-checker) ────────────────────────────
+  function renderCodeChecker() {
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('ICD-10 Code Checker')}
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4">Check CPT / ICD-10 Pairing Strength</h3>
+        <form onsubmit="runCodeCheck(event)" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">CPT Code</label>
+            <select id="cc-cpt" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+              <option value="">Select CPT code...</option>
+              ${PROCEDURES.map(p => `<option value="${p.code}">${p.label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">ICD-10 Codes (comma-separated)</label>
+            <input id="cc-icd" type="text" placeholder="e.g. I25.10, I20.0, E11.9" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+          </div>
+          <button type="submit" id="cc-btn" class="px-6 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            Check Pairing
+          </button>
+        </form>
+      `)}
+      <div id="cc-results"></div>
+    </div>`;
+  }
+
+  async function runCodeCheck(e) {
+    e.preventDefault();
+    const btn = document.getElementById('cc-btn');
+    const resultsDiv = document.getElementById('cc-results');
+    const cpt = document.getElementById('cc-cpt').value;
+    const icd = document.getElementById('cc-icd').value.split(',').map(s => s.trim()).filter(Boolean);
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(4)} Checking...`;
+    resultsDiv.innerHTML = '';
+    try {
+      const data = await apiPost('/api/check-codes', { cpt_code: cpt, icd10_codes: icd });
+      const strength = data.strength || data.pairing_strength || 'unknown';
+      const strengthColor = strength === 'strong' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
+        strength === 'moderate' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+        'text-red-400 bg-red-500/10 border-red-500/20';
+      const suggestions = data.suggestions || data.recommended_codes || [];
+      resultsDiv.innerHTML = `
+        <div class="fade-in space-y-4">
+          ${card(`
+            <div class="flex items-center gap-4 mb-4">
+              <span class="text-sm font-medium text-slate-400">Pairing Strength:</span>
+              <span class="px-3 py-1 rounded-lg text-sm font-bold border ${strengthColor} uppercase">${strength}</span>
+            </div>
+            ${data.explanation ? `<p class="text-sm text-slate-300 mb-4">${data.explanation}</p>` : ''}
+            ${data.issues && data.issues.length ? `
+              <div class="mb-4">
+                <p class="text-sm font-medium text-red-400 mb-2">Issues Found:</p>
+                <ul class="space-y-1">${data.issues.map(i => `<li class="text-sm text-slate-300 flex items-start gap-2">${redX()} ${i}</li>`).join('')}</ul>
+              </div>` : ''}
+            ${suggestions.length ? `
+              <div>
+                <p class="text-sm font-medium text-accent-cyan mb-2">Suggested ICD-10 Codes:</p>
+                <div class="flex flex-wrap gap-2">${suggestions.map(s => {
+                  const code = typeof s === 'string' ? s : s.code;
+                  const desc = typeof s === 'string' ? '' : (s.description || '');
+                  return `<span class="bg-surface border border-accent-cyan/20 rounded-lg px-3 py-1 text-sm"><span class="text-accent-cyan font-mono">${code}</span>${desc ? ` <span class="text-slate-400">${desc}</span>` : ''}</span>`;
+                }).join('')}</div>
+              </div>` : ''}
+          `)}
+        </div>`;
+    } catch(err) {
+      resultsDiv.innerHTML = `<div class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">${err.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg> Check Pairing`;
+  }
+
+  // ──────────────────────────── Doc Checker (#doc-checker) ────────────────────────────
+  function renderDocChecker() {
+    const patientOpts = DEMO_PATIENTS.map(p => `<option value="${p.id}">${p.id} — ${p.label}</option>`).join('');
+    const procOpts = PROCEDURES.map(p => `<option value="${p.code}">${p.label}</option>`).join('');
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Documentation Checker')}
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4">Check Documentation Completeness</h3>
+        <form onsubmit="runDocCheck(event)" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Patient</label>
+            <select id="dc-patient" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+              <option value="">Select patient...</option>
+              ${patientOpts}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Procedure</label>
+            <select id="dc-proc" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+              <option value="">Select procedure...</option>
+              ${procOpts}
+            </select>
+          </div>
+          <button type="submit" id="dc-btn" class="px-6 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+            Check Documentation
+          </button>
+        </form>
+      `)}
+      <div id="dc-results"></div>
+    </div>`;
+  }
+
+  async function runDocCheck(e) {
+    e.preventDefault();
+    const btn = document.getElementById('dc-btn');
+    const resultsDiv = document.getElementById('dc-results');
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(4)} Analyzing...`;
+    resultsDiv.innerHTML = '';
+    try {
+      const data = await apiPost('/api/check-documentation', {
+        patient_id: document.getElementById('dc-patient').value,
+        procedure_code: document.getElementById('dc-proc').value
+      });
+      const gaps = data.gaps || data.missing || [];
+      const present = data.present || data.documented || [];
+      const recommendations = data.recommendations || [];
+      const score = data.completeness_score || data.score;
+
+      resultsDiv.innerHTML = `
+        <div class="fade-in space-y-4">
+          ${score !== undefined ? card(`
+            <div class="flex items-center gap-4">
+              <div class="w-16 h-16 rounded-full ${score >= 0.8 ? 'bg-emerald-500/10 border-emerald-500' : score >= 0.5 ? 'bg-amber-500/10 border-amber-500' : 'bg-red-500/10 border-red-500'} border-2 flex items-center justify-center">
+                <span class="${score >= 0.8 ? 'text-emerald-400' : score >= 0.5 ? 'text-amber-400' : 'text-red-400'} text-lg font-bold">${Math.round((typeof score === 'number' && score <= 1 ? score * 100 : score))}%</span>
+              </div>
+              <div>
+                <p class="text-sm text-slate-400">Documentation Completeness</p>
+                <p class="text-white font-semibold">${score >= 0.8 ? 'Good — Ready for submission' : score >= 0.5 ? 'Partial — Gaps need attention' : 'Incomplete — Major gaps found'}</p>
+              </div>
+            </div>
+          `) : ''}
+          ${card(`
+            <h4 class="text-sm font-semibold text-white mb-3">Documentation Checklist</h4>
+            <div class="space-y-2">
+              ${present.map(item => `
+                <div class="flex items-center gap-3 px-3 py-2 bg-emerald-500/5 border border-emerald-500/10 rounded-lg">
+                  ${greenCheck()}
+                  <span class="text-sm text-emerald-300">${typeof item === 'string' ? item : item.element || item.name}</span>
+                </div>
+              `).join('')}
+              ${gaps.map(item => `
+                <div class="flex items-center gap-3 px-3 py-2 bg-red-500/5 border border-red-500/10 rounded-lg">
+                  ${redX()}
+                  <div>
+                    <span class="text-sm text-red-300">${typeof item === 'string' ? item : item.element || item.name}</span>
+                    ${(item.recommendation || item.action) ? `<p class="text-xs text-amber-300 mt-0.5">${item.recommendation || item.action}</p>` : ''}
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `)}
+          ${recommendations.length ? card(`
+            <h4 class="text-sm font-semibold text-amber-400 mb-3">Recommendations</h4>
+            <ul class="space-y-2">${recommendations.map(r => `
+              <li class="text-sm text-slate-300 flex items-start gap-2">
+                <svg class="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                ${typeof r === 'string' ? r : r.text || r.description}
+              </li>
+            `).join('')}</ul>
+          `) : ''}
+        </div>`;
+    } catch(err) {
+      resultsDiv.innerHTML = `<div class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">${err.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg> Check Documentation`;
+  }
+
+  // ──────────────────────────── P2P Prevention (#p2p-prevention) ────────────────────────────
+  function renderP2PPrevention() {
+    const patientOpts = DEMO_PATIENTS.map(p => `<option value="${p.id}">${p.id} — ${p.label}</option>`).join('');
+    const procOpts = PROCEDURES.map(p => `<option value="${p.code}">${p.label}</option>`).join('');
+    const payerOpts = PAYERS.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('P2P Prevention')}
+      <div class="grid lg:grid-cols-2 gap-6">
+        ${card(`
+          <h3 class="text-lg font-semibold text-white mb-4">Predict Peer-to-Peer Review Risk</h3>
+          <form onsubmit="runP2P(event)" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1.5">Patient</label>
+              <select id="p2p-patient" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+                <option value="">Select patient...</option>
+                ${patientOpts}
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1.5">Procedure</label>
+              <select id="p2p-proc" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+                <option value="">Select procedure...</option>
+                ${procOpts}
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1.5">Payer</label>
+              <select id="p2p-payer" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+                <option value="">Select payer...</option>
+                ${payerOpts}
+              </select>
+            </div>
+            <div class="flex gap-3">
+              <button type="submit" id="p2p-btn" class="px-6 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                Predict P2P Risk
+              </button>
+              <button type="button" onclick="runStrengthScore()" id="ss-btn" class="px-6 py-2.5 rounded-lg border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/10 transition font-medium flex items-center gap-2">
+                Doc Strength
+              </button>
+            </div>
+          </form>
+        `)}
+        <div id="p2p-results" class="space-y-4">
+          <div class="bg-surface-card border border-surface-border rounded-xl p-6 flex items-center justify-center h-full">
+            <p class="text-slate-500 text-sm">Select patient, procedure, and payer then click Predict P2P Risk</p>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  async function runP2P(e) {
+    e.preventDefault();
+    const btn = document.getElementById('p2p-btn');
+    const resultsDiv = document.getElementById('p2p-results');
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(4)} Analyzing...`;
+    try {
+      const data = await apiPost('/api/predict-p2p', {
+        patient_id: document.getElementById('p2p-patient').value,
+        procedure_code: document.getElementById('p2p-proc').value,
+        payer: document.getElementById('p2p-payer').value
+      });
+      const likelihood = data.p2p_likelihood || data.likelihood || data.risk_score || 0;
+      const pct = typeof likelihood === 'number' && likelihood <= 1 ? Math.round(likelihood * 100) : likelihood;
+      const color = pct >= 70 ? 'red' : pct >= 40 ? 'amber' : 'emerald';
+      const triggers = data.trigger_factors || data.risk_factors || data.triggers || [];
+      const fixes = data.fixes || data.recommendations || data.suggested_fixes || [];
+
+      // SVG gauge
+      const radius = 50;
+      const circ = 2 * Math.PI * radius;
+      const offset = circ - (pct / 100) * circ;
+
+      resultsDiv.innerHTML = `
+        <div class="fade-in space-y-4">
+          ${card(`
+            <div class="flex flex-col items-center">
+              <p class="text-sm text-slate-400 mb-3">P2P Review Likelihood</p>
+              <svg width="130" height="130" viewBox="0 0 130 130" class="mb-2">
+                <circle cx="65" cy="65" r="${radius}" fill="none" class="gauge-bg" stroke-width="10"/>
+                <circle cx="65" cy="65" r="${radius}" fill="none" stroke="currentColor" stroke-width="10"
+                  class="gauge-fill text-${color}-400"
+                  stroke-dasharray="${circ}" stroke-dashoffset="${offset}"
+                  stroke-linecap="round" transform="rotate(-90 65 65)"/>
+                <text x="65" y="70" text-anchor="middle" class="text-2xl font-bold fill-current text-${color}-400">${pct}%</text>
+              </svg>
+              <p class="text-${color}-400 font-semibold">${pct >= 70 ? 'High Risk' : pct >= 40 ? 'Moderate Risk' : 'Low Risk'}</p>
+            </div>
+          `)}
+          ${triggers.length ? card(`
+            <h4 class="text-sm font-semibold text-red-400 mb-3">Trigger Factors</h4>
+            <ul class="space-y-2">${triggers.map(t => `
+              <li class="text-sm text-slate-300 flex items-start gap-2">
+                <svg class="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                ${typeof t === 'string' ? t : t.factor || t.description}
+              </li>
+            `).join('')}</ul>
+          `) : ''}
+          ${fixes.length ? card(`
+            <h4 class="text-sm font-semibold text-emerald-400 mb-3">Recommended Fixes</h4>
+            <ul class="space-y-2">${fixes.map(f => `
+              <li class="text-sm text-slate-300 flex items-start gap-2">
+                ${greenCheck()}
+                ${typeof f === 'string' ? f : f.action || f.description}
+              </li>
+            `).join('')}</ul>
+          `) : ''}
+        </div>`;
+    } catch(err) {
+      resultsDiv.innerHTML = `<div class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">${err.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg> Predict P2P Risk`;
+  }
+
+  async function runStrengthScore() {
+    const btn = document.getElementById('ss-btn');
+    const resultsDiv = document.getElementById('p2p-results');
+    const patientId = document.getElementById('p2p-patient').value;
+    const procCode = document.getElementById('p2p-proc').value;
+    const payer = document.getElementById('p2p-payer').value;
+    if (!patientId || !procCode || !payer) { alert('Select patient, procedure, and payer first'); return; }
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(4)} ...`;
+    try {
+      const data = await apiPost('/api/strength-score', { patient_id: patientId, procedure_code: procCode, payer: payer });
+      const score = data.strength_score || data.score || 0;
+      const pct = typeof score === 'number' && score <= 1 ? Math.round(score * 100) : score;
+      const color = pct >= 80 ? 'emerald' : pct >= 50 ? 'amber' : 'red';
+      const details = data.details || data.breakdown || [];
+      resultsDiv.innerHTML = `
+        <div class="fade-in space-y-4">
+          ${card(`
+            <div class="text-center">
+              <p class="text-sm text-slate-400 mb-2">Documentation Strength Score</p>
+              <p class="text-4xl font-bold text-${color}-400">${pct}%</p>
+              <p class="text-${color}-400 text-sm mt-1">${pct >= 80 ? 'Strong documentation' : pct >= 50 ? 'Moderate — room for improvement' : 'Weak — significant gaps'}</p>
+            </div>
+          `)}
+          ${details.length ? card(`
+            <h4 class="text-sm font-semibold text-white mb-3">Breakdown</h4>
+            <div class="space-y-3">${details.map(d => {
+              const s = d.score || d.strength || 0;
+              const dpct = typeof s === 'number' && s <= 1 ? Math.round(s * 100) : s;
+              const dc = dpct >= 80 ? 'emerald' : dpct >= 50 ? 'amber' : 'red';
+              return `<div>
+                <div class="flex justify-between text-sm mb-1"><span class="text-slate-300">${d.category || d.name}</span><span class="text-${dc}-400 font-mono">${dpct}%</span></div>
+                <div class="w-full h-2 bg-surface rounded-full overflow-hidden"><div class="h-full bg-${dc}-500 rounded-full" style="width:${dpct}%"></div></div>
+              </div>`;
+            }).join('')}</div>
+          `) : ''}
+        </div>`;
+    } catch(err) {
+      resultsDiv.innerHTML = `<div class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">${err.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = 'Doc Strength';
+  }
+
+  // ──────────────────────────── Auth Tracker (#auth-tracker) ────────────────────────────
+  async function loadAuthTracker() {
+    const app = document.getElementById('app');
+    try {
+      const [allAuths, expiring] = await Promise.all([
+        apiFetch('/api/authorizations'),
+        apiFetch('/api/authorizations/expiring?days=5')
+      ]);
+      app.innerHTML = renderAuthTrackerPage(
+        Array.isArray(allAuths) ? allAuths : allAuths.authorizations || [],
+        Array.isArray(expiring) ? expiring : expiring.authorizations || expiring.expiring || []
+      );
+    } catch(e) {
+      app.innerHTML = renderError('Auth Tracker', e.message);
+    }
+  }
+
+  function renderAuthTrackerPage(auths, expiring) {
+    const expiringBanner = expiring.length ? `
+      <div class="bg-amber-500/10 border border-amber-500/30 rounded-xl px-5 py-4 flex items-start gap-3">
+        <svg class="w-6 h-6 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <div>
+          <p class="text-amber-300 font-semibold">${expiring.length} Authorization${expiring.length > 1 ? 's' : ''} Expiring Within 5 Days</p>
+          <div class="mt-2 space-y-1">${expiring.map(e => `
+            <p class="text-sm text-amber-200">${e.patient_name || e.patient_id || 'Patient'} — ${e.procedure || e.cpt_code || ''} — Expires: ${e.expiration_date || e.expires || 'soon'}</p>
+          `).join('')}</div>
+        </div>
+      </div>` : '';
+
+    function authStatusBadge(auth) {
+      const status = auth.status || 'unknown';
+      const s = status.toLowerCase();
+      if (s === 'valid' || s === 'approved' || s === 'active') return `<span class="px-2.5 py-0.5 rounded-full text-xs font-medium border bg-emerald-500/20 text-emerald-400 border-emerald-500/30">${status}</span>`;
+      if (s === 'expiring' || s === 'expiring soon') return `<span class="px-2.5 py-0.5 rounded-full text-xs font-medium border bg-amber-500/20 text-amber-400 border-amber-500/30">${status}</span>`;
+      if (s === 'expired' || s === 'denied' || s === 'missing') return `<span class="px-2.5 py-0.5 rounded-full text-xs font-medium border bg-red-500/20 text-red-400 border-red-500/30">${status}</span>`;
+      return `<span class="px-2.5 py-0.5 rounded-full text-xs font-medium border bg-slate-500/20 text-slate-400 border-slate-500/30">${status}</span>`;
+    }
+
+    function daysRemaining(auth) {
+      const days = auth.days_remaining ?? auth.days_left;
+      if (days === undefined || days === null) return '<span class="text-slate-500">—</span>';
+      if (days <= 0) return '<span class="text-red-400 font-semibold">Expired</span>';
+      if (days <= 5) return `<span class="text-amber-400 font-semibold">${days}d</span>`;
+      return `<span class="text-emerald-400">${days}d</span>`;
+    }
+
+    const rows = auths.map(a => `
+      <tr class="border-b border-surface-border/50 hover:bg-surface-hover transition">
+        <td class="py-2.5 px-3 text-sm text-slate-300">${a.patient_name || a.patient_id || ''}</td>
+        <td class="py-2.5 px-3 font-mono text-sm text-accent-cyan">${a.auth_number || a.id || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-400">${a.procedure || a.cpt_code || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-400">${a.payer || ''}</td>
+        <td class="py-2.5 px-3">${authStatusBadge(a)}</td>
+        <td class="py-2.5 px-3 text-sm">${daysRemaining(a)}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-500">${a.expiration_date || a.expires || ''}</td>
+      </tr>
+    `).join('');
+
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Authorization Tracker')}
+      ${expiringBanner}
+      ${card(`
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold text-white">All Authorizations</h3>
+          <span class="text-sm text-slate-400">${auths.length} total</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead><tr class="border-b border-surface-border text-xs uppercase tracking-wider text-slate-500">
+              <th class="py-2 px-3">Patient</th>
+              <th class="py-2 px-3">Auth #</th>
+              <th class="py-2 px-3">Procedure</th>
+              <th class="py-2 px-3">Payer</th>
+              <th class="py-2 px-3">Status</th>
+              <th class="py-2 px-3">Days Left</th>
+              <th class="py-2 px-3">Expires</th>
+            </tr></thead>
+            <tbody>${rows || '<tr><td colspan="7" class="py-8 text-center text-slate-500">No authorizations found</td></tr>'}</tbody>
+          </table>
+        </div>
+      `)}
+    </div>`;
+  }
+
+  // ──────────────────────────── Device Monitoring (#devices) ────────────────────────────
+  async function loadDevices() {
+    const app = document.getElementById('app');
+    try {
+      const [allDevices, eligible] = await Promise.all([
+        apiFetch('/api/devices'),
+        apiFetch('/api/devices/eligible?days=14')
+      ]);
+      app.innerHTML = renderDevicesPage(
+        Array.isArray(allDevices) ? allDevices : allDevices.devices || [],
+        Array.isArray(eligible) ? eligible : eligible.devices || eligible.eligible || []
+      );
+    } catch(e) {
+      app.innerHTML = renderError('Device Monitoring', e.message);
+    }
+  }
+
+  function renderDevicesPage(devices, eligible) {
+    const eligibleIds = new Set(eligible.map(e => e.patient_id || e.id));
+
+    function billingBadge(d) {
+      const status = (d.billing_status || d.status || '').toLowerCase();
+      if (status === 'billed' || status === 'complete') return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/20">Billed</span>`;
+      if (status === 'eligible' || status === 'ready') return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/20">Eligible</span>`;
+      if (status === 'upcoming') return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/20">Upcoming</span>`;
+      return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400 border border-slate-500/20">${d.billing_status || d.status || 'Unknown'}</span>`;
+    }
+
+    const eligibleBanner = eligible.length ? `
+      <div class="bg-accent-cyan/10 border border-accent-cyan/30 rounded-xl px-5 py-4">
+        <p class="text-accent-cyan font-semibold">${eligible.length} Patient${eligible.length > 1 ? 's' : ''} Eligible for Billing in Next 14 Days</p>
+      </div>` : '';
+
+    const rows = devices.map(d => {
+      const isEligible = eligibleIds.has(d.patient_id || d.id);
+      return `
+      <tr class="border-b border-surface-border/50 hover:bg-surface-hover transition ${isEligible ? 'bg-accent-cyan/5' : ''}">
+        <td class="py-2.5 px-3 text-sm text-slate-300">${d.patient_name || d.patient_id || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-400">${d.device_type || d.device || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-400">${d.implant_date || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-white">${d.next_eligible_date || d.next_billing_date || ''}</td>
+        <td class="py-2.5 px-3">${billingBadge(d)}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-500">${d.last_billed || d.last_transmission || ''}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Device Monitoring')}
+      ${eligibleBanner}
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        ${statCard('Total Devices', devices.length, 'from-blue-500/10 to-cyan-500/10', 'text-accent-cyan')}
+        ${statCard('Eligible Now', eligible.length, 'from-emerald-500/10 to-emerald-600/10', 'text-emerald-400')}
+      </div>
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4">Device Patients</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead><tr class="border-b border-surface-border text-xs uppercase tracking-wider text-slate-500">
+              <th class="py-2 px-3">Patient</th>
+              <th class="py-2 px-3">Device</th>
+              <th class="py-2 px-3">Implant Date</th>
+              <th class="py-2 px-3">Next Eligible</th>
+              <th class="py-2 px-3">Billing Status</th>
+              <th class="py-2 px-3">Last Billed</th>
+            </tr></thead>
+            <tbody>${rows || '<tr><td colspan="6" class="py-8 text-center text-slate-500">No devices found</td></tr>'}</tbody>
+          </table>
+        </div>
+      `)}
+    </div>`;
+  }
+
+  // ──────────────────────────── Pre-Procedure Check (#pre-check) ────────────────────────────
+  async function loadPreCheck() {
+    const app = document.getElementById('app');
+    try {
+      const [upcoming, blocked] = await Promise.all([
+        apiFetch('/api/pre-check?days=7'),
+        apiFetch('/api/pre-check/blocked')
+      ]);
+      app.innerHTML = renderPreCheckPage(
+        Array.isArray(upcoming) ? upcoming : upcoming.procedures || [],
+        Array.isArray(blocked) ? blocked : blocked.procedures || blocked.blocked || []
+      );
+    } catch(e) {
+      app.innerHTML = renderError('Pre-Procedure Check', e.message);
+    }
+  }
+
+  function renderPreCheckPage(upcoming, blocked) {
+    const blockedBanner = blocked.length ? `
+      <div class="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 flex items-start gap-3">
+        <svg class="w-6 h-6 text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/></svg>
+        <div>
+          <p class="text-red-300 font-semibold">${blocked.length} Blocked Procedure${blocked.length > 1 ? 's' : ''}</p>
+          <div class="mt-2 space-y-1">${blocked.map(b => `
+            <p class="text-sm text-red-200">${b.patient_name || b.patient_id || 'Patient'} — ${b.procedure || b.cpt_code || ''}: <span class="text-red-400">${b.block_reason || b.reason || 'Missing authorization'}</span></p>
+          `).join('')}</div>
+        </div>
+      </div>` : '';
+
+    function checkStatusBadge(p) {
+      const status = (p.status || '').toLowerCase();
+      if (status === 'ready' || status === 'cleared' || status === 'complete') return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/20">${p.status}</span>`;
+      if (status === 'pending' || status === 'in progress') return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/20">${p.status}</span>`;
+      if (status === 'blocked' || status === 'missing') return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400 border border-red-500/20">${p.status}</span>`;
+      return `<span class="px-2 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400 border border-slate-500/20">${p.status || 'Unknown'}</span>`;
+    }
+
+    const rows = upcoming.map(p => `
+      <tr class="border-b border-surface-border/50 hover:bg-surface-hover transition">
+        <td class="py-2.5 px-3 text-sm text-slate-300">${p.patient_name || p.patient_id || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-400">${p.procedure || p.cpt_code || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-white">${p.scheduled_date || p.date || ''}</td>
+        <td class="py-2.5 px-3">${checkStatusBadge(p)}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-400">${p.auth_status || ''}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-400">${p.insurance_verified ? greenCheck() : redX()}</td>
+        <td class="py-2.5 px-3 text-sm text-slate-500">${(p.missing_items || p.issues || []).join(', ') || '—'}</td>
+      </tr>
+    `).join('');
+
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Pre-Procedure Check')}
+      ${blockedBanner}
+      <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        ${statCard('Upcoming (7d)', upcoming.length, 'from-blue-500/10 to-cyan-500/10', 'text-accent-cyan')}
+        ${statCard('Blocked', blocked.length, 'from-red-500/10 to-red-600/10', 'text-red-400')}
+        ${statCard('Ready', upcoming.filter(p => ['ready','cleared','complete'].includes((p.status||'').toLowerCase())).length, 'from-emerald-500/10 to-emerald-600/10', 'text-emerald-400')}
+      </div>
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4">Upcoming Procedures (Next 7 Days)</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead><tr class="border-b border-surface-border text-xs uppercase tracking-wider text-slate-500">
+              <th class="py-2 px-3">Patient</th>
+              <th class="py-2 px-3">Procedure</th>
+              <th class="py-2 px-3">Date</th>
+              <th class="py-2 px-3">Status</th>
+              <th class="py-2 px-3">Auth</th>
+              <th class="py-2 px-3">Insurance</th>
+              <th class="py-2 px-3">Issues</th>
+            </tr></thead>
+            <tbody>${rows || '<tr><td colspan="7" class="py-8 text-center text-slate-500">No upcoming procedures</td></tr>'}</tbody>
+          </table>
+        </div>
+      `)}
+    </div>`;
+  }
+
+  // ──────────────────────────── Modifier Checker (#modifiers) ────────────────────────────
+  function renderModifierChecker() {
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Modifier & Bundling Checker')}
+      <div class="grid lg:grid-cols-2 gap-6">
+        ${card(`
+          <h3 class="text-lg font-semibold text-white mb-4">Modifier Validation</h3>
+          <form onsubmit="runModifierCheck(event)" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1.5">CPT Codes (comma-separated)</label>
+              <input id="mod-cpts" type="text" placeholder="e.g. 93458, 93656" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1.5">Modifiers (comma-separated)</label>
+              <input id="mod-mods" type="text" placeholder="e.g. 26, TC, 59" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+            </div>
+            <button type="submit" id="mod-btn" class="px-6 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 transition-all flex items-center gap-2">
+              Check Modifiers
+            </button>
+          </form>
+          <div id="mod-results" class="mt-4"></div>
+        `)}
+        ${card(`
+          <h3 class="text-lg font-semibold text-white mb-4">Bundling Conflict Check</h3>
+          <form onsubmit="runBundlingCheck(event)" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1.5">CPT Codes (comma-separated)</label>
+              <input id="bun-cpts" type="text" placeholder="e.g. 93458, 93459, 93460" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan outline-none">
+            </div>
+            <button type="submit" id="bun-btn" class="px-6 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 transition-all flex items-center gap-2">
+              Check Bundling
+            </button>
+          </form>
+          <div id="bun-results" class="mt-4"></div>
+        `)}
+      </div>
+    </div>`;
+  }
+
+  async function runModifierCheck(e) {
+    e.preventDefault();
+    const btn = document.getElementById('mod-btn');
+    const resultsDiv = document.getElementById('mod-results');
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(4)} Checking...`;
+    try {
+      const data = await apiPost('/api/check-modifiers', {
+        cpt_codes: document.getElementById('mod-cpts').value.split(',').map(s => s.trim()),
+        modifiers: document.getElementById('mod-mods').value.split(',').map(s => s.trim())
+      });
+      const valid = data.valid || data.results?.filter(r => r.valid) || [];
+      const invalid = data.invalid || data.errors || data.results?.filter(r => !r.valid) || [];
+      const warnings = data.warnings || [];
+      resultsDiv.innerHTML = `
+        <div class="fade-in space-y-3">
+          ${(Array.isArray(data.results) ? data.results : []).map(r => `
+            <div class="flex items-start gap-2 px-3 py-2 ${r.valid ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-red-500/5 border-red-500/10'} border rounded-lg">
+              ${r.valid ? greenCheck() : redX()}
+              <div class="text-sm">
+                <span class="text-slate-300">${r.cpt_code || ''} + ${r.modifier || ''}</span>
+                ${r.message ? `<p class="text-xs text-slate-400 mt-0.5">${r.message}</p>` : ''}
+              </div>
+            </div>
+          `).join('')}
+          ${warnings.map(w => `<div class="text-sm text-amber-300 bg-amber-500/5 border border-amber-500/10 rounded-lg px-3 py-2">${w}</div>`).join('')}
+          ${!data.results && data.message ? `<p class="text-sm text-slate-300">${data.message}</p>` : ''}
+        </div>`;
+    } catch(err) {
+      resultsDiv.innerHTML = `<div class="text-sm text-red-400">${err.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = 'Check Modifiers';
+  }
+
+  async function runBundlingCheck(e) {
+    e.preventDefault();
+    const btn = document.getElementById('bun-btn');
+    const resultsDiv = document.getElementById('bun-results');
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(4)} Checking...`;
+    try {
+      const data = await apiPost('/api/check-bundling', {
+        cpt_codes: document.getElementById('bun-cpts').value.split(',').map(s => s.trim())
+      });
+      const conflicts = data.conflicts || data.bundles || [];
+      const clean = !conflicts.length;
+      resultsDiv.innerHTML = `
+        <div class="fade-in space-y-3">
+          ${clean ? `<div class="flex items-center gap-2 text-emerald-400 text-sm">${greenCheck()} No bundling conflicts detected</div>` : ''}
+          ${conflicts.map(c => `
+            <div class="bg-red-500/5 border border-red-500/10 rounded-lg px-4 py-3">
+              <p class="text-sm text-red-300 font-medium">${c.code_pair || c.codes?.join(' + ') || 'Conflict'}</p>
+              <p class="text-xs text-slate-400 mt-1">${c.reason || c.description || c.message || ''}</p>
+              ${c.resolution ? `<p class="text-xs text-amber-300 mt-1">${c.resolution}</p>` : ''}
+            </div>
+          `).join('')}
+          ${data.message ? `<p class="text-sm text-slate-300">${data.message}</p>` : ''}
+        </div>`;
+    } catch(err) {
+      resultsDiv.innerHTML = `<div class="text-sm text-red-400">${err.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = 'Check Bundling';
+  }
+
+  // ──────────────────────────── Denial Analytics (#denials) ────────────────────────────
+  async function loadDenials() {
+    const app = document.getElementById('app');
+    try {
+      const [summary, patterns, atRisk, revenue, byPayer, byProc, byPhys] = await Promise.all([
+        apiFetch('/api/denials/summary').catch(() => ({})),
+        apiFetch('/api/denials/patterns').catch(() => ({ patterns: [] })),
+        apiFetch('/api/denials/at-risk').catch(() => ({ at_risk: [] })),
+        apiFetch('/api/denials/revenue-impact').catch(() => ({})),
+        apiFetch('/api/denials/by-payer').catch(() => ({ breakdown: [] })),
+        apiFetch('/api/denials/by-procedure').catch(() => ({ breakdown: [] })),
+        apiFetch('/api/denials/by-physician').catch(() => ({ breakdown: [] }))
+      ]);
+      app.innerHTML = renderDenialsPage(summary, patterns, atRisk, revenue, byPayer, byProc, byPhys);
+    } catch(e) {
+      app.innerHTML = renderError('Denial Analytics', e.message);
+    }
+  }
+
+  function renderDenialsPage(summary, patternsData, atRiskData, revenueData, byPayerData, byProcData, byPhysData) {
+    const s = summary || {};
+    const totalDenials = s.total_denials || s.total || 0;
+    const totalLost = s.total_lost || s.revenue_lost || s.amount_lost || 0;
+    const appealRate = s.appeal_rate || 0;
+    const overturnRate = s.overturn_rate || 0;
+
+    const patterns = patternsData.patterns || patternsData || [];
+    const atRisk = atRiskData.at_risk || atRiskData || [];
+    const revenueImpact = revenueData;
+
+    const byPayer = byPayerData.breakdown || byPayerData || [];
+    const byProc = byProcData.breakdown || byProcData || [];
+    const byPhys = byPhysData.breakdown || byPhysData || [];
+
+    function fmtMoney(n) {
+      if (!n) return '$0';
+      return '$' + Number(n).toLocaleString();
+    }
+
+    function fmtPct(n) {
+      if (!n) return '0%';
+      return (typeof n === 'number' && n <= 1 ? Math.round(n * 100) : Math.round(n)) + '%';
+    }
+
+    const patternCards = (Array.isArray(patterns) ? patterns : []).map(p => `
+      <div class="bg-red-500/5 border border-red-500/20 rounded-xl px-5 py-4">
+        <div class="flex items-start gap-3">
+          <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          <div>
+            <p class="text-sm font-semibold text-red-300">${p.pattern || p.name || p.title || 'Pattern Detected'}</p>
+            <p class="text-xs text-slate-400 mt-1">${p.description || p.detail || p.insight || ''}</p>
+            ${p.frequency ? `<p class="text-xs text-red-400 mt-1">Frequency: ${p.frequency}</p>` : ''}
+            ${p.recommendation || p.action ? `<p class="text-xs text-amber-300 mt-2">Action: ${p.recommendation || p.action}</p>` : ''}
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    const atRiskRows = (Array.isArray(atRisk) ? atRisk : []).map(r => `
+      <tr class="border-b border-surface-border/50 hover:bg-surface-hover transition bg-amber-500/5">
+        <td class="py-2 px-3 text-sm text-slate-300">${r.patient_name || r.patient_id || ''}</td>
+        <td class="py-2 px-3 text-sm text-slate-400">${r.procedure || r.cpt_code || ''}</td>
+        <td class="py-2 px-3 text-sm text-slate-400">${r.payer || ''}</td>
+        <td class="py-2 px-3 text-sm text-amber-400">${r.risk_reason || r.matching_pattern || r.risk || ''}</td>
+        <td class="py-2 px-3 text-sm text-red-400 font-mono">${fmtPct(r.denial_probability || r.risk_score)}</td>
+      </tr>
+    `).join('');
+
+    function breakdownTable(data, labelField) {
+      if (!Array.isArray(data) || !data.length) return '<p class="text-sm text-slate-500">No data available</p>';
+      return `<div class="overflow-x-auto"><table class="w-full text-left text-sm">
+        <thead><tr class="border-b border-surface-border text-xs uppercase text-slate-500">
+          <th class="py-1.5 px-2">${labelField}</th>
+          <th class="py-1.5 px-2">Denials</th>
+          <th class="py-1.5 px-2">Amount</th>
+          <th class="py-1.5 px-2">Rate</th>
+        </tr></thead>
+        <tbody>${data.map(d => `
+          <tr class="border-b border-surface-border/50">
+            <td class="py-1.5 px-2 text-slate-300">${d.payer || d.procedure || d.physician || d.name || d.label || ''}</td>
+            <td class="py-1.5 px-2 text-red-400 font-mono">${d.count || d.denials || d.total || 0}</td>
+            <td class="py-1.5 px-2 text-slate-400 font-mono">${fmtMoney(d.amount || d.revenue_lost || d.total_lost)}</td>
+            <td class="py-1.5 px-2 text-amber-400 font-mono">${fmtPct(d.rate || d.denial_rate)}</td>
+          </tr>
+        `).join('')}</tbody>
+      </table></div>`;
+    }
+
+    // Revenue impact section
+    const ri = revenueImpact || {};
+    const totalRevLost = ri.total_lost || ri.total_revenue_lost || ri.total || 0;
+    const recoverable = ri.recoverable || ri.recoverable_amount || 0;
+    const projectedSavings = ri.projected_savings || ri.potential_savings || 0;
+
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Denial Analytics')}
+
+      <!-- Summary Stats -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        ${statCard('Total Denials', totalDenials, 'from-red-500/10 to-red-600/10', 'text-red-400')}
+        ${statCard('Revenue Lost', fmtMoney(totalLost), 'from-red-500/10 to-red-600/10', 'text-red-400')}
+        ${statCard('Appeal Rate', fmtPct(appealRate), 'from-amber-500/10 to-amber-600/10', 'text-amber-400')}
+        ${statCard('Overturn Rate', fmtPct(overturnRate), 'from-emerald-500/10 to-emerald-600/10', 'text-emerald-400')}
+      </div>
+
+      <!-- AI Patterns -->
+      ${(Array.isArray(patterns) && patterns.length) ? card(`
+        <h3 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+          AI-Detected Denial Patterns
+        </h3>
+        <div class="grid gap-4">${patternCards}</div>
+      `) : ''}
+
+      <!-- At-Risk Requests -->
+      ${(Array.isArray(atRisk) && atRisk.length) ? card(`
+        <h3 class="text-lg font-semibold text-amber-400 mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          At-Risk Pending Requests
+        </h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead><tr class="border-b border-surface-border text-xs uppercase tracking-wider text-slate-500">
+              <th class="py-2 px-3">Patient</th>
+              <th class="py-2 px-3">Procedure</th>
+              <th class="py-2 px-3">Payer</th>
+              <th class="py-2 px-3">Risk Factor</th>
+              <th class="py-2 px-3">Denial Prob</th>
+            </tr></thead>
+            <tbody>${atRiskRows}</tbody>
+          </table>
+        </div>
+      `) : ''}
+
+      <!-- Revenue Impact -->
+      ${card(`
+        <h3 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-accent-cyan" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Revenue Impact
+        </h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="bg-red-500/5 border border-red-500/20 rounded-lg p-4 text-center">
+            <p class="text-xs text-slate-400 mb-1">Total Revenue Lost</p>
+            <p class="text-2xl font-bold text-red-400">${fmtMoney(totalRevLost)}</p>
+          </div>
+          <div class="bg-amber-500/5 border border-amber-500/20 rounded-lg p-4 text-center">
+            <p class="text-xs text-slate-400 mb-1">Recoverable via Appeal</p>
+            <p class="text-2xl font-bold text-amber-400">${fmtMoney(recoverable)}</p>
+          </div>
+          <div class="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-4 text-center">
+            <p class="text-xs text-slate-400 mb-1">Projected Savings</p>
+            <p class="text-2xl font-bold text-emerald-400">${fmtMoney(projectedSavings)}</p>
+          </div>
+        </div>
+      `)}
+
+      <!-- Breakdowns with tabs -->
+      ${card(`
+        <div class="flex items-center gap-2 mb-4">
+          <button class="tab-btn active" onclick="showDenialTab('payer', this)">By Payer</button>
+          <button class="tab-btn" onclick="showDenialTab('procedure', this)">By Procedure</button>
+          <button class="tab-btn" onclick="showDenialTab('physician', this)">By Physician</button>
+        </div>
+        <div id="denial-tab-payer">${breakdownTable(byPayer, 'Payer')}</div>
+        <div id="denial-tab-procedure" class="hidden">${breakdownTable(byProc, 'Procedure')}</div>
+        <div id="denial-tab-physician" class="hidden">${breakdownTable(byPhys, 'Physician')}</div>
+      `)}
+    </div>`;
+  }
+
+  function showDenialTab(tab, btnEl) {
+    ['payer','procedure','physician'].forEach(t => {
+      const el = document.getElementById('denial-tab-' + t);
+      if (el) el.className = t === tab ? '' : 'hidden';
+    });
+    btnEl.parentElement.querySelectorAll('.tab-btn').forEach(b => {
+      b.className = b === btnEl ? 'tab-btn active' : 'tab-btn';
+    });
+  }
+
+  // ──────────────────────────── Error Renderer ────────────────────────────
+  function renderError(title, message) {
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb(title)}
+      <div class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">
+        <p class="font-semibold mb-1">Failed to load ${title}</p>
+        <p>${message}</p>
+        <button onclick="route()" class="mt-3 px-4 py-1.5 rounded-lg border border-surface-border text-slate-300 hover:bg-surface-hover transition text-sm">Retry</button>
+      </div>
+    </div>`;
+  }
+
   </script>
 </body>
 </html>
