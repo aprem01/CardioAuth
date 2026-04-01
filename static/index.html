@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
   <title>CardioAuth — Prior Authorization Automation</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -283,6 +285,7 @@
 
   async function submitRequest(e) {
     e.preventDefault();
+    console.log('submitRequest fired');
     const patientId = document.getElementById('f-patient').value;
     const procedureCode = document.getElementById('f-procedure').value;
     const payerEl = document.getElementById('f-payer');
@@ -290,6 +293,7 @@
     const payerName = payerEl.options[payerEl.selectedIndex].text;
 
     state._pendingRequest = { patient_id: patientId, procedure_code: procedureCode, payer_id: payerId, payer_name: payerName };
+    console.log('Navigating to pipeline with:', state._pendingRequest);
     navigate('#pipeline');
   }
 
@@ -407,6 +411,7 @@
   }
 
   async function runPipeline(req) {
+    console.log('runPipeline called with:', req);
     const steps = [
       { idx: 0, name: 'CHART_AGENT', desc: 'Extracting clinical data from patient records...' },
       { idx: 1, name: 'POLICY_AGENT', desc: 'Retrieving payer-specific criteria and guidelines...' },
