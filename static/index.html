@@ -578,7 +578,7 @@
           </div>
 
           <div id="custom-form-error" class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3"></div>
-          <button type="submit" id="custom-submit-btn"
+          <button type="button" onclick="document.getElementById('custom-pa-form').requestSubmit ? document.getElementById('custom-pa-form').requestSubmit() : submitCustomRequest(new Event('submit'))" id="custom-submit-btn"
             class="w-full py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
             Run Authorization Pipeline
@@ -725,6 +725,7 @@
 
   async function submitCustomRequest(e) {
     e.preventDefault();
+    console.log('submitCustomRequest fired');
     const payerEl = document.getElementById('c-payer');
 
     // Parse structured fields
