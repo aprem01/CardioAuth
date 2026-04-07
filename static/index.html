@@ -175,11 +175,15 @@
     { id: 'DEMO-001', label: 'Robert Chen, 67M' },
     { id: 'DEMO-002', label: 'Margaret Williams, 72F' },
     { id: 'DEMO-003', label: 'James Rodriguez, 55M' },
+    { id: 'DEMO-004', label: 'Patricia Kowalski, 64F — Cardiac Stress PET' },
+    { id: 'DEMO-005', label: 'Harold Washington, 71M — Lexiscan SPECT' },
   ];
   const PROCEDURES = [
     { code: '93458', label: 'Left Heart Catheterization (93458)' },
     { code: '33361', label: 'Transcatheter Aortic Valve Replacement — TAVR (33361)' },
     { code: '93656', label: 'Catheter Ablation of Atrial Fibrillation (93656)' },
+    { code: '78492', label: 'Cardiac Stress PET (78492)' },
+    { code: '78452', label: 'Lexiscan SPECT — Pharmacologic Stress MPI (78452)' },
   ];
   const PAYERS = [
     { id: 'UHC', name: 'UnitedHealthcare' },
@@ -314,6 +318,13 @@
     return `<svg class="spinner w-${size} h-${size} text-accent-cyan" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>`;
   }
 
+  function quickLink(hash, label, pathD) {
+    return `<a href="${hash}" class="bg-surface-card border border-surface-border rounded-xl p-4 hover:bg-surface-hover hover:border-accent-cyan/30 transition group flex items-center gap-3">
+      <svg class="w-5 h-5 text-slate-400 group-hover:text-accent-cyan transition" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="${pathD}"/></svg>
+      <span class="text-sm text-slate-300 group-hover:text-white transition">${label}</span>
+    </a>`;
+  }
+
   function greenCheck() {
     return `<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>`;
   }
@@ -376,6 +387,15 @@
           <p class="text-sm text-slate-400 mb-3">By Payer</p>
           <div id="analytics-payers" class="space-y-2 text-xs text-slate-300">Loading...</div>
         </div>
+      </div>
+
+      <!-- Quick Access -->
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        ${quickLink('#payer-matrix', 'Payer Matrix', 'M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z')}
+        ${quickLink('#code-checker', 'Code Checker', 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4')}
+        ${quickLink('#auth-tracker', 'Auth Tracker', 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z')}
+        ${quickLink('#denials', 'Denial Analytics', 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z')}
+        ${quickLink('#p2p-prevention', 'P2P Prevention', 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z')}
       </div>
 
       <!-- Table -->

@@ -299,6 +299,127 @@ DEMO_PATIENTS: dict[str, dict] = {
     },
 }
 
+    # ======================================================================
+    # Patient 4 — Cardiac Stress PET (CPT 78492)
+    # ======================================================================
+    "DEMO-004": {
+        "mrn": "DEMO-004",
+        "procedure": "Cardiac Stress PET Myocardial Perfusion Imaging",
+        "cpt": "78492",
+        "diagnoses": [
+            {"code": "I25.10", "description": "Atherosclerotic heart disease of native coronary artery"},
+            {"code": "R07.89", "description": "Other chest pain"},
+            {"code": "E11.65", "description": "Type 2 diabetes mellitus with hyperglycemia"},
+            {"code": "I10", "description": "Essential (primary) hypertension"},
+            {"code": "E78.5", "description": "Dyslipidemia, unspecified"},
+        ],
+        "labs": [
+            {"name": "HbA1c", "value": "8.1", "date": "2025-12-05", "unit": "%", "flag": "high"},
+            {"name": "LDL Cholesterol", "value": "142", "date": "2025-12-05", "unit": "mg/dL", "flag": "high"},
+            {"name": "Creatinine", "value": "0.9", "date": "2025-12-18", "unit": "mg/dL", "flag": ""},
+            {"name": "BNP", "value": "98", "date": "2025-12-18", "unit": "pg/mL", "flag": ""},
+            {"name": "Troponin-I (high-sensitivity)", "value": "<0.01", "date": "2025-12-18", "unit": "ng/mL", "flag": ""},
+            {"name": "eGFR", "value": "82", "date": "2025-12-18", "unit": "mL/min/1.73m2", "flag": ""},
+        ],
+        "imaging": [
+            {
+                "type": "Exercise Treadmill Test (Bruce Protocol)",
+                "date": "2025-11-10",
+                "result_summary": "EQUIVOCAL/NON-DIAGNOSTIC. Achieved 6.0 METs, 78% maximum predicted heart rate (submaximal). Non-specific ST-segment changes in leads II, III, aVF (1mm horizontal depression). Test terminated due to fatigue and dyspnea. Inadequate heart rate response limits diagnostic accuracy.",
+                "ordering_provider": "Dr. Peter Ramirez",
+            },
+            {
+                "type": "Transthoracic Echocardiogram",
+                "date": "2025-11-12",
+                "result_summary": "LIMITED STUDY due to body habitus (BMI 38). LVEF estimated 50-55% (limited windows). No significant valvular disease visualized. Technically limited — suboptimal apical views preclude accurate wall motion assessment.",
+                "ordering_provider": "Dr. Peter Ramirez",
+            },
+        ],
+        "medications": [
+            {"name": "Metformin", "dose": "1000 mg PO BID", "start_date": "2023-06-01", "indication": "Type 2 diabetes mellitus"},
+            {"name": "Lisinopril", "dose": "20 mg PO daily", "start_date": "2022-01-15", "indication": "Hypertension"},
+            {"name": "Atorvastatin", "dose": "40 mg PO daily", "start_date": "2022-01-15", "indication": "Dyslipidemia"},
+            {"name": "Aspirin", "dose": "81 mg PO daily", "start_date": "2022-01-15", "indication": "Primary prevention"},
+        ],
+        "prior_treatments": [
+            "Exercise stress test (2025-11-10) — non-diagnostic, submaximal heart rate, equivocal ST changes",
+            "Stress echocardiography attempted — technically limited due to BMI 38 (poor acoustic windows)",
+            "Medical therapy for risk factors (statin, ACEi, aspirin, metformin) — ongoing",
+        ],
+        "comorbidities": [
+            "Type 2 diabetes mellitus with hyperglycemia (HbA1c 8.1%)",
+            "Essential hypertension (controlled)",
+            "Obesity (BMI 38)",
+            "Dyslipidemia (LDL 142, above goal)",
+            "Family history premature CAD (father MI age 52)",
+        ],
+        "attending": "Dr. Peter Ramirez",
+        "insurance_id": "UHC-88432109",
+        "payer": "UnitedHealthcare",
+    },
+    # ======================================================================
+    # Patient 5 — Lexiscan SPECT (CPT 78452 with pharmacologic stress)
+    # ======================================================================
+    "DEMO-005": {
+        "mrn": "DEMO-005",
+        "procedure": "Lexiscan (Regadenoson) Pharmacologic Stress SPECT MPI",
+        "cpt": "78452",
+        "diagnoses": [
+            {"code": "I25.10", "description": "Atherosclerotic heart disease of native coronary artery"},
+            {"code": "I25.710", "description": "Atherosclerosis of coronary artery bypass graft with unstable angina"},
+            {"code": "R06.00", "description": "Dyspnea, unspecified"},
+            {"code": "M17.0", "description": "Bilateral primary osteoarthritis of knee"},
+            {"code": "I50.9", "description": "Heart failure, unspecified"},
+        ],
+        "labs": [
+            {"name": "BNP", "value": "445", "date": "2026-01-08", "unit": "pg/mL", "flag": "high"},
+            {"name": "Troponin-I (high-sensitivity)", "value": "0.03", "date": "2026-01-08", "unit": "ng/mL", "flag": "borderline"},
+            {"name": "Creatinine", "value": "1.3", "date": "2026-01-08", "unit": "mg/dL", "flag": "high"},
+            {"name": "eGFR", "value": "52", "date": "2026-01-08", "unit": "mL/min/1.73m2", "flag": "low"},
+            {"name": "HbA1c", "value": "6.8", "date": "2025-12-20", "unit": "%", "flag": "borderline"},
+            {"name": "LDL Cholesterol", "value": "72", "date": "2025-12-20", "unit": "mg/dL", "flag": ""},
+        ],
+        "imaging": [
+            {
+                "type": "Transthoracic Echocardiogram",
+                "date": "2025-10-22",
+                "result_summary": "LVEF 45% (mildly reduced). Mild global hypokinesis. Grade 2 diastolic dysfunction. Mild mitral regurgitation. LV end-diastolic dimension 5.4 cm. No significant pericardial effusion.",
+                "ordering_provider": "Dr. Peter Ramirez",
+            },
+            {
+                "type": "Coronary Angiography (prior PCI)",
+                "date": "2023-05-18",
+                "result_summary": "PCI with drug-eluting stent (DES) to mid-LAD. 90% stenosis reduced to 0% residual. RCA with 50% mid-vessel stenosis (deferred). LCx non-obstructive.",
+                "ordering_provider": "Dr. Sarah Chen",
+            },
+        ],
+        "medications": [
+            {"name": "Metoprolol Succinate (Toprol-XL)", "dose": "100 mg PO daily", "start_date": "2023-05-20", "indication": "CAD, rate control"},
+            {"name": "Clopidogrel (Plavix)", "dose": "75 mg PO daily", "start_date": "2023-05-18", "indication": "Post-PCI dual antiplatelet"},
+            {"name": "Atorvastatin", "dose": "80 mg PO daily", "start_date": "2023-05-18", "indication": "CAD, dyslipidemia"},
+            {"name": "Lisinopril", "dose": "40 mg PO daily", "start_date": "2020-03-01", "indication": "HTN, cardioprotection"},
+            {"name": "Furosemide", "dose": "20 mg PO daily", "start_date": "2025-08-15", "indication": "Volume overload, HF"},
+            {"name": "Aspirin", "dose": "81 mg PO daily", "start_date": "2023-05-18", "indication": "CAD secondary prevention"},
+        ],
+        "prior_treatments": [
+            "PCI with DES to mid-LAD (2023-05-18) — deferred RCA 50% stenosis",
+            "Optimal medical therapy (beta-blocker, DAPT, statin, ACEi) — on max tolerated doses",
+            "Unable to perform exercise stress testing due to severe bilateral knee osteoarthritis — functional limitation documented by orthopedics",
+            "Cardiac rehabilitation (2023) — completed, but unable to continue due to knee pain progression",
+        ],
+        "comorbidities": [
+            "Coronary artery disease s/p PCI with DES to LAD (2023)",
+            "Heart failure with mildly reduced EF (LVEF 45%)",
+            "CKD Stage 3a (eGFR 52)",
+            "Bilateral primary osteoarthritis of knees (unable to exercise)",
+            "Type 2 diabetes mellitus (controlled, HbA1c 6.8%)",
+        ],
+        "attending": "Dr. Peter Ramirez",
+        "insurance_id": "AETNA-55219084",
+        "payer": "Aetna",
+    },
+}
+
 # ---------------------------------------------------------------------------
 # ICD-10 Code Descriptions — lookup dict for all codes used by demo patients
 # ---------------------------------------------------------------------------
@@ -324,6 +445,13 @@ ICD10_DESCRIPTIONS: dict[str, str] = {
     "R00.0": "Tachycardia, unspecified",
     "R42": "Dizziness and giddiness",
     "E66.01": "Morbid (severe) obesity due to excess calories",
+    # Patient 4 — Cardiac Stress PET
+    "R07.89": "Other chest pain",
+    "E11.65": "Type 2 diabetes mellitus with hyperglycemia",
+    # Patient 5 — Lexiscan SPECT
+    "I25.710": "Atherosclerosis of coronary artery bypass graft with unstable angina",
+    "M17.0": "Bilateral primary osteoarthritis of knee",
+    "I50.9": "Heart failure, unspecified",
 }
 
 # ---------------------------------------------------------------------------
@@ -334,6 +462,8 @@ DEMO_PATIENT_INFO: dict[str, dict] = {
     "DEMO-001": {"name": "Robert J. Harmon", "age": 67, "sex": "M", "mrn": "DEMO-001"},
     "DEMO-002": {"name": "Margaret A. Chen", "age": 72, "sex": "F", "mrn": "DEMO-002"},
     "DEMO-003": {"name": "David L. Thompson", "age": 55, "sex": "M", "mrn": "DEMO-003"},
+    "DEMO-004": {"name": "Patricia Kowalski", "age": 64, "sex": "F", "mrn": "DEMO-004"},
+    "DEMO-005": {"name": "Harold Washington", "age": 71, "sex": "M", "mrn": "DEMO-005"},
 }
 
 # ---------------------------------------------------------------------------
@@ -949,6 +1079,224 @@ DEMO_POLICIES: dict[str, dict[str, dict]] = {
             ],
             "policy_source": "BCBS Medical Policy: Catheter Ablation for Atrial Fibrillation, Policy 2024-EP-0067",
             "policy_last_updated": "2025-06-01",
+        },
+    },
+    # ======================================================================
+    # Cardiac Stress PET (CPT 78492)
+    # ======================================================================
+    "78492": {
+        "UnitedHealthcare": {
+            "payer": "UnitedHealthcare",
+            "procedure": "Cardiac Stress PET Myocardial Perfusion Imaging",
+            "cpt_code": "78492",
+            "auth_required": True,
+            "clinical_criteria": [
+                {"criterion": "Prior non-diagnostic or equivocal stress test (exercise, SPECT, or stress echo)", "required": True, "evidence_type": "imaging", "acceptable_values": "Non-diagnostic ETT, equivocal SPECT, technically limited stress echo with documented reason"},
+                {"criterion": "Clinical indication for myocardial perfusion imaging (suspected or known CAD)", "required": True, "evidence_type": "clinical note", "acceptable_values": "Chest pain, dyspnea, abnormal ECG, known CAD with change in symptoms, pre-operative risk stratification"},
+                {"criterion": "Documentation of why PET is required over SPECT", "required": True, "evidence_type": "clinical note", "acceptable_values": "BMI >= 35 (attenuation artifact), prior non-diagnostic SPECT, breast attenuation limiting SPECT, need for quantitative flow reserve"},
+                {"criterion": "BMI documented if obesity is the indication for PET over SPECT", "required": True, "evidence_type": "clinical note", "acceptable_values": "BMI >= 35 with documented poor acoustic windows or prior attenuation artifacts"},
+                {"criterion": "No prior cardiac PET within 12 months unless new symptoms", "required": True, "evidence_type": "clinical note", "acceptable_values": "More than 12 months since last PET, or documented new/worsening symptoms with clinical rationale for repeat"},
+            ],
+            "documentation_required": [
+                "Prior stress test report showing non-diagnostic or equivocal result",
+                "Clinical note with symptoms and indication for advanced imaging",
+                "BMI documentation and justification for PET over SPECT",
+                "Relevant lab work (troponin, BNP, metabolic panel)",
+                "Current medication list",
+                "Cardiovascular risk factor documentation",
+            ],
+            "submission_format": "portal",
+            "typical_turnaround_days": 5,
+            "common_denial_reasons": [
+                "PET not medically necessary when SPECT is available and not tried",
+                "BMI not documented or below threshold for PET justification",
+                "Prior stress test was not truly non-diagnostic — payer disagrees with interpretation",
+                "No documentation of why standard SPECT would be inadequate",
+                "Frequency — prior cardiac imaging within 12 months without documented clinical change",
+            ],
+            "appeal_success_factors": [
+                "Include prior non-diagnostic stress test report with specific limitations noted",
+                "Document BMI with calculation and note poor acoustic windows on echo",
+                "Cite ACC AUC for cardiac PET (appropriate use criteria score)",
+                "Peer-to-peer with nuclear cardiologist explaining attenuation artifact issue",
+            ],
+            "policy_source": "UnitedHealthcare Commercial Medical Policy: Cardiac PET Imaging, Policy Number 2025T0501U",
+            "policy_last_updated": "2025-10-01",
+        },
+        "Aetna": {
+            "payer": "Aetna",
+            "procedure": "Cardiac Stress PET Myocardial Perfusion Imaging",
+            "cpt_code": "78492",
+            "auth_required": True,
+            "clinical_criteria": [
+                {"criterion": "Appropriate clinical indication per ACC AUC", "required": True, "evidence_type": "clinical note", "acceptable_values": "Suspected CAD with intermediate pre-test probability, known CAD with change in clinical status, pre-operative cardiac risk assessment"},
+                {"criterion": "Documentation of why PET over SPECT is clinically necessary", "required": True, "evidence_type": "clinical note", "acceptable_values": "BMI >= 35, equivocal SPECT, breast attenuation on prior SPECT, need for absolute myocardial blood flow quantification"},
+                {"criterion": "Prior non-invasive test was non-diagnostic or technically limited", "required": True, "evidence_type": "imaging", "acceptable_values": "Non-diagnostic ETT, equivocal or technically limited SPECT or stress echo report"},
+                {"criterion": "Relevant cardiovascular risk factors documented", "required": True, "evidence_type": "clinical note", "acceptable_values": "Diabetes, hypertension, dyslipidemia, family history, smoking, documented in assessment"},
+            ],
+            "documentation_required": [
+                "Prior imaging report showing non-diagnostic/equivocal result",
+                "Cardiology consultation with clinical rationale for PET",
+                "BMI and body habitus documentation",
+                "Cardiovascular risk assessment",
+            ],
+            "submission_format": "portal",
+            "typical_turnaround_days": 5,
+            "common_denial_reasons": [
+                "PET over SPECT justification insufficient",
+                "Prior stress test not clearly non-diagnostic",
+                "No trial of SPECT before requesting PET",
+                "Indication does not meet ACC appropriate use criteria",
+            ],
+            "appeal_success_factors": [
+                "Detailed body habitus documentation with echo limitation examples",
+                "ACC AUC score documentation (appropriate use)",
+                "Nuclear cardiologist letter of medical necessity",
+            ],
+            "policy_source": "Aetna Clinical Policy Bulletin: Cardiac PET, Number 0786",
+            "policy_last_updated": "2025-09-15",
+        },
+        "Blue Cross Blue Shield": {
+            "payer": "Blue Cross Blue Shield",
+            "procedure": "Cardiac Stress PET Myocardial Perfusion Imaging",
+            "cpt_code": "78492",
+            "auth_required": True,
+            "clinical_criteria": [
+                {"criterion": "Prior non-diagnostic conventional stress testing documented", "required": True, "evidence_type": "imaging", "acceptable_values": "Non-diagnostic ETT, equivocal SPECT, technically limited stress echo with reason"},
+                {"criterion": "BMI >= 35 or documented attenuation artifact on prior SPECT", "required": True, "evidence_type": "clinical note", "acceptable_values": "BMI calculation with height/weight, or prior SPECT report noting attenuation artifact"},
+                {"criterion": "Symptoms consistent with CAD or known CAD with clinical change", "required": True, "evidence_type": "clinical note", "acceptable_values": "New or worsening chest pain, dyspnea, syncope, or documented ischemic equivalent"},
+                {"criterion": "Peer-to-peer review if no prior imaging on file", "required": False, "evidence_type": "clinical note", "acceptable_values": "Peer-to-peer with BCBS medical director — required if PET is requested without prior non-diagnostic imaging"},
+            ],
+            "documentation_required": [
+                "Prior stress test reports (all modalities attempted)",
+                "BMI calculation with height and weight",
+                "Cardiology note with symptom assessment and clinical rationale",
+                "ACC Appropriate Use Criteria score if available",
+            ],
+            "submission_format": "fax",
+            "typical_turnaround_days": 7,
+            "common_denial_reasons": [
+                "SPECT not attempted before PET — must demonstrate SPECT inadequacy first",
+                "BMI below 35 without other documented reason for PET over SPECT",
+                "Prior imaging not provided or not clearly non-diagnostic",
+                "Peer-to-peer required but not completed",
+            ],
+            "appeal_success_factors": [
+                "Complete imaging history showing progression from ETT to echo to SPECT limitation",
+                "Peer-to-peer with nuclear cardiologist",
+                "ACC AUC appropriate use documentation",
+                "Published literature supporting PET for specific patient population",
+            ],
+            "policy_source": "BCBS Medical Policy: Cardiac PET Imaging, Policy 2025-NUC-0042",
+            "policy_last_updated": "2025-08-01",
+        },
+    },
+    # ======================================================================
+    # Lexiscan SPECT — Pharmacologic Stress MPI (CPT 78452)
+    # ======================================================================
+    "78452": {
+        "UnitedHealthcare": {
+            "payer": "UnitedHealthcare",
+            "procedure": "Lexiscan (Regadenoson) Pharmacologic Stress SPECT MPI",
+            "cpt_code": "78452",
+            "auth_required": True,
+            "clinical_criteria": [
+                {"criterion": "Documented inability to perform adequate exercise stress test", "required": True, "evidence_type": "clinical note", "acceptable_values": "Orthopedic limitation, severe COPD, PVD, deconditioning, neurologic impairment — specific reason documented"},
+                {"criterion": "Clinical indication for myocardial perfusion imaging", "required": True, "evidence_type": "clinical note", "acceptable_values": "Known CAD with change in symptoms, suspected CAD with intermediate-high pre-test probability, pre-operative risk stratification, post-revascularization surveillance"},
+                {"criterion": "Appropriate timing since last myocardial perfusion study", "required": True, "evidence_type": "clinical note", "acceptable_values": "No MPI within 12 months unless new symptoms, hospitalization, or revascularization"},
+                {"criterion": "Physical limitation preventing exercise specifically documented", "required": True, "evidence_type": "clinical note", "acceptable_values": "Must state specific condition and why it prevents exercise — not just 'unable to exercise'"},
+            ],
+            "documentation_required": [
+                "Cardiology consultation note with clinical indication",
+                "Documentation of exercise limitation with specific reason",
+                "Prior cardiac history and revascularization dates if applicable",
+                "Current medication list",
+                "Recent labs (BMP, troponin if acute)",
+            ],
+            "submission_format": "portal",
+            "typical_turnaround_days": 3,
+            "common_denial_reasons": [
+                "Exercise limitation not documented — note just says 'unable to exercise' without specific reason",
+                "No indication for pharmacologic over exercise stress — patient may be able to exercise",
+                "Frequency — prior MPI within 12 months without documented clinical change",
+                "Clinical indication insufficient — screening in asymptomatic patient not covered",
+            ],
+            "appeal_success_factors": [
+                "Orthopedic or other specialist documentation of exercise limitation",
+                "Specific functional limitation described (can't walk >1 block, etc.)",
+                "Timeline of symptom change since last study",
+                "ACC AUC appropriate use score",
+            ],
+            "policy_source": "UnitedHealthcare Commercial Medical Policy: Myocardial Perfusion Imaging, Policy Number 2025T0488U",
+            "policy_last_updated": "2025-11-01",
+        },
+        "Aetna": {
+            "payer": "Aetna",
+            "procedure": "Lexiscan (Regadenoson) Pharmacologic Stress SPECT MPI",
+            "cpt_code": "78452",
+            "auth_required": True,
+            "clinical_criteria": [
+                {"criterion": "Functional limitation preventing exercise documented with specific diagnosis", "required": True, "evidence_type": "clinical note", "acceptable_values": "Musculoskeletal, neurologic, pulmonary, or vascular condition with ICD-10 code preventing exercise"},
+                {"criterion": "Appropriate clinical indication per ACC AUC", "required": True, "evidence_type": "clinical note", "acceptable_values": "Known CAD with symptom change, intermediate-risk chest pain, post-PCI/CABG surveillance (appropriate interval)"},
+                {"criterion": "Prior treatment history documented", "required": True, "evidence_type": "clinical note", "acceptable_values": "Current cardiac medications, prior interventions, prior imaging results"},
+                {"criterion": "No contraindication to regadenoson documented", "required": False, "evidence_type": "clinical note", "acceptable_values": "No severe reactive airway disease, no high-grade AV block, no recent caffeine"},
+            ],
+            "documentation_required": [
+                "Cardiology note with exercise limitation and specific diagnosis",
+                "Prior cardiac imaging and intervention history",
+                "Current medication list with cardiac medications highlighted",
+                "Risk factor assessment",
+            ],
+            "submission_format": "portal",
+            "typical_turnaround_days": 3,
+            "common_denial_reasons": [
+                "Exercise limitation diagnosis not documented — functional status unclear",
+                "Prior cardiac imaging within appropriate surveillance interval (too soon)",
+                "Indication does not meet appropriate use criteria — low pre-test probability",
+                "Asymptomatic screening not covered",
+            ],
+            "appeal_success_factors": [
+                "Specialist documentation of functional limitation (orthopedics, etc.)",
+                "ACC AUC appropriate use score with documentation",
+                "Clinical change timeline since last imaging",
+            ],
+            "policy_source": "Aetna Clinical Policy Bulletin: Stress Testing and Advanced Cardiac Imaging, Number 0228",
+            "policy_last_updated": "2025-10-15",
+        },
+        "Blue Cross Blue Shield": {
+            "payer": "Blue Cross Blue Shield",
+            "procedure": "Lexiscan (Regadenoson) Pharmacologic Stress SPECT MPI",
+            "cpt_code": "78452",
+            "auth_required": True,
+            "clinical_criteria": [
+                {"criterion": "Exercise limitation documented with referring diagnosis", "required": True, "evidence_type": "clinical note", "acceptable_values": "Specific orthopedic, neurologic, or pulmonary diagnosis with ICD-10 code explaining why patient cannot exercise"},
+                {"criterion": "Clinical indication for myocardial perfusion imaging", "required": True, "evidence_type": "clinical note", "acceptable_values": "Chest pain with intermediate+ probability, known CAD with symptom change, pre-operative clearance for high-risk surgery"},
+                {"criterion": "No MPI within 24 months unless clinical change documented", "required": True, "evidence_type": "clinical note", "acceptable_values": "BCBS requires 24-month interval (stricter than most) unless new symptoms, new diagnosis, or interval event"},
+                {"criterion": "Peer-to-peer if repeat pharmacologic stress within 12 months", "required": False, "evidence_type": "clinical note", "acceptable_values": "Automatic peer-to-peer trigger if prior pharmacologic MPI within 12 months"},
+            ],
+            "documentation_required": [
+                "Exercise limitation documentation from treating physician",
+                "Clinical indication with symptom assessment",
+                "Prior imaging history with dates",
+                "Medication list and cardiac risk factors",
+                "ACC AUC score if available",
+            ],
+            "submission_format": "fax",
+            "typical_turnaround_days": 5,
+            "common_denial_reasons": [
+                "Exercise limitation not adequately documented — needs specific diagnosis and functional assessment",
+                "Frequency — BCBS 24-month rule for repeat MPI (stricter than CMS)",
+                "Low pre-test probability — not indicated per ACC AUC",
+                "Peer-to-peer not completed for repeat study within 12 months",
+            ],
+            "appeal_success_factors": [
+                "Orthopedic specialist letter documenting exercise limitation",
+                "Peer-to-peer with BCBS medical director",
+                "ACC AUC score documentation showing appropriate use",
+                "Clinical change documentation if repeat within 24 months",
+            ],
+            "policy_source": "BCBS Medical Policy: Myocardial Perfusion Imaging, Policy 2025-NUC-0038",
+            "policy_last_updated": "2025-07-15",
         },
     },
 }
