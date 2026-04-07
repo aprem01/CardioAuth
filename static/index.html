@@ -485,22 +485,20 @@
 
       <!-- Custom Data Mode -->
       <div id="custom-form-section" class="hidden">
+
+      <!-- Upload Zone (outside card to avoid template literal issues) -->
+      <div id="upload-zone" style="cursor:pointer"
+        class="border-2 border-dashed border-surface-border rounded-xl p-8 text-center hover:border-accent-cyan/50 hover:bg-accent-cyan/5 transition mb-4">
+        <svg class="w-10 h-10 mx-auto text-slate-500 mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+        <p class="text-sm text-slate-300 font-medium">Drop a clinical document here or click to upload</p>
+        <p class="text-xs text-slate-500 mt-1">PDF, JPEG, PNG — Stress test reports, echo reports, clinical notes, lab results</p>
+        <input type="file" id="file-upload" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.webp">
+      </div>
+      <div id="upload-status" class="hidden mb-4"></div>
+
       ${card(`
         <h2 class="text-xl font-bold text-white mb-2">Custom Patient Data</h2>
-        <p class="text-sm text-slate-400 mb-6">Upload a document or enter your own clinical data to test the PA pipeline.</p>
-
-        <!-- Upload Zone -->
-        <div id="upload-zone" onclick="document.getElementById('file-upload').click()"
-          class="border-2 border-dashed border-surface-border rounded-xl p-8 text-center cursor-pointer hover:border-accent-cyan/50 hover:bg-accent-cyan/5 transition mb-6"
-          ondragover="event.preventDefault(); this.classList.add('border-accent-cyan', 'bg-accent-cyan/5')"
-          ondragleave="this.classList.remove('border-accent-cyan', 'bg-accent-cyan/5')"
-          ondrop="handleDrop(event)">
-          <svg class="w-10 h-10 mx-auto text-slate-500 mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
-          <p class="text-sm text-slate-300 font-medium">Drop a clinical document here or click to upload</p>
-          <p class="text-xs text-slate-500 mt-1">PDF, JPEG, PNG — Stress test reports, echo reports, clinical notes, lab results</p>
-          <input type="file" id="file-upload" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.webp" onchange="handleFileUpload(this.files[0])">
-        </div>
-        <div id="upload-status" class="hidden mb-4"></div>
+        <p class="text-sm text-slate-400 mb-6">Enter clinical data manually, or upload a document above to auto-fill.</p>
 
         <form id="custom-pa-form" onsubmit="submitCustomRequest(event)" class="space-y-5">
 
@@ -698,6 +696,18 @@
     zoneEl.style.pointerEvents = 'auto';
   }
 
+  // Attach upload zone listeners after render
+  function attachUploadListeners() {
+    const zone = document.getElementById('upload-zone');
+    const fileInput = document.getElementById('file-upload');
+    if (!zone || !fileInput) return;
+    zone.onclick = () => fileInput.click();
+    zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('border-accent-cyan', 'bg-accent-cyan/5'); };
+    zone.ondragleave = () => zone.classList.remove('border-accent-cyan', 'bg-accent-cyan/5');
+    zone.ondrop = (e) => { e.preventDefault(); zone.classList.remove('border-accent-cyan', 'bg-accent-cyan/5'); if (e.dataTransfer.files[0]) handleFileUpload(e.dataTransfer.files[0]); };
+    fileInput.onchange = () => { if (fileInput.files[0]) handleFileUpload(fileInput.files[0]); };
+  }
+
   function toggleRequestMode(mode) {
     const demoBtn = document.getElementById('mode-demo');
     const customBtn = document.getElementById('mode-custom');
@@ -713,6 +723,7 @@
       demoBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition text-slate-400 hover:text-white border-r border-surface-border';
       demoSection.classList.add('hidden');
       customSection.classList.remove('hidden');
+      setTimeout(attachUploadListeners, 50);
     }
   }
 
