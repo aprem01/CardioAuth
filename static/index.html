@@ -487,7 +487,21 @@
       <div id="custom-form-section" class="hidden">
       ${card(`
         <h2 class="text-xl font-bold text-white mb-2">Custom Patient Data</h2>
-        <p class="text-sm text-slate-400 mb-6">Enter your own clinical data to test the PA pipeline against real-world cases.</p>
+        <p class="text-sm text-slate-400 mb-6">Upload a document or enter your own clinical data to test the PA pipeline.</p>
+
+        <!-- Upload Zone -->
+        <div id="upload-zone" onclick="document.getElementById('file-upload').click()"
+          class="border-2 border-dashed border-surface-border rounded-xl p-8 text-center cursor-pointer hover:border-accent-cyan/50 hover:bg-accent-cyan/5 transition mb-6"
+          ondragover="event.preventDefault(); this.classList.add('border-accent-cyan', 'bg-accent-cyan/5')"
+          ondragleave="this.classList.remove('border-accent-cyan', 'bg-accent-cyan/5')"
+          ondrop="handleDrop(event)">
+          <svg class="w-10 h-10 mx-auto text-slate-500 mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+          <p class="text-sm text-slate-300 font-medium">Drop a clinical document here or click to upload</p>
+          <p class="text-xs text-slate-500 mt-1">PDF, JPEG, PNG — Stress test reports, echo reports, clinical notes, lab results</p>
+          <input type="file" id="file-upload" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.webp" onchange="handleFileUpload(this.files[0])">
+        </div>
+        <div id="upload-status" class="hidden mb-4"></div>
+
         <form id="custom-pa-form" onsubmit="submitCustomRequest(event)" class="space-y-5">
 
           <div class="grid grid-cols-3 gap-3">
@@ -573,6 +587,115 @@
       `)}
       </div>
     </div>`;
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('border-accent-cyan', 'bg-accent-cyan/5');
+    const file = e.dataTransfer.files[0];
+    if (file) handleFileUpload(file);
+  }
+
+  async function handleFileUpload(file) {
+    if (!file) return;
+    const statusEl = document.getElementById('upload-status');
+    const zoneEl = document.getElementById('upload-zone');
+    statusEl.className = 'mb-4 bg-surface-card border border-surface-border rounded-xl px-5 py-4';
+    statusEl.innerHTML = `
+      <div class="flex items-center gap-3">
+        ${spinnerSVG(5)}
+        <div>
+          <p class="text-sm text-white font-medium">Extracting data from ${file.name}...</p>
+          <p class="text-xs text-slate-400">Claude is reading your document and extracting clinical data</p>
+        </div>
+      </div>`;
+
+    // Hide the upload zone
+    zoneEl.style.opacity = '0.5';
+    zoneEl.style.pointerEvents = 'none';
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/extract-document', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+      const data = await res.json();
+      const ext = data.extracted || {};
+
+      // Auto-fill form fields
+      if (ext.patient_name) document.getElementById('c-name').value = ext.patient_name;
+      if (ext.age) document.getElementById('c-age').value = ext.age;
+      if (ext.sex) document.getElementById('c-sex').value = ext.sex;
+      if (ext.procedure_name) document.getElementById('c-procedure-name').value = ext.procedure_name;
+      if (ext.procedure_code) document.getElementById('c-procedure-code').value = ext.procedure_code;
+      if (ext.ejection_fraction) document.getElementById('c-ef').value = ext.ejection_fraction;
+      if (ext.diagnosis_codes?.length) document.getElementById('c-dx').value = ext.diagnosis_codes.join(', ');
+
+      if (ext.relevant_labs?.length) {
+        document.getElementById('c-labs').value = ext.relevant_labs.map(l =>
+          [l.name, l.value, l.unit, l.date].filter(Boolean).join(' | ')
+        ).join('\n');
+      }
+      if (ext.relevant_imaging?.length) {
+        document.getElementById('c-imaging').value = ext.relevant_imaging.map(i =>
+          [i.type, i.date, i.result_summary].filter(Boolean).join(' | ')
+        ).join('\n');
+      }
+      if (ext.relevant_medications?.length) {
+        document.getElementById('c-meds').value = ext.relevant_medications.map(m =>
+          [m.name, m.dose, m.indication].filter(Boolean).join(' | ')
+        ).join('\n');
+      }
+      if (ext.prior_treatments?.length) {
+        document.getElementById('c-prior').value = ext.prior_treatments.join('\n');
+      }
+      if (ext.comorbidities?.length) {
+        document.getElementById('c-comorbidities').value = ext.comorbidities.join('\n');
+      }
+      if (ext.additional_notes) {
+        document.getElementById('c-notes').value = ext.additional_notes;
+      }
+
+      // Count extracted fields
+      const fields = ['patient_name','age','sex','procedure_name','diagnosis_codes','relevant_labs','relevant_imaging','relevant_medications','prior_treatments','comorbidities','ejection_fraction'].filter(f => {
+        const v = ext[f];
+        return v && (Array.isArray(v) ? v.length > 0 : true);
+      });
+
+      statusEl.innerHTML = `
+        <div class="flex items-center gap-3">
+          ${greenCheck()}
+          <div>
+            <p class="text-sm text-emerald-400 font-medium">Extracted ${fields.length} data fields from ${file.name}</p>
+            <p class="text-xs text-slate-400">Review the auto-filled fields below, edit as needed, then run the pipeline</p>
+          </div>
+        </div>
+        ${ext.parse_error ? '<p class="text-xs text-amber-400 mt-2">Note: Some data could not be parsed as structured fields — check Additional Notes.</p>' : ''}`;
+
+      // Highlight filled fields briefly
+      document.querySelectorAll('#custom-pa-form input, #custom-pa-form textarea, #custom-pa-form select').forEach(el => {
+        if (el.value) {
+          el.classList.add('ring-2', 'ring-emerald-500/30');
+          setTimeout(() => el.classList.remove('ring-2', 'ring-emerald-500/30'), 3000);
+        }
+      });
+
+    } catch (err) {
+      statusEl.innerHTML = `
+        <div class="flex items-center gap-3">
+          ${redX()}
+          <div>
+            <p class="text-sm text-red-400 font-medium">Extraction failed</p>
+            <p class="text-xs text-slate-400">${err.message}</p>
+          </div>
+        </div>`;
+    }
+
+    zoneEl.style.opacity = '1';
+    zoneEl.style.pointerEvents = 'auto';
   }
 
   function toggleRequestMode(mode) {

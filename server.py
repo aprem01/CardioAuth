@@ -7,7 +7,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+import base64
+import json
+import os
+import tempfile
+
+import anthropic
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -107,6 +113,107 @@ class PayerResponseRequest(BaseModel):
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+EXTRACT_PROMPT = """\
+You are a clinical data extraction specialist. Extract structured clinical data from this medical document image or PDF.
+
+Return ONLY valid JSON with these fields (omit any field you cannot find):
+{
+  "patient_name": "",
+  "age": 0,
+  "sex": "M or F",
+  "procedure_name": "",
+  "procedure_code": "",
+  "diagnosis_codes": ["ICD-10 codes found"],
+  "ejection_fraction": "",
+  "relevant_labs": [{"name": "", "value": "", "unit": "", "date": ""}],
+  "relevant_imaging": [{"type": "", "date": "", "result_summary": ""}],
+  "relevant_medications": [{"name": "", "dose": "", "indication": ""}],
+  "prior_treatments": [""],
+  "comorbidities": [""],
+  "additional_notes": ""
+}
+
+Extract every clinical detail you can find. For imaging reports, capture the full impression/findings.
+For lab reports, capture all values with units. For clinical notes, extract diagnoses, medications, history.
+Be thorough — this data will be used for a prior authorization submission.
+"""
+
+
+@app.post("/api/extract-document")
+async def extract_document(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Extract clinical data from an uploaded document image or PDF using Claude vision."""
+    api_key = config.anthropic_api_key
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    contents = await file.read()
+    if len(contents) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 20MB)")
+
+    # Determine media type
+    ct = file.content_type or ""
+    if "pdf" in ct:
+        media_type = "application/pdf"
+    elif "png" in ct:
+        media_type = "image/png"
+    elif "jpeg" in ct or "jpg" in ct:
+        media_type = "image/jpeg"
+    elif "webp" in ct:
+        media_type = "image/webp"
+    else:
+        # Try to detect from extension
+        ext = (file.filename or "").lower().rsplit(".", 1)[-1]
+        media_map = {"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+        media_type = media_map.get(ext, "image/jpeg")
+
+    b64 = base64.standard_b64encode(contents).decode("utf-8")
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+
+        # Build content based on type
+        if media_type == "application/pdf":
+            image_content = {
+                "type": "document",
+                "source": {"type": "base64", "media_type": media_type, "data": b64},
+            }
+        else:
+            image_content = {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": b64},
+            }
+
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    image_content,
+                    {"type": "text", "text": EXTRACT_PROMPT},
+                ],
+            }],
+        )
+
+        raw = response.content[0].text
+        # Try to parse JSON from the response
+        try:
+            # Handle markdown code blocks
+            if "```json" in raw:
+                raw = raw.split("```json")[1].split("```")[0]
+            elif "```" in raw:
+                raw = raw.split("```")[1].split("```")[0]
+            extracted = json.loads(raw)
+        except json.JSONDecodeError:
+            extracted = {"additional_notes": raw, "parse_error": True}
+
+        return {"status": "ok", "extracted": extracted, "filename": file.filename}
+
+    except Exception as e:
+        logging.exception("Document extraction failed")
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 
 @app.get("/api/reference")
