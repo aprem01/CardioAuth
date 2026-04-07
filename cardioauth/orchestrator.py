@@ -81,9 +81,23 @@ class Orchestrator:
         logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT (demo data)")
         chart_data = get_demo_chart(patient_id, procedure_code)
 
-        # Step 2: Get demo policy
-        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT (demo data)")
-        policy_data = get_demo_policy(procedure_code, payer_name)
+        # Step 2: Get policy — use Claude to enhance baseline demo policy
+        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT")
+        baseline_policy = get_demo_policy(procedure_code, payer_name)
+        if self.config.anthropic_api_key:
+            from cardioauth.agents.policy_agent import PolicyAgent
+            policy_agent = PolicyAgent(self.config)
+            try:
+                policy_data = policy_agent.run(
+                    procedure_code, payer_name,
+                    baseline_policy=baseline_policy.model_dump(),
+                )
+                logger.info("ORCHESTRATOR: Claude policy enhancement succeeded")
+            except Exception as e:
+                logger.warning("POLICY_AGENT Claude enhancement failed (%s), using baseline", e)
+                policy_data = baseline_policy
+        else:
+            policy_data = baseline_policy
 
         # Step 3: Use real Claude reasoning if API key available, else fallback
         logger.info("ORCHESTRATOR: Step 3 — REASONING_AGENT")
