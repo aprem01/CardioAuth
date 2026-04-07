@@ -269,8 +269,17 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
             typical_turnaround_days=5,
         )
 
-    # Run reasoning
-    reasoning = get_demo_reasoning(chart_data, policy_data)
+    # Run reasoning — use Claude if API key available
+    if config.anthropic_api_key:
+        from cardioauth.agents.reasoning_agent import ReasoningAgent
+        try:
+            reasoning_agent = ReasoningAgent(config)
+            reasoning = reasoning_agent.run(chart_data, policy_data)
+        except Exception as e:
+            logging.warning("Claude reasoning failed for custom request: %s", e)
+            reasoning = get_demo_reasoning(chart_data, policy_data)
+    else:
+        reasoning = get_demo_reasoning(chart_data, policy_data)
 
     # Store for approval
     from cardioauth.orchestrator import ReviewPackage

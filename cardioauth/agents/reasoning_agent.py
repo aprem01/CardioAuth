@@ -76,7 +76,14 @@ class ReasoningAgent:
         )
 
         raw = response.content[0].text
-        data = json.loads(raw)
+
+        # Handle markdown code blocks
+        if "```json" in raw:
+            raw = raw.split("```json")[1].split("```")[0]
+        elif "```" in raw:
+            raw = raw.split("```")[1].split("```")[0]
+
+        data = json.loads(raw.strip())
         result = ReasoningResult(**data)
 
         if result.approval_likelihood_score < self.config.approval_likelihood_threshold:
