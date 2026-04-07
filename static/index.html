@@ -433,6 +433,7 @@
     const patientOpts = DEMO_PATIENTS.map(p => `<option value="${p.id}">${p.id} — ${p.label}</option>`).join('');
     const procOpts = PROCEDURES.map(p => `<option value="${p.code}">${p.label}</option>`).join('');
     const payerOpts = PAYERS.map(p => `<option value="${p.id}" data-name="${p.name}" ${p.id === 'UHC' ? 'selected' : ''}>${p.name}</option>`).join('');
+    const inputCls = 'w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition text-sm';
 
     return `
     <div class="fade-in max-w-2xl mx-auto space-y-6">
@@ -441,26 +442,34 @@
         Back to Dashboard
       </button>
 
+      <!-- Mode Toggle -->
+      <div class="flex rounded-lg border border-surface-border overflow-hidden">
+        <button onclick="toggleRequestMode('demo')" id="mode-demo" class="flex-1 py-2.5 text-sm font-medium text-center transition bg-accent-blue/20 text-accent-cyan border-r border-surface-border">Demo Patients</button>
+        <button onclick="toggleRequestMode('custom')" id="mode-custom" class="flex-1 py-2.5 text-sm font-medium text-center transition text-slate-400 hover:text-white">Custom Data</button>
+      </div>
+
+      <!-- Demo Mode -->
+      <div id="demo-form-section">
       ${card(`
         <h2 class="text-xl font-bold text-white mb-6">New Prior Authorization Request</h2>
         <form id="pa-form" onsubmit="submitRequest(event)" class="space-y-5">
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-1.5">Patient</label>
-            <select id="f-patient" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition">
+            <select id="f-patient" required class="${inputCls}">
               <option value="">Select a patient...</option>
               ${patientOpts}
             </select>
           </div>
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-1.5">Procedure</label>
-            <select id="f-procedure" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition">
+            <select id="f-procedure" required class="${inputCls}">
               <option value="">Select a procedure...</option>
               ${procOpts}
             </select>
           </div>
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-1.5">Payer</label>
-            <select id="f-payer" required class="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition">
+            <select id="f-payer" required class="${inputCls}">
               ${payerOpts}
             </select>
           </div>
@@ -472,7 +481,161 @@
           </button>
         </form>
       `)}
+      </div>
+
+      <!-- Custom Data Mode -->
+      <div id="custom-form-section" class="hidden">
+      ${card(`
+        <h2 class="text-xl font-bold text-white mb-2">Custom Patient Data</h2>
+        <p class="text-sm text-slate-400 mb-6">Enter your own clinical data to test the PA pipeline against real-world cases.</p>
+        <form id="custom-pa-form" onsubmit="submitCustomRequest(event)" class="space-y-5">
+
+          <div class="grid grid-cols-3 gap-3">
+            <div class="col-span-1">
+              <label class="block text-xs font-medium text-slate-400 mb-1">Patient Name</label>
+              <input id="c-name" type="text" required placeholder="Jane Doe" class="${inputCls}">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1">Age</label>
+              <input id="c-age" type="number" required placeholder="65" class="${inputCls}">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1">Sex</label>
+              <select id="c-sex" required class="${inputCls}"><option value="M">M</option><option value="F">F</option></select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1">Procedure Name</label>
+              <input id="c-procedure-name" type="text" required placeholder="Cardiac Stress PET" class="${inputCls}">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1">CPT Code</label>
+              <input id="c-procedure-code" type="text" required placeholder="78492" class="${inputCls}">
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Payer</label>
+            <select id="c-payer" required class="${inputCls}">
+              ${payerOpts}
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Diagnosis Codes <span class="text-slate-500">(ICD-10, comma-separated)</span></label>
+            <input id="c-dx" type="text" placeholder="I25.10, R07.89, E11.65, I10" class="${inputCls}">
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Ejection Fraction (LVEF)</label>
+            <input id="c-ef" type="text" placeholder="e.g., 45%" class="${inputCls}">
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Key Lab Values <span class="text-slate-500">(one per line: Name | Value | Unit | Date)</span></label>
+            <textarea id="c-labs" rows="3" placeholder="HbA1c | 8.1 | % | 2025-12-05&#10;BNP | 445 | pg/mL | 2026-01-08&#10;Troponin | 0.03 | ng/mL | 2026-01-08" class="${inputCls} font-mono text-xs"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Imaging Results <span class="text-slate-500">(one per line: Type | Date | Summary)</span></label>
+            <textarea id="c-imaging" rows="3" placeholder="Exercise Treadmill Test | 2025-11-10 | Equivocal, 6 METs, non-diagnostic ST changes&#10;TTE | 2025-11-12 | LVEF 50-55%, limited due to body habitus" class="${inputCls} font-mono text-xs"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Current Medications <span class="text-slate-500">(one per line: Name | Dose | Indication)</span></label>
+            <textarea id="c-meds" rows="3" placeholder="Metoprolol | 100mg daily | Rate control&#10;Atorvastatin | 80mg daily | Dyslipidemia" class="${inputCls} font-mono text-xs"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Prior Treatments <span class="text-slate-500">(one per line)</span></label>
+            <textarea id="c-prior" rows="2" placeholder="Exercise stress test — non-diagnostic&#10;PCI to LAD with DES (2023)" class="${inputCls} font-mono text-xs"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Comorbidities <span class="text-slate-500">(one per line)</span></label>
+            <textarea id="c-comorbidities" rows="2" placeholder="Type 2 diabetes (HbA1c 8.1%)&#10;Obesity (BMI 38)&#10;Essential hypertension" class="${inputCls} font-mono text-xs"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Additional Clinical Notes</label>
+            <textarea id="c-notes" rows="3" placeholder="Any additional context — e.g., why PET over SPECT, exercise limitations, clinical urgency..." class="${inputCls} text-xs"></textarea>
+          </div>
+
+          <div id="custom-form-error" class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3"></div>
+          <button type="submit" id="custom-submit-btn"
+            class="w-full py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Run Authorization Pipeline
+          </button>
+        </form>
+      `)}
+      </div>
     </div>`;
+  }
+
+  function toggleRequestMode(mode) {
+    const demoBtn = document.getElementById('mode-demo');
+    const customBtn = document.getElementById('mode-custom');
+    const demoSection = document.getElementById('demo-form-section');
+    const customSection = document.getElementById('custom-form-section');
+    if (mode === 'demo') {
+      demoBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition bg-accent-blue/20 text-accent-cyan border-r border-surface-border';
+      customBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition text-slate-400 hover:text-white';
+      demoSection.classList.remove('hidden');
+      customSection.classList.add('hidden');
+    } else {
+      customBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition bg-accent-blue/20 text-accent-cyan';
+      demoBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition text-slate-400 hover:text-white border-r border-surface-border';
+      demoSection.classList.add('hidden');
+      customSection.classList.remove('hidden');
+    }
+  }
+
+  function parseLines(text, sep='|') {
+    return text.trim().split('\n').filter(l => l.trim()).map(line => {
+      const parts = line.split(sep).map(s => s.trim());
+      return parts;
+    });
+  }
+
+  async function submitCustomRequest(e) {
+    e.preventDefault();
+    const payerEl = document.getElementById('c-payer');
+
+    // Parse structured fields
+    const labs = parseLines(document.getElementById('c-labs').value || '').map(p => ({
+      name: p[0] || '', value: p[1] || '', unit: p[2] || '', date: p[3] || ''
+    }));
+    const imaging = parseLines(document.getElementById('c-imaging').value || '').map(p => ({
+      type: p[0] || '', date: p[1] || '', result_summary: p[2] || ''
+    }));
+    const meds = parseLines(document.getElementById('c-meds').value || '').map(p => ({
+      name: p[0] || '', dose: p[1] || '', start_date: '', indication: p[2] || ''
+    }));
+    const prior = (document.getElementById('c-prior').value || '').trim().split('\n').filter(l => l.trim());
+    const comorbidities = (document.getElementById('c-comorbidities').value || '').trim().split('\n').filter(l => l.trim());
+    const dxCodes = (document.getElementById('c-dx').value || '').split(',').map(s => s.trim()).filter(Boolean);
+
+    state._pendingRequest = {
+      _custom: true,
+      patient_name: document.getElementById('c-name').value,
+      age: parseInt(document.getElementById('c-age').value),
+      sex: document.getElementById('c-sex').value,
+      procedure_name: document.getElementById('c-procedure-name').value,
+      procedure_code: document.getElementById('c-procedure-code').value,
+      payer_name: payerEl.options[payerEl.selectedIndex].text,
+      diagnosis_codes: dxCodes,
+      relevant_labs: labs,
+      relevant_imaging: imaging,
+      relevant_medications: meds,
+      prior_treatments: prior,
+      comorbidities: comorbidities,
+      ejection_fraction: document.getElementById('c-ef').value,
+      additional_notes: document.getElementById('c-notes').value,
+    };
+    navigate('#pipeline');
   }
 
   async function submitRequest(e) {
@@ -692,7 +855,8 @@
     }
 
     // Fire the API call concurrently with animation
-    const apiPromise = apiPost('/api/pa/request', req).catch(err => ({ _error: err }));
+    const apiUrl = req._custom ? '/api/pa/custom-request' : '/api/pa/request';
+    const apiPromise = apiPost(apiUrl, req).catch(err => ({ _error: err }));
 
     // Step 0: CHART_AGENT
     setStep(0, 'active');

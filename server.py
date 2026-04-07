@@ -77,6 +77,23 @@ class PARequest(BaseModel):
     payer_name: str
 
 
+class CustomPARequest(BaseModel):
+    patient_name: str
+    age: int
+    sex: str
+    procedure_name: str
+    procedure_code: str
+    payer_name: str
+    diagnosis_codes: list[str] = []
+    relevant_labs: list[dict[str, str]] = []
+    relevant_imaging: list[dict[str, str]] = []
+    relevant_medications: list[dict[str, str]] = []
+    prior_treatments: list[str] = []
+    comorbidities: list[str] = []
+    ejection_fraction: str = ""
+    additional_notes: str = ""
+
+
 class ApprovalRequest(BaseModel):
     request_id: str
     approved_by: str
@@ -97,6 +114,85 @@ def get_reference_data() -> dict[str, Any]:
     """Return ICD-10 descriptions and demo patient info for frontend lookups."""
     from cardioauth.demo import ICD10_DESCRIPTIONS, DEMO_PATIENT_INFO
     return {"icd10": ICD10_DESCRIPTIONS, "patients": DEMO_PATIENT_INFO}
+
+
+@app.post("/api/pa/custom-request")
+def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
+    """Run PA pipeline with user-provided clinical data."""
+    import uuid
+    from cardioauth.models.chart import ChartData, LabResult, ImagingResult, Medication
+    from cardioauth.demo import get_demo_policy, get_demo_reasoning
+
+    # Build ChartData from custom input
+    labs = [LabResult(name=l.get("name", ""), value=l.get("value", ""), date=l.get("date", ""), unit=l.get("unit", "")) for l in req.relevant_labs]
+    imaging = [ImagingResult(type=i.get("type", ""), date=i.get("date", ""), result_summary=i.get("result_summary", "")) for i in req.relevant_imaging]
+    meds = [Medication(name=m.get("name", ""), dose=m.get("dose", ""), start_date=m.get("start_date", ""), indication=m.get("indication", "")) for m in req.relevant_medications]
+
+    chart_data = ChartData(
+        patient_id=f"CUSTOM-{uuid.uuid4().hex[:6].upper()}",
+        procedure_requested=req.procedure_name,
+        procedure_code=req.procedure_code,
+        diagnosis_codes=req.diagnosis_codes,
+        relevant_labs=labs,
+        relevant_imaging=imaging,
+        relevant_medications=meds,
+        prior_treatments=req.prior_treatments,
+        comorbidities=req.comorbidities,
+        attending_physician="",
+        insurance_id="",
+        payer_name=req.payer_name,
+        confidence_score=0.95 if labs and imaging else 0.75,
+        missing_fields=[],
+    )
+
+    # Get policy (falls back to first available payer if not found)
+    try:
+        policy_data = get_demo_policy(req.procedure_code, req.payer_name)
+    except KeyError:
+        # Use a generic policy structure
+        from cardioauth.models.policy import PolicyData
+        policy_data = PolicyData(
+            payer=req.payer_name,
+            procedure=req.procedure_name,
+            cpt_code=req.procedure_code,
+            auth_required=True,
+            clinical_criteria=[],
+            documentation_required=[],
+            submission_format="portal",
+            typical_turnaround_days=5,
+        )
+
+    # Run reasoning
+    reasoning = get_demo_reasoning(chart_data, policy_data)
+
+    # Store for approval
+    from cardioauth.orchestrator import ReviewPackage
+    review = ReviewPackage(
+        chart_data=chart_data,
+        policy_data=policy_data,
+        reasoning=reasoning,
+        requires_human_action=[],
+    )
+    request_id = chart_data.patient_id + "-" + chart_data.procedure_code
+    _reviews[request_id] = review
+
+    return {
+        "request_id": request_id,
+        "patient_info": {"name": req.patient_name, "age": req.age, "sex": req.sex, "mrn": chart_data.patient_id},
+        "approval_likelihood": {
+            "score": reasoning.approval_likelihood_score,
+            "label": reasoning.approval_likelihood_label,
+        },
+        "narrative_draft": reasoning.pa_narrative_draft,
+        "criteria_met": [c.model_dump() for c in reasoning.criteria_met],
+        "criteria_not_met": [c.model_dump() for c in reasoning.criteria_not_met],
+        "missing_documentation": reasoning.missing_documentation,
+        "guideline_citations": reasoning.guideline_citations,
+        "requires_human_action": review.requires_human_action,
+        "chart_confidence": chart_data.confidence_score,
+        "chart_data": chart_data.model_dump(),
+        "policy_data": policy_data.model_dump(),
+    }
 
 
 @app.post("/api/pa/request")
