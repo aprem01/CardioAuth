@@ -843,6 +843,181 @@ def denials_revenue_impact():
     return calculate_revenue_impact()
 
 
+# ---------------------------------------------------------------------------
+# Government API Integrations — ICD-10 (NLM) & RxNorm (NLM)
+# ---------------------------------------------------------------------------
+
+from cardioauth.integrations.icd10_api import (
+    lookup_icd10,
+    search_icd10,
+    validate_codes as validate_icd10_codes,
+    suggest_codes as suggest_icd10_codes,
+)
+from cardioauth.integrations.rxnorm_api import (
+    lookup_medication,
+    get_ndc_codes,
+    check_interactions,
+    normalize_medication,
+)
+
+
+class ICD10ValidateRequest(BaseModel):
+    codes: list[str]
+
+
+class RxNormInteractionsRequest(BaseModel):
+    medications: list[str]
+
+
+@app.get("/api/icd10/search")
+def api_icd10_search(q: str = "", max_results: int = 10) -> dict[str, Any]:
+    """Search ICD-10 codes by keyword or partial code.
+
+    Example: GET /api/icd10/search?q=chest+pain&max_results=5
+    """
+    results = search_icd10(q, max_results=max_results)
+    return {"query": q, "count": len(results), "results": results}
+
+
+@app.get("/api/icd10/lookup/{code}")
+def api_icd10_lookup(code: str) -> dict[str, Any]:
+    """Look up a single ICD-10 code.
+
+    Example: GET /api/icd10/lookup/I25.10
+    Response: {"code": "I25.10", "description": "Atherosclerotic heart disease ...", "found": true}
+    """
+    return lookup_icd10(code)
+
+
+@app.post("/api/icd10/validate")
+def api_icd10_validate(req: ICD10ValidateRequest) -> dict[str, Any]:
+    """Validate a list of ICD-10 codes.
+
+    Body: {"codes": ["I25.10", "R07.9", "INVALID"]}
+    Response: {"total": 3, "valid_count": 2, "invalid_count": 1, "results": [...]}
+    """
+    results = validate_icd10_codes(req.codes)
+    valid_count = sum(1 for r in results if r["valid"])
+    return {
+        "total": len(results),
+        "valid_count": valid_count,
+        "invalid_count": len(results) - valid_count,
+        "results": results,
+    }
+
+
+@app.get("/api/icd10/suggest")
+def api_icd10_suggest(keyword: str = "", procedure_code: str = "") -> dict[str, Any]:
+    """Suggest ICD-10 codes for a clinical keyword.
+
+    Example: GET /api/icd10/suggest?keyword=chest+pain&procedure_code=93458
+    """
+    results = suggest_icd10_codes(keyword, procedure_code=procedure_code)
+    return {"keyword": keyword, "procedure_code": procedure_code, "count": len(results), "suggestions": results}
+
+
+@app.get("/api/rxnorm/search")
+def api_rxnorm_search(name: str = "") -> dict[str, Any]:
+    """Search for a medication by name.
+
+    Example: GET /api/rxnorm/search?name=metoprolol
+    Response: {"name": "metoprolol", "rxcui": "6918", "found": true, "forms": [...]}
+    """
+    return lookup_medication(name)
+
+
+@app.get("/api/rxnorm/ndc/{name}")
+def api_rxnorm_ndc(name: str) -> dict[str, Any]:
+    """Get NDC codes for a medication.
+
+    Example: GET /api/rxnorm/ndc/metoprolol
+    Response: {"medication": "metoprolol", "ndc_count": 15, "ndc_codes": ["0093-7385-56", ...]}
+    """
+    ndcs = get_ndc_codes(name)
+    return {"medication": name, "ndc_count": len(ndcs), "ndc_codes": ndcs}
+
+
+@app.post("/api/rxnorm/interactions")
+def api_rxnorm_interactions(req: RxNormInteractionsRequest) -> dict[str, Any]:
+    """Check drug-drug interactions between a list of medications.
+
+    Body: {"medications": ["warfarin", "aspirin", "metoprolol"]}
+    Response: {"medications": [...], "interaction_count": 2, "interactions": [...]}
+    """
+    results = check_interactions(req.medications)
+    return {
+        "medications": req.medications,
+        "interaction_count": len(results),
+        "interactions": results,
+    }
+
+
+@app.get("/api/rxnorm/normalize/{name}")
+def api_rxnorm_normalize(name: str) -> dict[str, Any]:
+    """Normalize a medication name to standard RxNorm terminology.
+
+    Example: GET /api/rxnorm/normalize/lopressor
+    Response: {"input": "lopressor", "normalized_name": "metoprolol tartrate", "rxcui": "6918", "found": true}
+    """
+    return normalize_medication(name)
+
+
+# ---------------------------------------------------------------------------
+# NPI Registry & CMS FHIR Endpoints
+# ---------------------------------------------------------------------------
+
+from cardioauth.integrations.nppes_api import (
+    lookup_npi as _lookup_npi,
+    search_providers as _search_providers,
+)
+from cardioauth.integrations.cms_fhir import CMSFHIRClient
+
+_cms_client = CMSFHIRClient(
+    client_id=os.getenv("CMS_CLIENT_ID", ""),
+    client_secret=os.getenv("CMS_CLIENT_SECRET", ""),
+)
+
+
+@app.get("/api/npi/lookup/{npi}")
+def api_npi_lookup(npi: str) -> dict[str, Any]:
+    """Look up a provider by NPI number via the NPPES registry."""
+    result = _lookup_npi(npi)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.get("/api/npi/search")
+def api_npi_search(
+    last_name: str = "",
+    first_name: str = "",
+    state: str = "",
+    specialty: str = "cardiology",
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Search the NPPES registry for providers by name and specialty."""
+    providers = _search_providers(
+        last_name=last_name,
+        first_name=first_name,
+        state=state,
+        specialty=specialty,
+        limit=limit,
+    )
+    return {"count": len(providers), "providers": providers}
+
+
+@app.get("/api/cms/eligibility/{medicare_id}")
+def api_cms_eligibility(medicare_id: str) -> dict[str, Any]:
+    """Check Medicare eligibility for a beneficiary."""
+    return _cms_client.check_medicare_eligibility(medicare_id)
+
+
+@app.get("/api/cms/coverage/{medicare_id}")
+def api_cms_coverage(medicare_id: str) -> dict[str, Any]:
+    """Get Medicare coverage details for a beneficiary."""
+    return _cms_client.get_coverage_details(medicare_id)
+
+
 # Mount static files for favicon and assets
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
