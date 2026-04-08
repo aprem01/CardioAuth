@@ -11,88 +11,423 @@
   <meta property="og:description" content="AI-powered cardiology prior authorization with multi-agent pipeline">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#0a0e1a">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
       theme: {
         extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+            serif: ['Instrument Serif', 'Georgia', 'serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
           colors: {
-            surface: { DEFAULT: '#0a0e1a', card: '#1e293b', border: '#334155', hover: '#283548' },
-            accent: { blue: '#3b82f6', cyan: '#06b6d4' },
+            surface: { DEFAULT: '#fafbff', card: '#ffffff', border: '#e8ecf5', hover: '#f4f6fb', muted: '#f1f5f9' },
+            ink: { DEFAULT: '#0b1437', muted: '#475569', soft: '#64748b', faint: '#94a3b8' },
+            accent: { blue: '#4f46e5', cyan: '#0891b2', teal: '#0d9488', violet: '#7c3aed' },
+            ok: '#059669',
+            warn: '#d97706',
+            danger: '#dc2626',
           }
         }
       }
     }
   </script>
   <style>
-    body { background: #0a0e1a; }
-    .fade-in { animation: fadeIn 0.3s ease-in-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-    .animate-fadeIn { animation: fadeIn 0.4s ease-out; }
+    :root {
+      --bg: #fafbff;
+      --card: #ffffff;
+      --border: #e8ecf5;
+      --hover: #f4f6fb;
+      --ink: #0b1437;
+      --ink-muted: #475569;
+      --ink-soft: #64748b;
+      --accent: #4f46e5;
+      --accent-2: #7c3aed;
+      --accent-soft: #eef2ff;
+      --grad-primary: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #0891b2 100%);
+      --grad-soft: linear-gradient(135deg, #eef2ff 0%, #faf5ff 50%, #ecfeff 100%);
+      --shadow-sm: 0 1px 2px 0 rgba(11,20,55,0.04), 0 1px 3px -1px rgba(11,20,55,0.06);
+      --shadow-md: 0 4px 6px -1px rgba(11,20,55,0.06), 0 2px 4px -2px rgba(11,20,55,0.04);
+      --shadow-lg: 0 10px 25px -5px rgba(11,20,55,0.08), 0 8px 10px -6px rgba(11,20,55,0.04);
+      --shadow-xl: 0 20px 40px -10px rgba(79,70,229,0.15), 0 8px 16px -8px rgba(11,20,55,0.08);
+      --shadow-glow: 0 0 0 4px rgba(79,70,229,0.08), 0 8px 24px -4px rgba(79,70,229,0.25);
+    }
+    html { font-size: 16px; }
+    body {
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(124,58,237,0.08), transparent),
+        radial-gradient(ellipse 60% 50% at 100% 0%, rgba(8,145,178,0.06), transparent),
+        var(--bg);
+      background-attachment: fixed;
+      color: var(--ink);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-feature-settings: 'cv11', 'ss01', 'ss03';
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.55;
+    }
+    h1, h2, h3, h4 { color: var(--ink); letter-spacing: -0.02em; font-weight: 700; }
+    h1 { font-weight: 800; letter-spacing: -0.03em; }
+    .text-gradient {
+      background: var(--grad-primary);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fadeIn { animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1); }
     @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 1; } 100% { transform: scale(1.4); opacity: 0; } }
-    .pulse-ring { animation: pulse-ring 1.5s ease-out infinite; }
+    .pulse-ring { animation: pulse-ring 1.8s ease-out infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { animation: spin 0.8s linear infinite; }
+    @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    .shimmer { background: linear-gradient(90deg, transparent, rgba(79,70,229,0.08), transparent); background-size: 200% 100%; animation: shimmer 2s linear infinite; }
     .step-line { transition: height 0.6s ease; }
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: #0a0e1a; }
-    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-    select option { background: #1e293b; color: #e2e8f0; }
-    .sidebar { width: 260px; transition: transform 0.3s ease; }
-    .sidebar-link { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 0.5rem; font-size: 0.875rem; color: #94a3b8; transition: all 0.15s; }
-    .sidebar-link:hover { background: #283548; color: #e2e8f0; }
-    .sidebar-link.active { background: rgba(6,182,212,0.1); color: #06b6d4; border: 1px solid rgba(6,182,212,0.2); }
-    .sidebar-group-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: #475569; padding: 0.5rem 0.75rem 0.25rem; font-weight: 600; }
+
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d4d8e6; border-radius: 8px; border: 2px solid #fafbff; }
+    ::-webkit-scrollbar-thumb:hover { background: #a8afc7; }
+
+    select option { background: #ffffff; color: #0b1437; }
+
+    /* Sidebar — frosted glass aesthetic */
+    .sidebar {
+      width: 272px;
+      transition: transform 0.3s ease;
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-right: 1px solid rgba(232, 236, 245, 0.6);
+    }
+    .sidebar-link {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.625rem 0.875rem; margin: 0.125rem 0;
+      border-radius: 0.625rem;
+      font-size: 0.9rem; font-weight: 500; color: #475569;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+    }
+    .sidebar-link svg { transition: transform 0.2s; flex-shrink: 0; }
+    .sidebar-link:hover { background: rgba(244, 246, 251, 0.8); color: #0b1437; }
+    .sidebar-link:hover svg { transform: scale(1.1); }
+    .sidebar-link.active {
+      background: linear-gradient(135deg, rgba(79,70,229,0.08), rgba(124,58,237,0.08));
+      color: #4f46e5; font-weight: 600;
+      box-shadow: inset 0 0 0 1px rgba(79,70,229,0.12);
+    }
+    .sidebar-link.active::before {
+      content: ''; position: absolute; left: -1px; top: 50%; transform: translateY(-50%);
+      width: 3px; height: 60%; background: linear-gradient(180deg, #4f46e5, #7c3aed);
+      border-radius: 0 2px 2px 0;
+    }
+    .sidebar-link.active svg { color: #4f46e5; }
+    .sidebar-group-label {
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em;
+      color: #94a3b8; padding: 1.25rem 0.875rem 0.5rem; font-weight: 700;
+    }
     @media (max-width: 1023px) {
-      .sidebar { position: fixed; left: 0; top: 4rem; bottom: 0; z-index: 40; background: #0a0e1a; border-right: 1px solid #334155; transform: translateX(-100%); }
+      .sidebar { position: fixed; left: 0; top: 4rem; bottom: 0; z-index: 40; transform: translateX(-100%); }
       .sidebar.open { transform: translateX(0); }
     }
-    .main-with-sidebar { margin-left: 260px; }
+    .main-with-sidebar { margin-left: 272px; }
     @media (max-width: 1023px) { .main-with-sidebar { margin-left: 0; } }
-    .gauge-bg { stroke: #334155; }
+
+    /* Top nav — frosted */
+    .topnav {
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid rgba(232, 236, 245, 0.6);
+    }
+
+    .gauge-bg { stroke: #e8ecf5; }
     .gauge-fill { transition: stroke-dashoffset 1s ease; }
-    .tab-btn { padding: 0.5rem 1rem; font-size: 0.875rem; border-radius: 0.5rem; transition: all 0.15s; }
-    .tab-btn.active { background: rgba(6,182,212,0.15); color: #06b6d4; }
-    .tab-btn:not(.active) { color: #94a3b8; }
-    .tab-btn:not(.active):hover { background: #283548; color: #e2e8f0; }
+
+    .tab-btn { padding: 0.625rem 1.125rem; font-size: 0.9rem; font-weight: 500; border-radius: 0.625rem; transition: all 0.2s; }
+    .tab-btn.active {
+      background: linear-gradient(135deg, rgba(79,70,229,0.08), rgba(124,58,237,0.06));
+      color: #4f46e5; font-weight: 600;
+      box-shadow: inset 0 0 0 1px rgba(79,70,229,0.15);
+    }
+    .tab-btn:not(.active) { color: #64748b; }
+    .tab-btn:not(.active):hover { background: #f4f6fb; color: #0b1437; }
     .sortable { cursor: pointer; user-select: none; }
-    .sortable:hover { color: #06b6d4; }
+    .sortable:hover { color: #4f46e5; }
+
+    /* Premium procedure tiles */
+    .proc-tile {
+      display: flex; flex-direction: column; align-items: flex-start;
+      gap: 1rem; padding: 1.5rem;
+      background: #ffffff;
+      border: 1.5px solid #e8ecf5;
+      border-radius: 1.25rem;
+      cursor: pointer;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      text-align: left;
+      position: relative;
+      overflow: hidden;
+    }
+    .proc-tile::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(79,70,229,0.04), rgba(124,58,237,0.04), rgba(8,145,178,0.04));
+      opacity: 0; transition: opacity 0.25s;
+    }
+    .proc-tile:hover {
+      border-color: #4f46e5;
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-xl);
+    }
+    .proc-tile:hover::before { opacity: 1; }
+    .proc-tile.selected {
+      border-color: #4f46e5;
+      box-shadow: var(--shadow-glow);
+    }
+    .proc-tile.selected::before { opacity: 1; }
+    .proc-tile > * { position: relative; z-index: 1; }
+    .proc-tile .proc-icon-wrap {
+      width: 3rem; height: 3rem;
+      background: linear-gradient(135deg, #eef2ff, #faf5ff);
+      border-radius: 0.875rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .proc-tile .proc-icon { width: 1.5rem; height: 1.5rem; color: #4f46e5; }
+    .proc-tile .proc-name { font-weight: 700; color: #0b1437; font-size: 1rem; line-height: 1.3; }
+    .proc-tile .proc-desc { font-size: 0.8rem; color: #64748b; line-height: 1.5; }
+    .proc-tile .proc-cpt { font-size: 0.7rem; color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-weight: 500; padding: 0.25rem 0.5rem; background: #f4f6fb; border-radius: 0.375rem; display: inline-block; }
+
+    /* Premium card with depth */
+    .card-soft {
+      background: #ffffff;
+      border: 1px solid #e8ecf5;
+      border-radius: 1.25rem;
+      box-shadow: var(--shadow-md);
+    }
+    .card-elevated {
+      background: #ffffff;
+      border: 1px solid #e8ecf5;
+      border-radius: 1.5rem;
+      box-shadow: var(--shadow-lg);
+    }
+    .card-glass {
+      background: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(232, 236, 245, 0.7);
+      border-radius: 1.25rem;
+      box-shadow: var(--shadow-lg);
+    }
+
+    /* Big premium buttons */
+    .btn-primary {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+      padding: 0.875rem 1.75rem;
+      font-size: 0.95rem; font-weight: 600;
+      color: white;
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      border-radius: 0.875rem;
+      box-shadow: 0 4px 14px -2px rgba(79,70,229,0.35), 0 1px 2px rgba(11,20,55,0.06), inset 0 1px 0 rgba(255,255,255,0.2);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      border: none; cursor: pointer;
+      letter-spacing: -0.01em;
+    }
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 24px -4px rgba(79,70,229,0.45), 0 2px 4px rgba(11,20,55,0.08), inset 0 1px 0 rgba(255,255,255,0.25);
+    }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary:disabled { background: #cbd5e1; box-shadow: none; cursor: not-allowed; transform: none; }
+
+    .btn-secondary {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+      padding: 0.875rem 1.5rem;
+      font-size: 0.95rem; font-weight: 600;
+      background: #ffffff;
+      color: #0b1437;
+      border: 1.5px solid #e8ecf5;
+      border-radius: 0.875rem;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.2s; cursor: pointer;
+    }
+    .btn-secondary:hover {
+      background: #f4f6fb;
+      border-color: #d4d8e6;
+      box-shadow: var(--shadow-md);
+    }
+
+    .btn-ghost {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+      padding: 0.625rem 1rem;
+      font-size: 0.875rem; font-weight: 500;
+      color: #475569;
+      background: transparent;
+      border-radius: 0.625rem;
+      transition: all 0.15s; cursor: pointer;
+    }
+    .btn-ghost:hover { background: #f4f6fb; color: #0b1437; }
+
+    /* Form inputs — bigger, friendlier, premium feel */
+    .input-friendly {
+      width: 100%;
+      padding: 0.875rem 1.125rem;
+      font-size: 0.95rem;
+      background: #ffffff;
+      border: 1.5px solid #e8ecf5;
+      border-radius: 0.875rem;
+      color: #0b1437;
+      transition: all 0.2s;
+      box-shadow: var(--shadow-sm);
+    }
+    .input-friendly::placeholder { color: #a8afc7; }
+    .input-friendly:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 4px rgba(79,70,229,0.1), var(--shadow-sm); }
+    .input-friendly:hover:not(:focus) { border-color: #cbd5e1; }
+
+    /* Status pills */
+    .pill {
+      display: inline-flex; align-items: center; gap: 0.375rem;
+      padding: 0.25rem 0.625rem; font-size: 0.75rem; font-weight: 600;
+      border-radius: 9999px;
+    }
+    .pill-success { background: rgba(5,150,105,0.1); color: #047857; }
+    .pill-warn { background: rgba(217,119,6,0.1); color: #b45309; }
+    .pill-danger { background: rgba(220,38,38,0.1); color: #b91c1c; }
+    .pill-info { background: rgba(79,70,229,0.1); color: #4338ca; }
+
+    /* Floating action gradient blob backgrounds */
+    .blob-bg::before {
+      content: '';
+      position: absolute;
+      width: 300px; height: 300px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(79,70,229,0.12), transparent 70%);
+      filter: blur(40px);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─────── Light theme remapping for legacy dark utility classes ─────── */
+    /* Body content uses dark-theme Tailwind classes; remap to light theme */
+    main .text-white,
+    main h1.text-white, main h2.text-white, main h3.text-white, main h4.text-white,
+    main p.text-white, main span.text-white, main div.text-white, main td.text-white {
+      color: #0b1437 !important;
+    }
+    main .text-slate-200, main .text-slate-300 { color: #1e293b !important; }
+    main .text-slate-400 { color: #475569 !important; }
+    main .text-slate-500 { color: #64748b !important; }
+    main .text-slate-600 { color: #94a3b8 !important; }
+
+    main .bg-surface { background: #fafbff !important; }
+    main .bg-surface-card { background: #ffffff !important; border-color: #e8ecf5; }
+    main .bg-surface-hover:hover { background: #f4f6fb !important; }
+    main .border-surface-border { border-color: #e8ecf5 !important; }
+    main .bg-slate-700 { background: #f4f6fb !important; }
+    main .bg-slate-800 { background: #f1f5f9 !important; }
+
+    /* Card defaults (legacy card() helper) */
+    main .bg-surface-card.border.border-surface-border {
+      background: #ffffff !important;
+      border: 1px solid #e8ecf5 !important;
+      border-radius: 1.25rem !important;
+      box-shadow: var(--shadow-md);
+    }
+
+    /* Accent text remap to be more vibrant */
+    main .text-accent-cyan { color: #0891b2 !important; }
+    main .text-accent-blue { color: #4f46e5 !important; }
+
+    /* Gradient buttons stay white */
+    main .bg-gradient-to-r.from-accent-blue.to-accent-cyan,
+    main .bg-gradient-to-br.from-accent-blue.to-accent-cyan {
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+      color: white !important;
+      border: none !important;
+      box-shadow: 0 4px 14px -2px rgba(79,70,229,0.35), inset 0 1px 0 rgba(255,255,255,0.2) !important;
+    }
+    main .bg-gradient-to-r.from-accent-blue.to-accent-cyan span,
+    main .bg-gradient-to-r.from-accent-blue.to-accent-cyan svg,
+    main .bg-gradient-to-br.from-accent-blue.to-accent-cyan span,
+    main .bg-gradient-to-br.from-accent-blue.to-accent-cyan svg {
+      color: white !important;
+    }
+
+    /* Tables — clean light theme */
+    main table thead tr { border-bottom: 1.5px solid #e8ecf5 !important; }
+    main table tbody tr { border-bottom: 1px solid #f1f5f9 !important; }
+    main table tbody tr:hover { background: #f9fafc !important; }
+
+    /* Status badge color overrides for light theme */
+    main .bg-emerald-500\/20 { background: rgba(5,150,105,0.1) !important; }
+    main .text-emerald-400 { color: #047857 !important; }
+    main .border-emerald-500\/30 { border-color: rgba(5,150,105,0.3) !important; }
+    main .bg-amber-500\/20 { background: rgba(217,119,6,0.1) !important; }
+    main .text-amber-400 { color: #b45309 !important; }
+    main .text-amber-300 { color: #d97706 !important; }
+    main .border-amber-500\/30 { border-color: rgba(217,119,6,0.3) !important; }
+    main .bg-red-500\/20 { background: rgba(220,38,38,0.1) !important; }
+    main .text-red-400 { color: #b91c1c !important; }
+    main .text-red-300 { color: #dc2626 !important; }
+    main .border-red-500\/30 { border-color: rgba(220,38,38,0.3) !important; }
+    main .bg-blue-500\/20 { background: rgba(79,70,229,0.1) !important; }
+    main .text-blue-400 { color: #4338ca !important; }
+    main .border-blue-500\/30 { border-color: rgba(79,70,229,0.3) !important; }
+
+    /* Dashed upload zone — premium */
+    main #upload-zone {
+      background: linear-gradient(135deg, #fafbff, #f4f6fb);
+      border: 2px dashed #cbd5e1 !important;
+    }
+    main #upload-zone:hover {
+      background: linear-gradient(135deg, #eef2ff, #faf5ff) !important;
+      border-color: #4f46e5 !important;
+    }
   </style>
 </head>
-<body class="min-h-screen text-slate-200 font-sans">
+<body class="min-h-screen font-sans">
 
   <!-- Top Nav -->
-  <nav class="sticky top-0 z-50 bg-surface/80 backdrop-blur border-b border-surface-border">
+  <nav class="topnav sticky top-0 z-50">
     <div class="max-w-full mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <button onclick="toggleSidebar()" class="lg:hidden p-1.5 rounded-lg hover:bg-surface-hover transition text-slate-400">
+        <button onclick="toggleSidebar()" class="lg:hidden p-2 rounded-lg hover:bg-surface-hover transition text-ink-muted">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
         <a href="#dashboard" class="flex items-center gap-3 group">
-        <div class="relative">
-          <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-accent-blue to-accent-cyan flex items-center justify-center">
-            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
+          <div class="relative">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #0891b2 100%); box-shadow: 0 4px 14px -2px rgba(79,70,229,0.4);">
+              <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            </div>
           </div>
-        </div>
-        <div>
-          <span class="text-lg font-bold text-white tracking-tight">CardioAuth</span>
-          <span class="hidden sm:inline text-xs text-slate-400 ml-2">Prior Authorization Automation</span>
-        </div>
-      </a>
+          <div>
+            <div class="text-xl font-extrabold text-ink tracking-tight leading-tight">CardioAuth</div>
+            <div class="hidden sm:block text-[0.7rem] text-ink-soft font-medium tracking-wide uppercase leading-tight">AI-Powered Prior Auth</div>
+          </div>
+        </a>
       </div>
-      <div class="flex items-center gap-4">
-        <button onclick="checkHealth()" class="text-xs text-slate-400 hover:text-accent-cyan transition" title="Check API health">
-          <span id="health-dot" class="inline-block w-2 h-2 rounded-full bg-slate-600 mr-1"></span>API
+      <div class="flex items-center gap-3">
+        <button onclick="checkHealth()" class="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-ok/10 border border-ok/20" title="System healthy">
+          <span id="health-dot" class="inline-block w-2 h-2 rounded-full" style="background:#10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.2);"></span>
+          <span class="text-xs font-semibold text-ok">Live</span>
         </button>
-        <span class="text-sm text-slate-400 hidden sm:inline">Dr. Demo</span>
-        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-accent-blue to-accent-cyan flex items-center justify-center text-xs font-bold text-white">DD</div>
+        <div class="hidden md:flex items-center gap-2.5 pl-3 border-l border-surface-border">
+          <div class="text-right">
+            <div class="text-sm font-semibold text-ink leading-tight">Dr. Demo</div>
+            <div class="text-[0.7rem] text-ink-soft leading-tight">Cardiology</div>
+          </div>
+          <div class="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white" style="background: linear-gradient(135deg, #4f46e5, #7c3aed);">DD</div>
+        </div>
       </div>
     </div>
   </nav>
 
   <!-- Sidebar -->
-  <aside id="sidebar" class="sidebar fixed top-16 bottom-0 left-0 overflow-y-auto bg-surface border-r border-surface-border hidden lg:block">
+  <aside id="sidebar" class="sidebar fixed top-16 bottom-0 left-0 overflow-y-auto hidden lg:block">
     <nav class="p-3 space-y-1">
       <!-- Core -->
       <div class="sidebar-group-label">Core</div>
@@ -352,16 +687,27 @@
     return `
     <div class="fade-in space-y-8">
       <!-- Hero -->
-      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 class="text-2xl font-bold text-white">Authorization Dashboard</h1>
-          <p class="text-slate-400 mt-1">Manage and track cardiology prior authorization requests</p>
+      <div class="relative overflow-hidden rounded-3xl p-8 lg:p-10" style="background: linear-gradient(135deg, #ffffff 0%, #fafbff 50%, #f0f4ff 100%); border: 1px solid #e8ecf5; box-shadow: var(--shadow-lg);">
+        <div class="absolute -top-20 -right-20 w-80 h-80 rounded-full opacity-30" style="background: radial-gradient(circle, #7c3aed, transparent 70%); filter: blur(60px);"></div>
+        <div class="absolute -bottom-20 -left-20 w-80 h-80 rounded-full opacity-30" style="background: radial-gradient(circle, #0891b2, transparent 70%); filter: blur(60px);"></div>
+        <div class="relative flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+          <div class="max-w-2xl">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold mb-4" style="background: rgba(79,70,229,0.08); color: #4f46e5; border: 1px solid rgba(79,70,229,0.15);">
+              <span class="w-1.5 h-1.5 rounded-full" style="background: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.2);"></span>
+              AI-powered prior authorization
+            </div>
+            <h1 class="text-4xl lg:text-5xl font-extrabold tracking-tight leading-tight mb-3" style="color: #0b1437;">
+              Welcome back,<br/><span class="text-gradient">Dr. Demo</span>
+            </h1>
+            <p class="text-base lg:text-lg" style="color: #475569;">Submit cardiology PAs in minutes, not hours. Track every request from chart pull to final decision.</p>
+          </div>
+          <div class="flex-shrink-0">
+            <button onclick="navigate('#new')" class="btn-primary text-base px-7 py-4">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+              Start New Request
+            </button>
+          </div>
         </div>
-        <button onclick="navigate('#new')"
-          class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.02] active:scale-[0.98]">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-          New Prior Auth Request
-        </button>
       </div>
 
       <!-- Stats -->
@@ -421,10 +767,21 @@
   }
 
   function statCard(label, value, gradient, textColor) {
+    // Map textColor to clean light-theme accent + icon
+    const iconMap = {
+      'text-accent-cyan': { bg: 'linear-gradient(135deg, #4f46e5, #7c3aed)', icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>' },
+      'text-emerald-400': { bg: 'linear-gradient(135deg, #059669, #10b981)', icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>' },
+      'text-amber-400': { bg: 'linear-gradient(135deg, #d97706, #f59e0b)', icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' },
+      'text-red-400': { bg: 'linear-gradient(135deg, #dc2626, #ef4444)', icon: '<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>' },
+    };
+    const meta = iconMap[textColor] || iconMap['text-accent-cyan'];
     return `
-      <div class="bg-gradient-to-br ${gradient} border border-surface-border rounded-xl p-5">
-        <p class="text-sm text-slate-400">${label}</p>
-        <p class="text-3xl font-bold ${textColor} mt-1">${value}</p>
+      <div class="card-soft p-5 hover:shadow-lg transition-all hover:-translate-y-0.5" style="background: #ffffff;">
+        <div class="flex items-start justify-between mb-3">
+          <p class="text-sm font-medium" style="color: #64748b;">${label}</p>
+          <div class="w-9 h-9 rounded-xl flex items-center justify-center text-white" style="background: ${meta.bg}; box-shadow: 0 4px 12px -2px rgba(11,20,55,0.15);">${meta.icon}</div>
+        </div>
+        <p class="text-3xl font-extrabold tracking-tight" style="color: #0b1437;">${value}</p>
       </div>`;
   }
 
@@ -433,162 +790,177 @@
     const patientOpts = DEMO_PATIENTS.map(p => `<option value="${p.id}">${p.id} — ${p.label}</option>`).join('');
     const procOpts = PROCEDURES.map(p => `<option value="${p.code}">${p.label}</option>`).join('');
     const payerOpts = PAYERS.map(p => `<option value="${p.id}" data-name="${p.name}" ${p.id === 'UHC' ? 'selected' : ''}>${p.name}</option>`).join('');
-    const inputCls = 'w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-slate-200 focus:ring-2 focus:ring-accent-cyan focus:border-transparent outline-none transition text-sm';
+    const inputCls = 'input-friendly';
 
     return `
-    <div class="fade-in max-w-2xl mx-auto space-y-6">
-      <button onclick="navigate('#dashboard')" class="text-sm text-slate-400 hover:text-accent-cyan transition flex items-center gap-1">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+    <div class="fade-in max-w-3xl mx-auto space-y-8">
+      <button onclick="navigate('#dashboard')" class="btn-ghost -ml-3">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
         Back to Dashboard
       </button>
 
-      <!-- Mode Toggle -->
-      <div class="flex rounded-lg border border-surface-border overflow-hidden">
-        <button onclick="toggleRequestMode('demo')" id="mode-demo" class="flex-1 py-2.5 text-sm font-medium text-center transition bg-accent-blue/20 text-accent-cyan border-r border-surface-border">Demo Patients</button>
-        <button onclick="toggleRequestMode('custom')" id="mode-custom" class="flex-1 py-2.5 text-sm font-medium text-center transition text-slate-400 hover:text-white">Custom Data</button>
+      <div class="text-center pb-2">
+        <h1 class="text-4xl lg:text-5xl font-extrabold tracking-tight mb-3" style="color: #0b1437;">New Prior Auth Request</h1>
+        <p class="text-base lg:text-lg" style="color: #64748b;">Pick a patient or upload your own clinical document. We'll do the rest.</p>
+      </div>
+
+      <!-- Mode Toggle — premium pills -->
+      <div class="inline-flex p-1 rounded-2xl mx-auto" style="background: #f1f5f9; box-shadow: inset 0 1px 2px rgba(11,20,55,0.04);">
+        <button onclick="toggleRequestMode('demo')" id="mode-demo" class="px-6 py-2.5 text-sm font-semibold rounded-xl transition-all" style="background: #ffffff; color: #4f46e5; box-shadow: var(--shadow-sm);">
+          <span class="flex items-center gap-2"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>Demo Patients</span>
+        </button>
+        <button onclick="toggleRequestMode('custom')" id="mode-custom" class="px-6 py-2.5 text-sm font-semibold rounded-xl transition-all" style="color: #64748b;">
+          <span class="flex items-center gap-2"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Your Patient</span>
+        </button>
       </div>
 
       <!-- Demo Mode -->
       <div id="demo-form-section">
-      ${card(`
-        <h2 class="text-xl font-bold text-white mb-6">New Prior Authorization Request</h2>
-        <form id="pa-form" onsubmit="submitRequest(event)" class="space-y-5">
-          <div>
-            <label class="block text-sm font-medium text-slate-300 mb-1.5">Patient</label>
-            <select id="f-patient" required class="${inputCls}">
-              <option value="">Select a patient...</option>
-              ${patientOpts}
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-slate-300 mb-1.5">Procedure</label>
-            <select id="f-procedure" required class="${inputCls}">
-              <option value="">Select a procedure...</option>
-              ${procOpts}
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-slate-300 mb-1.5">Payer</label>
-            <select id="f-payer" required class="${inputCls}">
-              ${payerOpts}
-            </select>
-          </div>
-          <div id="form-error" class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3"></div>
-          <button type="submit" id="submit-btn"
-            class="w-full py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            Run Authorization Pipeline
-          </button>
-        </form>
-      `)}
+        <div class="card-elevated p-8">
+          <form id="pa-form" onsubmit="submitRequest(event)" class="space-y-6">
+            <div>
+              <label class="block text-sm font-semibold mb-2" style="color: #0b1437;">Choose a patient</label>
+              <p class="text-xs mb-2" style="color: #64748b;">5 demo cases with realistic cardiology charts</p>
+              <select id="f-patient" required class="${inputCls}">
+                <option value="">— Select a patient —</option>
+                ${patientOpts}
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold mb-2" style="color: #0b1437;">What procedure do you need approved?</label>
+              <p class="text-xs mb-2" style="color: #64748b;">Choose the cardiology procedure</p>
+              <select id="f-procedure" required class="${inputCls}">
+                <option value="">— Select a procedure —</option>
+                ${procOpts}
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold mb-2" style="color: #0b1437;">Which insurance company?</label>
+              <p class="text-xs mb-2" style="color: #64748b;">Each payer has different rules — we'll match them automatically</p>
+              <select id="f-payer" required class="${inputCls}">
+                ${payerOpts}
+              </select>
+            </div>
+            <div id="form-error" class="hidden text-sm rounded-xl px-4 py-3" style="color: #b91c1c; background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2);"></div>
+            <button type="submit" id="submit-btn" class="btn-primary w-full text-base py-4">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              Check this request
+            </button>
+            <p class="text-center text-xs" style="color: #94a3b8;">Takes about 20 seconds. Nothing is submitted until you approve it.</p>
+          </form>
+        </div>
       </div>
 
       <!-- Custom Data Mode -->
-      <div id="custom-form-section" class="hidden">
+      <div id="custom-form-section" class="hidden space-y-6">
 
-      <!-- Upload Zone (outside card to avoid template literal issues) -->
-      <div id="upload-zone" style="cursor:pointer"
-        class="border-2 border-dashed border-surface-border rounded-xl p-8 text-center hover:border-accent-cyan/50 hover:bg-accent-cyan/5 transition mb-4">
-        <svg class="w-10 h-10 mx-auto text-slate-500 mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
-        <p class="text-sm text-slate-300 font-medium">Drop a clinical document here or click to upload</p>
-        <p class="text-xs text-slate-500 mt-1">PDF, JPEG, PNG — Stress test reports, echo reports, clinical notes, lab results</p>
+      <!-- Upload Zone — premium drag/drop -->
+      <div id="upload-zone" style="cursor:pointer; padding: 2.5rem 1.5rem;" class="rounded-2xl text-center transition-all">
+        <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4" style="background: linear-gradient(135deg, #eef2ff, #faf5ff); box-shadow: 0 4px 12px -2px rgba(79,70,229,0.15);">
+          <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: #4f46e5;"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+        </div>
+        <p class="text-base font-semibold mb-1" style="color: #0b1437;">Drop a clinical document here</p>
+        <p class="text-sm" style="color: #64748b;">or click to browse — we'll read it and fill the form for you</p>
+        <p class="text-xs mt-3" style="color: #94a3b8;">PDF, JPEG, PNG &nbsp;·&nbsp; Stress tests, echo, cath, clinical notes</p>
         <input type="file" id="file-upload" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.webp">
       </div>
-      <div id="upload-status" class="hidden mb-4"></div>
+      <div id="upload-status" class="hidden"></div>
 
-      ${card(`
-        <h2 class="text-xl font-bold text-white mb-2">Custom Patient Data</h2>
-        <p class="text-sm text-slate-400 mb-6">Enter clinical data manually, or upload a document above to auto-fill.</p>
+      <div class="card-elevated p-8">
+        <div class="mb-6">
+          <h2 class="text-2xl font-bold mb-2" style="color: #0b1437;">Your Patient's Information</h2>
+          <p class="text-sm" style="color: #64748b;">Fill this in by hand, or upload a document above to auto-fill everything.</p>
+        </div>
 
         <form id="custom-pa-form" onsubmit="submitCustomRequest(event)" class="space-y-5">
 
           <div class="grid grid-cols-3 gap-3">
             <div class="col-span-1">
-              <label class="block text-xs font-medium text-slate-400 mb-1">Patient Name</label>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Patient Name</label>
               <input id="c-name" type="text" required placeholder="Jane Doe" class="${inputCls}">
             </div>
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">Age</label>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Age</label>
               <input id="c-age" type="number" required placeholder="65" class="${inputCls}">
             </div>
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">Sex</label>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Sex</label>
               <select id="c-sex" required class="${inputCls}"><option value="M">M</option><option value="F">F</option></select>
             </div>
           </div>
 
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">Procedure Name</label>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Procedure Name</label>
               <input id="c-procedure-name" type="text" required placeholder="Cardiac Stress PET" class="${inputCls}">
             </div>
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">CPT Code</label>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">CPT Code</label>
               <input id="c-procedure-code" type="text" required placeholder="78492" class="${inputCls}">
             </div>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Payer</label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Payer</label>
             <select id="c-payer" required class="${inputCls}">
               ${payerOpts}
             </select>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Diagnosis Codes <span class="text-slate-500">(ICD-10, comma-separated)</span></label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Diagnosis Codes <span class="text-slate-500">(ICD-10, comma-separated)</span></label>
             <input id="c-dx" type="text" placeholder="I25.10, R07.89, E11.65, I10" class="${inputCls}">
           </div>
 
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">Ejection Fraction (LVEF)</label>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Ejection Fraction (LVEF)</label>
               <input id="c-ef" type="text" placeholder="e.g., 45%" class="${inputCls}">
             </div>
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">ECG Findings <span class="text-slate-500">(important for PET/SPECT)</span></label>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">ECG Findings <span class="text-slate-500">(important for PET/SPECT)</span></label>
               <input id="c-ecg" type="text" placeholder="e.g., LBBB, paced rhythm, normal sinus" class="${inputCls}">
             </div>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Key Lab Values <span class="text-slate-500">(one per line: Name | Value | Unit | Date)</span></label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Key Lab Values <span class="text-slate-500">(one per line: Name | Value | Unit | Date)</span></label>
             <textarea id="c-labs" rows="3" placeholder="HbA1c | 8.1 | % | 2025-12-05&#10;BNP | 445 | pg/mL | 2026-01-08&#10;Troponin | 0.03 | ng/mL | 2026-01-08" class="${inputCls} font-mono text-xs"></textarea>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Imaging Results <span class="text-slate-500">(one per line: Type | Date | Summary)</span></label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Imaging Results <span class="text-slate-500">(one per line: Type | Date | Summary)</span></label>
             <textarea id="c-imaging" rows="3" placeholder="Exercise Treadmill Test | 2025-11-10 | Equivocal, 6 METs, non-diagnostic ST changes&#10;TTE | 2025-11-12 | LVEF 50-55%, limited due to body habitus" class="${inputCls} font-mono text-xs"></textarea>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Current Medications <span class="text-slate-500">(one per line: Name | Dose | Indication)</span></label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Current Medications <span class="text-slate-500">(one per line: Name | Dose | Indication)</span></label>
             <textarea id="c-meds" rows="3" placeholder="Metoprolol | 100mg daily | Rate control&#10;Atorvastatin | 80mg daily | Dyslipidemia" class="${inputCls} font-mono text-xs"></textarea>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Prior Procedures <span class="text-slate-500">(one per line)</span></label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Prior Procedures <span class="text-slate-500">(one per line)</span></label>
             <textarea id="c-prior" rows="2" placeholder="PCI to LAD with DES (2023)&#10;Diagnostic coronary angiography (2024)" class="${inputCls} font-mono text-xs"></textarea>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Comorbidities <span class="text-slate-500">(one per line)</span></label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Comorbidities <span class="text-slate-500">(one per line)</span></label>
             <textarea id="c-comorbidities" rows="2" placeholder="Type 2 diabetes (HbA1c 8.1%)&#10;Obesity (BMI 38)&#10;Essential hypertension" class="${inputCls} font-mono text-xs"></textarea>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Additional Clinical Notes</label>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Additional Clinical Notes</label>
             <textarea id="c-notes" rows="3" placeholder="Any additional context — e.g., why PET over SPECT, exercise limitations, clinical urgency..." class="${inputCls} text-xs"></textarea>
           </div>
 
-          <div id="custom-form-error" class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3"></div>
-          <button type="button" onclick="document.getElementById('custom-pa-form').requestSubmit ? document.getElementById('custom-pa-form').requestSubmit() : submitCustomRequest(new Event('submit'))" id="custom-submit-btn"
-            class="w-full py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg shadow-accent-blue/20 hover:shadow-accent-blue/40 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            Run Authorization Pipeline
+          <div id="custom-form-error" class="hidden text-sm rounded-xl px-4 py-3" style="color: #b91c1c; background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2);"></div>
+          <button type="button" onclick="document.getElementById('custom-pa-form').requestSubmit ? document.getElementById('custom-pa-form').requestSubmit() : submitCustomRequest(new Event('submit'))" id="custom-submit-btn" class="btn-primary w-full text-base py-4">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Check this request
           </button>
+          <p class="text-center text-xs" style="color: #94a3b8;">Takes about 20 seconds. Nothing is submitted until you approve it.</p>
         </form>
-      `)}
+      </div>
       </div>
     </div>`;
   }
@@ -720,14 +1092,16 @@
     const customBtn = document.getElementById('mode-custom');
     const demoSection = document.getElementById('demo-form-section');
     const customSection = document.getElementById('custom-form-section');
+    const activeStyle = 'background: #ffffff; color: #4f46e5; box-shadow: var(--shadow-sm);';
+    const inactiveStyle = 'color: #64748b;';
     if (mode === 'demo') {
-      demoBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition bg-accent-blue/20 text-accent-cyan border-r border-surface-border';
-      customBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition text-slate-400 hover:text-white';
+      demoBtn.setAttribute('style', activeStyle);
+      customBtn.setAttribute('style', inactiveStyle);
       demoSection.classList.remove('hidden');
       customSection.classList.add('hidden');
     } else {
-      customBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition bg-accent-blue/20 text-accent-cyan';
-      demoBtn.className = 'flex-1 py-2.5 text-sm font-medium text-center transition text-slate-400 hover:text-white border-r border-surface-border';
+      customBtn.setAttribute('style', activeStyle);
+      demoBtn.setAttribute('style', inactiveStyle);
       demoSection.classList.add('hidden');
       customSection.classList.remove('hidden');
       setTimeout(attachUploadListeners, 50);
