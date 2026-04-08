@@ -17,30 +17,37 @@ SYSTEM_PROMPT = """\
 You are POLICY_AGENT, a payer coverage policy specialist for CardioAuth —
 a cardiology prior authorization system.
 
-You receive baseline policy data (from an internal database) for a specific
-CPT code and payer. Your job is to enhance, validate, and refine these
-criteria using your knowledge of real-world payer policies, CMS guidelines,
+Your job is to generate the EXACT prior authorization criteria for a given
+CPT code and commercial payer (UnitedHealthcare, Aetna, BCBS, Cigna, Humana,
+Medicare). Use your knowledge of real-world payer medical policies, CMS
+National Coverage Determinations (NCDs), Local Coverage Determinations (LCDs),
 and ACC/AHA clinical practice guidelines.
 
-Your tasks:
-1. Review the baseline criteria and confirm or correct each one
-2. Add any missing criteria that this payer is known to require
-3. Ensure common denial reasons reflect actual real-world denial patterns
-4. Add specific, actionable appeal success factors
-5. Cross-reference CMS National Coverage Determinations and Local Coverage
-   Determinations where applicable
-6. Cite specific policy document names/numbers where possible
+CRITICAL — DO NOT FABRICATE:
+- Only return criteria you are confident are accurate for this specific payer
+- Cite real policy document numbers/names where possible
+- If you don't know the exact criteria for a payer, return what is publicly
+  documented and note any uncertainty in cardiologist_review_flags
 
-For cardiology imaging (PET, SPECT, echo, MRI, CTA):
+For cardiology imaging (PET 78492/78491, SPECT 78451/78452, echo 93306,
+MRI 75557, CTA 75574):
 - Include ACC Appropriate Use Criteria (AUC) requirements
-- Note frequency limitations specific to this payer
-- Document when peer-to-peer review is triggered
-- Specify BMI/body habitus thresholds for advanced imaging
+- Note frequency limitations (e.g., not within 12 months unless new symptoms)
+- ALWAYS include "documentation of new or worsening symptoms" as a criterion
+  for any imaging request — this is the #1 denial reason
+- Note when peer-to-peer review is triggered
+- Specify BMI/body habitus thresholds for PET over SPECT (BMI >= 35)
+- Include ECG findings (LBBB, paced rhythm) as alternate justification
 
 For interventional cardiology (PCI, cath, TAVR, ablation):
-- Include Heart Team requirements where applicable
+- Include Heart Team requirements where applicable (TAVR)
 - Note surgical risk score requirements (STS-PROM)
-- Specify prior treatment failure documentation needs
+- Specify prior procedure failure / failed medical therapy documentation
+
+For all procedures:
+- Cross-reference CMS NCDs/LCDs when CMS coverage is provided in context
+- Document common denial reasons based on real-world denial patterns
+- List specific appeal success factors
 
 Return ONLY valid JSON matching this schema:
 {
@@ -67,24 +74,20 @@ class PolicyAgent:
         self.config = config
         self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
 
-    def run(self, procedure_code: str, payer_name: str, baseline_policy: dict | None = None) -> PolicyData:
-        logger.info("POLICY_AGENT: retrieving criteria for procedure=%s payer=%s", procedure_code, payer_name)
+    def run(self, procedure_code: str, payer_name: str, cms_context: dict | None = None) -> PolicyData:
+        logger.info("POLICY_AGENT: generating criteria for procedure=%s payer=%s", procedure_code, payer_name)
 
-        # Build the prompt with baseline policy if available
-        if baseline_policy:
-            policy_context = (
-                f"BASELINE POLICY DATA (from internal database):\n"
-                f"{json.dumps(baseline_policy, indent=2, default=str)}\n\n"
-                f"Review, validate, and enhance the above baseline criteria. "
-                f"Correct any inaccuracies, add missing criteria this payer "
-                f"is known to require, and ensure denial reasons reflect "
-                f"real-world patterns for this specific payer and procedure."
-            )
-        else:
-            policy_context = (
-                f"No baseline policy data available. Generate the complete "
-                f"prior authorization criteria based on your knowledge of "
-                f"this payer's policies and CMS/ACC guidelines."
+        # Build context from real CMS coverage data (if available)
+        cms_section = ""
+        if cms_context and cms_context.get("cms_ncd_number"):
+            cms_section = (
+                f"\n\nREAL CMS COVERAGE CONTEXT:\n"
+                f"CPT {cms_context['cpt_code']} is covered under "
+                f"NCD {cms_context['cms_ncd_number']}: {cms_context['cms_ncd_title']}\n"
+                f"NCD URL: {cms_context.get('cms_ncd_url', 'N/A')}\n"
+                f"Use this NCD as the foundation for the criteria. Commercial "
+                f"payers typically follow CMS coverage requirements with their "
+                f"own additions."
             )
 
         response = self.client.messages.create(
@@ -94,10 +97,13 @@ class PolicyAgent:
             messages=[{
                 "role": "user",
                 "content": (
-                    f"Generate prior authorization criteria.\n"
+                    f"Generate the real prior authorization criteria for:\n"
                     f"Procedure code (CPT): {procedure_code}\n"
-                    f"Payer: {payer_name}\n\n"
-                    f"{policy_context}"
+                    f"Payer: {payer_name}\n"
+                    f"{cms_section}\n\n"
+                    f"Return the exact criteria this specific payer is known "
+                    f"to require for this procedure. Cite the real policy "
+                    f"document name/number if you know it."
                 ),
             }],
         )

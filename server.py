@@ -97,6 +97,7 @@ class CustomPARequest(BaseModel):
     prior_treatments: list[str] = []
     comorbidities: list[str] = []
     ejection_fraction: str = ""
+    ecg_findings: str = ""
     additional_notes: str = ""
 
 
@@ -127,16 +128,18 @@ Return ONLY valid JSON with these fields (omit any field you cannot find):
   "procedure_code": "",
   "diagnosis_codes": ["ICD-10 codes found"],
   "ejection_fraction": "",
+  "ecg_findings": "rhythm and any abnormalities — e.g. NSR, LBBB, paced rhythm, AFib, WPW",
   "relevant_labs": [{"name": "", "value": "", "unit": "", "date": ""}],
   "relevant_imaging": [{"type": "", "date": "", "result_summary": ""}],
   "relevant_medications": [{"name": "", "dose": "", "indication": ""}],
-  "prior_treatments": [""],
+  "prior_treatments": ["prior procedures and interventions"],
   "comorbidities": [""],
   "additional_notes": ""
 }
 
 Extract every clinical detail you can find. For imaging reports, capture the full impression/findings.
 For lab reports, capture all values with units. For clinical notes, extract diagnoses, medications, history.
+Pay special attention to ECG findings (LBBB, paced rhythm, etc.) as they are critical for cardiac imaging PA approvals.
 Be thorough — this data will be used for a prior authorization submission.
 """
 
@@ -235,6 +238,22 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
     imaging = [ImagingResult(type=i.get("type", ""), date=i.get("date", ""), result_summary=i.get("result_summary", "")) for i in req.relevant_imaging]
     meds = [Medication(name=m.get("name", ""), dose=m.get("dose", ""), start_date=m.get("start_date", ""), indication=m.get("indication", "")) for m in req.relevant_medications]
 
+    # If ECG findings provided, add as imaging entry — critical for PET/SPECT approvals
+    if req.ecg_findings:
+        imaging.append(ImagingResult(
+            type="ECG (12-lead)",
+            date="",
+            result_summary=req.ecg_findings,
+        ))
+
+    # If ejection fraction provided as standalone field, add to imaging summary
+    if req.ejection_fraction:
+        imaging.append(ImagingResult(
+            type="Ejection Fraction (LVEF)",
+            date="",
+            result_summary=f"LVEF {req.ejection_fraction}",
+        ))
+
     chart_data = ChartData(
         patient_id=f"CUSTOM-{uuid.uuid4().hex[:6].upper()}",
         procedure_requested=req.procedure_name,
@@ -252,22 +271,34 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
         missing_fields=[],
     )
 
-    # Get policy (falls back to first available payer if not found)
-    try:
-        policy_data = get_demo_policy(req.procedure_code, req.payer_name)
-    except KeyError:
-        # Use a generic policy structure
-        from cardioauth.models.policy import PolicyData
-        policy_data = PolicyData(
-            payer=req.payer_name,
-            procedure=req.procedure_name,
-            cpt_code=req.procedure_code,
-            auth_required=True,
-            clinical_criteria=[],
-            documentation_required=[],
-            submission_format="portal",
-            typical_turnaround_days=5,
-        )
+    # Get policy — use Claude POLICY_AGENT with real CMS context (no hardcoding)
+    policy_data = None
+    if config.anthropic_api_key:
+        try:
+            from cardioauth.agents.policy_agent import PolicyAgent
+            from cardioauth.integrations.cms_coverage import get_cms_coverage_context
+            policy_agent = PolicyAgent(config)
+            cms_ctx = get_cms_coverage_context(req.procedure_code)
+            policy_data = policy_agent.run(req.procedure_code, req.payer_name, cms_context=cms_ctx)
+        except Exception as e:
+            logging.warning("POLICY_AGENT failed for custom request: %s", e)
+
+    if policy_data is None:
+        # Last-resort fallback only if Claude unavailable
+        try:
+            policy_data = get_demo_policy(req.procedure_code, req.payer_name)
+        except KeyError:
+            from cardioauth.models.policy import PolicyData
+            policy_data = PolicyData(
+                payer=req.payer_name,
+                procedure=req.procedure_name,
+                cpt_code=req.procedure_code,
+                auth_required=True,
+                clinical_criteria=[],
+                documentation_required=[],
+                submission_format="portal",
+                typical_turnaround_days=5,
+            )
 
     # Run reasoning — use Claude if API key available
     if config.anthropic_api_key:

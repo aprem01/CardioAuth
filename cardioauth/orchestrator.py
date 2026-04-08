@@ -81,23 +81,27 @@ class Orchestrator:
         logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT (demo data)")
         chart_data = get_demo_chart(patient_id, procedure_code)
 
-        # Step 2: Get policy — use Claude to enhance baseline demo policy
+        # Step 2: Get policy — use Claude to generate criteria from real payer
+        # knowledge and CMS NCDs/LCDs. No hardcoded policy baselines.
         logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT")
-        baseline_policy = get_demo_policy(procedure_code, payer_name)
         if self.config.anthropic_api_key:
             from cardioauth.agents.policy_agent import PolicyAgent
+            from cardioauth.integrations.cms_coverage import get_cms_coverage_context
             policy_agent = PolicyAgent(self.config)
             try:
+                # Pull real CMS NCD/LCD context for this procedure
+                cms_context = get_cms_coverage_context(procedure_code)
                 policy_data = policy_agent.run(
                     procedure_code, payer_name,
-                    baseline_policy=baseline_policy.model_dump(),
+                    cms_context=cms_context,
                 )
-                logger.info("ORCHESTRATOR: Claude policy enhancement succeeded")
+                logger.info("ORCHESTRATOR: Claude policy generation succeeded")
             except Exception as e:
-                logger.warning("POLICY_AGENT Claude enhancement failed (%s), using baseline", e)
-                policy_data = baseline_policy
+                logger.warning("POLICY_AGENT failed (%s), falling back to demo policy", e)
+                policy_data = get_demo_policy(procedure_code, payer_name)
         else:
-            policy_data = baseline_policy
+            # No Claude API key available — use demo policy as fallback only
+            policy_data = get_demo_policy(procedure_code, payer_name)
 
         # Step 3: Use real Claude reasoning if API key available, else fallback
         logger.info("ORCHESTRATOR: Step 3 — REASONING_AGENT")
