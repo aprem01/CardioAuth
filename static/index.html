@@ -2194,53 +2194,105 @@ This procedure is essential for determining whether percutaneous coronary interv
         patient_id: document.getElementById('dc-patient').value,
         procedure_code: document.getElementById('dc-proc').value
       });
-      const gaps = data.gaps || data.missing || [];
-      const present = data.present || data.documented || [];
-      const recommendations = data.recommendations || [];
-      const score = data.completeness_score || data.score;
+      const gaps = data.missing_elements || data.gaps || data.missing || [];
+      const present = data.present_elements || data.present || data.documented || [];
+      const recommendations = data.common_gaps || data.recommendations || [];
+      const score = data.documentation_score ?? data.completeness_score ?? data.score;
+      const grade = data.documentation_grade || '';
+
+      const pct = Math.round((typeof score === 'number' && score <= 1 ? score * 100 : score));
+      const scoreColor = score >= 0.8 ? '#059669' : score >= 0.5 ? '#d97706' : '#dc2626';
+      const scoreBg = score >= 0.8 ? 'rgba(5,150,105,0.08)' : score >= 0.5 ? 'rgba(217,119,6,0.08)' : 'rgba(220,38,38,0.08)';
+      const scoreLabel = score >= 0.8 ? 'Good — ready for submission' : score >= 0.5 ? 'Partial — some gaps to address' : 'Incomplete — major gaps found';
 
       resultsDiv.innerHTML = `
-        <div class="fade-in space-y-4">
-          ${score !== undefined ? card(`
-            <div class="flex items-center gap-4">
-              <div class="w-16 h-16 rounded-full ${score >= 0.8 ? 'bg-emerald-500/10 border-emerald-500' : score >= 0.5 ? 'bg-amber-500/10 border-amber-500' : 'bg-red-500/10 border-red-500'} border-2 flex items-center justify-center">
-                <span class="${score >= 0.8 ? 'text-emerald-400' : score >= 0.5 ? 'text-amber-400' : 'text-red-400'} text-lg font-bold">${Math.round((typeof score === 'number' && score <= 1 ? score * 100 : score))}%</span>
+        <div class="fade-in space-y-5">
+          ${score !== undefined ? `
+          <div class="card-elevated p-6">
+            <div class="flex items-center gap-5">
+              <div class="w-20 h-20 rounded-2xl flex items-center justify-center flex-shrink-0" style="background: ${scoreBg}; border: 2px solid ${scoreColor}40;">
+                <div class="text-center">
+                  <div class="text-2xl font-extrabold" style="color: ${scoreColor};">${pct}%</div>
+                  ${grade ? `<div class="text-xs font-bold mt-0.5" style="color: ${scoreColor};">Grade ${grade}</div>` : ''}
+                </div>
               </div>
-              <div>
-                <p class="text-sm text-slate-400">Documentation Completeness</p>
-                <p class="text-white font-semibold">${score >= 0.8 ? 'Good — Ready for submission' : score >= 0.5 ? 'Partial — Gaps need attention' : 'Incomplete — Major gaps found'}</p>
+              <div class="flex-1">
+                <p class="text-xs font-semibold uppercase tracking-wider mb-1" style="color: #64748b;">Documentation Completeness</p>
+                <p class="text-lg font-bold" style="color: #0b1437;">${scoreLabel}</p>
+                <p class="text-sm mt-1" style="color: #64748b;">${present.length} of ${present.length + gaps.length} required elements present</p>
               </div>
             </div>
-          `) : ''}
-          ${card(`
-            <h4 class="text-sm font-semibold text-white mb-3">Documentation Checklist</h4>
+          </div>
+          ` : ''}
+
+          ${present.length ? `
+          <div class="card-elevated p-6">
+            <h4 class="text-base font-bold mb-3 flex items-center gap-2" style="color: #047857;">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              Present (${present.length})
+            </h4>
             <div class="space-y-2">
-              ${present.map(item => `
-                <div class="flex items-center gap-3 px-3 py-2 bg-emerald-500/5 border border-emerald-500/10 rounded-lg">
-                  ${greenCheck()}
-                  <span class="text-sm text-emerald-300">${typeof item === 'string' ? item : item.element || item.name}</span>
-                </div>
-              `).join('')}
-              ${gaps.map(item => `
-                <div class="flex items-center gap-3 px-3 py-2 bg-red-500/5 border border-red-500/10 rounded-lg">
-                  ${redX()}
-                  <div>
-                    <span class="text-sm text-red-300">${typeof item === 'string' ? item : item.element || item.name}</span>
-                    ${(item.recommendation || item.action) ? `<p class="text-xs text-amber-300 mt-0.5">${item.recommendation || item.action}</p>` : ''}
+              ${present.map(item => {
+                const name = typeof item === 'string' ? item : (item.element || item.name);
+                const example = typeof item === 'object' ? (item.example || '') : '';
+                const source = typeof item === 'object' ? (item.source || '') : '';
+                return `
+                  <div class="flex items-start gap-3 px-4 py-3 rounded-xl" style="background: rgba(5,150,105,0.05); border: 1px solid rgba(5,150,105,0.15);">
+                    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="color: #059669;"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                    <div class="flex-1">
+                      <div class="text-sm font-semibold" style="color: #047857;">${name}</div>
+                      ${source ? `<div class="text-xs mt-0.5" style="color: #64748b;">Source: ${source}</div>` : ''}
+                      ${example ? `<div class="text-xs mt-1" style="color: #475569;"><em>e.g., ${example}</em></div>` : ''}
+                    </div>
                   </div>
-                </div>
-              `).join('')}
+                `;
+              }).join('')}
             </div>
-          `)}
-          ${recommendations.length ? card(`
-            <h4 class="text-sm font-semibold text-amber-400 mb-3">Recommendations</h4>
+          </div>
+          ` : ''}
+
+          ${gaps.length ? `
+          <div class="card-elevated p-6">
+            <h4 class="text-base font-bold mb-3 flex items-center gap-2" style="color: #b91c1c;">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+              Missing — Action Needed (${gaps.length})
+            </h4>
+            <div class="space-y-2">
+              ${gaps.map(item => {
+                const name = typeof item === 'string' ? item : (item.element || item.name);
+                const example = typeof item === 'object' ? (item.example || '') : '';
+                const source = typeof item === 'object' ? (item.source || '') : '';
+                const rec = typeof item === 'object' ? (item.recommendation || item.action || '') : '';
+                return `
+                  <div class="flex items-start gap-3 px-4 py-3 rounded-xl" style="background: rgba(220,38,38,0.05); border: 1px solid rgba(220,38,38,0.15);">
+                    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="color: #dc2626;"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    <div class="flex-1">
+                      <div class="text-sm font-semibold" style="color: #b91c1c;">${name}</div>
+                      ${source ? `<div class="text-xs mt-0.5" style="color: #64748b;">Source: ${source}</div>` : ''}
+                      ${example ? `<div class="text-xs mt-1" style="color: #475569;"><strong>Add this:</strong> <em>${example}</em></div>` : ''}
+                      ${rec ? `<div class="text-xs mt-1" style="color: #b45309;">${rec}</div>` : ''}
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+          ` : ''}
+
+          ${recommendations.length ? `
+          <div class="card-elevated p-6" style="background: linear-gradient(135deg, #fffbeb, #fef3c7);">
+            <h4 class="text-base font-bold mb-3 flex items-center gap-2" style="color: #b45309;">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              Common Issues to Avoid
+            </h4>
             <ul class="space-y-2">${recommendations.map(r => `
-              <li class="text-sm text-slate-300 flex items-start gap-2">
-                <svg class="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <li class="text-sm flex items-start gap-2" style="color: #92400e;">
+                <span class="flex-shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full" style="background: #d97706;"></span>
                 ${typeof r === 'string' ? r : r.text || r.description}
               </li>
             `).join('')}</ul>
-          `) : ''}
+          </div>
+          ` : ''}
         </div>`;
     } catch(err) {
       resultsDiv.innerHTML = `<div class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">${err.message}</div>`;
