@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from cardioauth.agents.submission_agent import SubmissionAgent
@@ -22,6 +22,36 @@ def _is_demo_mode() -> bool:
     return os.environ.get("DEMO_MODE", "true").lower() == "true"
 
 
+def _classify_anthropic_error(exc: Exception) -> dict:
+    """Turn an Anthropic SDK exception into a structured warning."""
+    msg = str(exc)
+    lower = msg.lower()
+    if "usage limit" in lower or "spend limit" in lower:
+        return {
+            "level": "critical",
+            "kind": "spend_limit",
+            "message": (
+                "Anthropic API spend limit reached. Results below are from the "
+                "fallback engine, not real-time AI reasoning. Raise the spend "
+                "cap at console.anthropic.com → Limits to restore full quality."
+            ),
+            "raw": msg,
+        }
+    if "rate limit" in lower or "429" in lower:
+        return {
+            "level": "warning",
+            "kind": "rate_limit",
+            "message": "Anthropic API rate limit hit briefly. Results from fallback engine; retry in a moment for full AI reasoning.",
+            "raw": msg,
+        }
+    return {
+        "level": "warning",
+        "kind": "agent_failure",
+        "message": f"AI agent failed: {msg[:200]}. Showing fallback results.",
+        "raw": msg,
+    }
+
+
 @dataclass
 class ReviewPackage:
     """Everything the cardiologist sees before approving submission."""
@@ -30,6 +60,7 @@ class ReviewPackage:
     reasoning: ReasoningResult
     requires_human_action: list[str]
     taxonomy_match: dict | None = None  # Structured criterion match matrix
+    system_warnings: list[dict] = field(default_factory=list)  # Agent failures, fallbacks
 
 
 class Orchestrator:
@@ -82,6 +113,8 @@ class Orchestrator:
         logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT (demo data)")
         chart_data = get_demo_chart(patient_id, procedure_code)
 
+        system_warnings: list[dict] = []
+
         # Step 2: Get policy — use Claude to generate criteria from real payer
         # knowledge and CMS NCDs/LCDs. No hardcoded policy baselines.
         logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT")
@@ -90,7 +123,6 @@ class Orchestrator:
             from cardioauth.integrations.cms_coverage import get_cms_coverage_context
             policy_agent = PolicyAgent(self.config)
             try:
-                # Pull real CMS NCD/LCD context for this procedure
                 cms_context = get_cms_coverage_context(procedure_code)
                 policy_data = policy_agent.run(
                     procedure_code, payer_name,
@@ -98,10 +130,12 @@ class Orchestrator:
                 )
                 logger.info("ORCHESTRATOR: Claude policy generation succeeded")
             except Exception as e:
+                w = _classify_anthropic_error(e)
+                w["agent"] = "POLICY_AGENT"
+                system_warnings.append(w)
                 logger.warning("POLICY_AGENT failed (%s), falling back to demo policy", e)
                 policy_data = get_demo_policy(procedure_code, payer_name)
         else:
-            # No Claude API key available — use demo policy as fallback only
             policy_data = get_demo_policy(procedure_code, payer_name)
 
         # Step 3: Use real Claude reasoning if API key available, else fallback
@@ -113,6 +147,9 @@ class Orchestrator:
                 reasoning = reasoning_agent.run(chart_data, policy_data)
                 logger.info("ORCHESTRATOR: Claude reasoning succeeded")
             except Exception as e:
+                w = _classify_anthropic_error(e)
+                w["agent"] = "REASONING_AGENT"
+                system_warnings.append(w)
                 logger.warning("REASONING_AGENT failed (%s), using demo reasoning", e)
                 from cardioauth.demo import get_demo_reasoning
                 reasoning = get_demo_reasoning(chart_data, policy_data)
@@ -134,7 +171,6 @@ class Orchestrator:
                     self.config,
                     case_id=case_id,
                 )
-                # Record any emerging criteria for review
                 for ec in tax_result.emerging_criteria:
                     try:
                         record_emerging_criterion(
@@ -155,6 +191,9 @@ class Orchestrator:
                     tax_result.label, len(tax_result.emerging_criteria),
                 )
             except Exception as e:
+                w = _classify_anthropic_error(e)
+                w["agent"] = "TAXONOMY_MATCHER"
+                system_warnings.append(w)
                 logger.warning("TAXONOMY_MATCHER failed: %s", e)
 
         requires_human_action: list[str] = []
@@ -189,6 +228,7 @@ class Orchestrator:
             reasoning=reasoning,
             requires_human_action=requires_human_action,
             taxonomy_match=taxonomy_match,
+            system_warnings=system_warnings,
         )
 
     def _process_live(

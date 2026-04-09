@@ -1008,8 +1008,18 @@
       formData.append('file', file);
       const res = await fetch('/api/extract-document', { method: 'POST', body: formData });
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err);
+        let detail = '';
+        let kind = 'error';
+        try {
+          const j = await res.json();
+          detail = j.detail || JSON.stringify(j);
+        } catch { detail = await res.text(); }
+        if (res.status === 429 || /spend limit|usage limit/i.test(detail)) kind = 'spend_limit';
+        else if (res.status === 429) kind = 'rate_limit';
+        const err = new Error(detail);
+        err.status = res.status;
+        err.kind = kind;
+        throw err;
       }
       const data = await res.json();
       const ext = data.extracted || {};
@@ -1074,12 +1084,24 @@
       });
 
     } catch (err) {
+      const isSpend = err.kind === 'spend_limit';
+      const title = isSpend ? 'AI extraction unavailable — spend limit reached' : 'Extraction failed';
+      const tone = isSpend ? '#d97706' : '#dc2626';
+      const tonebg = isSpend ? 'rgba(217,119,6,0.06)' : 'rgba(220,38,38,0.06)';
+      const toneborder = isSpend ? 'rgba(217,119,6,0.25)' : 'rgba(220,38,38,0.25)';
+      statusEl.className = 'rounded-2xl px-5 py-4 mt-2';
+      statusEl.setAttribute('style', `background: ${tonebg}; border: 1.5px solid ${toneborder};`);
+      statusEl.classList.remove('hidden');
       statusEl.innerHTML = `
-        <div class="flex items-center gap-3">
-          ${redX()}
-          <div>
-            <p class="text-sm text-red-400 font-medium">Extraction failed</p>
-            <p class="text-xs text-slate-400">${err.message}</p>
+        <div class="flex items-start gap-3">
+          <svg class="w-6 h-6 flex-shrink-0 mt-0.5" fill="none" stroke="${tone}" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          <div class="flex-1">
+            <p class="text-sm font-bold mb-1" style="color: ${tone};">${title}</p>
+            <p class="text-sm" style="color: #475569;">${err.message || 'The document could not be processed.'}</p>
+            ${isSpend
+              ? '<p class="text-xs mt-2" style="color: #64748b;">You can still enter the clinical data manually using the form below — the rest of the pipeline (criteria matching, scoring, narrative) is unaffected.</p>'
+              : '<p class="text-xs mt-2" style="color: #64748b;">Try a different file, or enter the clinical data manually below.</p>'
+            }
           </div>
         </div>`;
     }
@@ -1286,6 +1308,7 @@
       action_items: api.requires_human_action || [],
       guideline_citations: api.guideline_citations || [],
       taxonomy_match: api.taxonomy_match || null,
+      system_warnings: api.system_warnings || [],
       audit_trail: [
         { action: 'Pipeline completed', timestamp: new Date().toISOString(), actor: 'CardioAuth' }
       ]
@@ -1530,6 +1553,7 @@ This procedure is essential for determining whether percutaneous coronary interv
     const actionItems = data.action_items || [];
     const patient = data.patient || {};
     const taxonomyMatch = data.taxonomy_match || null;
+    const systemWarnings = data.system_warnings || [];
 
     return `
     <div class="fade-in space-y-6">
@@ -1540,6 +1564,8 @@ This procedure is essential for determining whether percutaneous coronary interv
         </button>
         <span class="text-sm font-mono text-slate-500">${data.request_id || 'PA-2026-XXXX'}</span>
       </div>
+
+      ${systemWarnings.length ? renderSystemWarnings(systemWarnings) : ''}
 
       <!-- Confidence Header -->
       ${card(`
@@ -1707,6 +1733,32 @@ This procedure is essential for determining whether percutaneous coronary interv
         </button>
       </div>
     </div>`;
+  }
+
+  function renderSystemWarnings(warnings) {
+    if (!warnings || !warnings.length) return '';
+    return warnings.map(w => {
+      const isCritical = w.level === 'critical';
+      const bg = isCritical ? 'rgba(220,38,38,0.06)' : 'rgba(217,119,6,0.06)';
+      const border = isCritical ? 'rgba(220,38,38,0.25)' : 'rgba(217,119,6,0.25)';
+      const ic = isCritical ? '#dc2626' : '#d97706';
+      const title = isCritical ? 'AI engine fallback active' : 'Partial AI results';
+      return `
+        <div class="rounded-2xl px-5 py-4" style="background: ${bg}; border: 1.5px solid ${border};">
+          <div class="flex items-start gap-3">
+            <svg class="w-6 h-6 flex-shrink-0 mt-0.5" fill="none" stroke="${ic}" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+            <div class="flex-1">
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-sm font-bold" style="color: ${ic};">${title}</span>
+                <span class="text-xs font-mono" style="color: ${ic}; opacity: 0.7;">${w.agent || 'system'}</span>
+              </div>
+              <p class="text-sm" style="color: #475569;">${w.message}</p>
+              ${w.kind === 'spend_limit' ? '<a href="https://console.anthropic.com/settings/limits" target="_blank" class="text-xs font-semibold mt-2 inline-flex items-center gap-1" style="color: #4f46e5;">Open Anthropic Console <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></a>' : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
   }
 
   function renderTaxonomyMatrix(tax) {

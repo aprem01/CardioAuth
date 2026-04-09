@@ -214,6 +214,23 @@ async def extract_document(file: UploadFile = File(...)) -> dict[str, Any]:
 
         return {"status": "ok", "extracted": extracted, "filename": file.filename}
 
+    except anthropic.BadRequestError as e:
+        logging.warning("Anthropic BadRequest during extraction: %s", e)
+        msg = str(e)
+        if "usage limit" in msg.lower() or "spend limit" in msg.lower():
+            raise HTTPException(
+                status_code=429,
+                detail="The Anthropic API spend limit has been reached for this billing period. "
+                       "The administrator needs to raise the spend cap at console.anthropic.com → Limits. "
+                       "In the meantime, you can still enter clinical data manually using the form below.",
+            )
+        raise HTTPException(status_code=400, detail=f"Document could not be processed: {msg}")
+    except anthropic.RateLimitError as e:
+        logging.warning("Anthropic rate limit during extraction: %s", e)
+        raise HTTPException(
+            status_code=429,
+            detail="API rate limit hit. Please wait a moment and try again, or enter the data manually.",
+        )
     except Exception as e:
         logging.exception("Document extraction failed")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
@@ -371,6 +388,7 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
         "chart_data": chart_data.model_dump(),
         "policy_data": policy_data.model_dump(),
         "taxonomy_match": taxonomy_match,
+        "system_warnings": review.system_warnings if hasattr(review, 'system_warnings') else [],
     }
 
 
@@ -410,6 +428,7 @@ def create_pa_request(req: PARequest) -> dict[str, Any]:
         "chart_data": review.chart_data.model_dump(),
         "policy_data": review.policy_data.model_dump(),
         "taxonomy_match": review.taxonomy_match,
+        "system_warnings": review.system_warnings,
     }
 
 
