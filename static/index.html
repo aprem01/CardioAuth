@@ -495,6 +495,13 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
         Emerging Criteria
       </a>
+
+      <!-- About / Compliance -->
+      <div class="sidebar-group-label mt-4">About</div>
+      <a href="#privacy" class="sidebar-link" data-route="privacy">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        Privacy &amp; Data
+      </a>
     </nav>
   </aside>
 
@@ -580,6 +587,7 @@
     else if (hash === '#denials') { app.innerHTML = renderLoading('Denial Analytics'); loadDenials(); }
     else if (hash === '#taxonomy') { app.innerHTML = renderLoading('Criterion Taxonomy'); loadTaxonomy(); }
     else if (hash === '#emerging') { app.innerHTML = renderLoading('Emerging Criteria'); loadEmerging(); }
+    else if (hash === '#privacy') app.innerHTML = renderPrivacy();
     else { app.innerHTML = renderDashboard(); }
   }
 
@@ -867,6 +875,22 @@
       <!-- Custom Data Mode -->
       <div id="custom-form-section" class="hidden space-y-6">
 
+      <!-- Privacy / data handling notice -->
+      <div class="rounded-2xl px-5 py-4" style="background: linear-gradient(135deg, #fffbeb, #fef3c7); border: 1.5px solid rgba(217,119,6,0.25);">
+        <div class="flex items-start gap-3">
+          <svg class="w-6 h-6 flex-shrink-0 mt-0.5" fill="none" stroke="#b45309" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+          <div class="flex-1">
+            <p class="text-sm font-bold mb-1" style="color: #92400e;">Prototype environment — please use de-identified or synthetic cases only</p>
+            <p class="text-sm leading-relaxed" style="color: #78350f;">
+              Files you upload are sent to the AI extraction model and then dropped from memory.
+              <strong>Nothing is written to disk or saved to a database on this server.</strong>
+              However, this is not yet a HIPAA-compliant deployment, so do not upload real PHI.
+              <a href="#privacy" class="underline font-semibold" style="color: #92400e;">See full data handling details</a>.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Upload Zone — premium drag/drop -->
       <div id="upload-zone" style="cursor:pointer; padding: 2.5rem 1.5rem;" class="rounded-2xl text-center transition-all">
         <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4" style="background: linear-gradient(135deg, #eef2ff, #faf5ff); box-shadow: 0 4px 12px -2px rgba(79,70,229,0.15);">
@@ -875,6 +899,10 @@
         <p class="text-base font-semibold mb-1" style="color: #0b1437;">Drop a clinical document here</p>
         <p class="text-sm" style="color: #64748b;">or click to browse — we'll read it and fill the form for you</p>
         <p class="text-xs mt-3" style="color: #94a3b8;">PDF, JPEG, PNG &nbsp;·&nbsp; Stress tests, echo, cath, clinical notes</p>
+        <div class="inline-flex items-center gap-1.5 mt-3 px-2.5 py-1 rounded-full" style="background: rgba(5,150,105,0.08); border: 1px solid rgba(5,150,105,0.2);">
+          <svg class="w-3 h-3" fill="none" stroke="#059669" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+          <span class="text-[0.7rem] font-semibold" style="color: #047857;">Not stored on server &middot; Memory-only</span>
+        </div>
         <input type="file" id="file-upload" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.webp">
       </div>
       <div id="upload-status" class="hidden"></div>
@@ -2360,6 +2388,96 @@ This procedure is essential for determining whether percutaneous coronary interv
   }
 
   // ──────────────────────────── Doc Checker (#doc-checker) ────────────────────────────
+  function renderPrivacy() {
+    return `
+    <div class="fade-in space-y-6 max-w-4xl">
+      <div>
+        <button onclick="navigate('#dashboard')" class="btn-ghost -ml-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Dashboard
+        </button>
+      </div>
+
+      <div class="card-elevated p-6 lg:p-8" style="background: linear-gradient(135deg, #ffffff 0%, #f0f4ff 100%);">
+        <div class="flex items-center gap-3 mb-2">
+          <svg class="w-8 h-8" fill="none" stroke="#4f46e5" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+          <h1 class="text-3xl font-extrabold" style="color: #0b1437;">Privacy &amp; Data Handling</h1>
+        </div>
+        <p class="text-base" style="color: #475569;">Exactly what happens to clinical data you put into CardioAuth. No legalese.</p>
+      </div>
+
+      <div class="rounded-2xl px-5 py-4" style="background: linear-gradient(135deg, #fffbeb, #fef3c7); border: 1.5px solid rgba(217,119,6,0.25);">
+        <div class="flex items-start gap-3">
+          <svg class="w-6 h-6 flex-shrink-0 mt-0.5" fill="none" stroke="#b45309" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          <div>
+            <p class="text-sm font-bold mb-1" style="color: #92400e;">This is a prototype, not a HIPAA-compliant production system</p>
+            <p class="text-sm" style="color: #78350f;">Use de-identified or synthetic cases when uploading or testing. Real PHI will require a HIPAA-compliant deployment with signed Business Associate Agreements (BAAs), described at the bottom of this page.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-elevated p-6 lg:p-8">
+        <h2 class="text-xl font-bold mb-4" style="color: #0b1437;">What happens when you upload a file</h2>
+        <ol class="space-y-3" style="color: #334155;">
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center" style="background: #eef2ff; color: #4f46e5;">1</span>
+            <p>Your browser sends the file to the CardioAuth server (Railway) over HTTPS.</p>
+          </li>
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center" style="background: #eef2ff; color: #4f46e5;">2</span>
+            <p>The server reads the file into memory, base64-encodes it, and forwards it to the Anthropic API for vision-based extraction of clinical fields.</p>
+          </li>
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center" style="background: #eef2ff; color: #4f46e5;">3</span>
+            <p>As soon as the extracted JSON returns, the file content is dropped from server memory.</p>
+          </li>
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center" style="background: rgba(5,150,105,0.15); color: #047857;">&check;</span>
+            <p style="color: #047857;"><strong>Nothing is written to disk. Nothing is saved to a database. There is no persistence layer for uploaded files.</strong></p>
+          </li>
+        </ol>
+      </div>
+
+      <div class="card-elevated p-6 lg:p-8">
+        <h2 class="text-xl font-bold mb-4" style="color: #0b1437;">What happens with the extracted text</h2>
+        <p class="text-sm mb-3" style="color: #475569;">The structured fields the AI extracts (labs, imaging summaries, diagnoses, etc.) are held in server memory only for the lifetime of the request, then the same fields are sent through the rest of the pipeline (policy generation, criterion matching, narrative drafting). When you click <strong>Approve &amp; Submit</strong>, the assembled package is held briefly so you can export a PDF, then dropped from memory when you navigate away.</p>
+        <p class="text-sm" style="color: #475569;">There is no per-user database, no long-term case history, and no analytics that store the chart content itself. The only thing that persists across sessions is the <em>emerging criteria queue</em>, which captures de-identified <strong>category descriptions only</strong> (e.g. "family history of premature CAD") with no patient identifiers attached.</p>
+      </div>
+
+      <div class="card-elevated p-6 lg:p-8">
+        <h2 class="text-xl font-bold mb-4" style="color: #0b1437;">Third parties that briefly handle file content</h2>
+        <div class="space-y-4">
+          <div class="rounded-xl p-4" style="background: #fafbff; border: 1px solid #e8ecf5;">
+            <p class="font-bold text-sm mb-1" style="color: #0b1437;">Railway (hosting)</p>
+            <p class="text-sm" style="color: #475569;">Passes the HTTPS request from your browser to the CardioAuth FastAPI server. Does not store request bodies. <a href="https://railway.com/legal/privacy" target="_blank" class="font-semibold" style="color: #4f46e5;">Railway privacy policy →</a></p>
+          </div>
+          <div class="rounded-xl p-4" style="background: #fafbff; border: 1px solid #e8ecf5;">
+            <p class="font-bold text-sm mb-1" style="color: #0b1437;">Anthropic (AI extraction &amp; reasoning)</p>
+            <p class="text-sm" style="color: #475569;">Processes the file for vision extraction and runs the reasoning agents. Per Anthropic's commercial terms, API content is <strong>not used for model training</strong>, is retained for up to 30 days for abuse-monitoring purposes, then deleted. <a href="https://www.anthropic.com/legal/commercial-terms" target="_blank" class="font-semibold" style="color: #4f46e5;">Anthropic terms →</a></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-elevated p-6 lg:p-8">
+        <h2 class="text-xl font-bold mb-4" style="color: #0b1437;">Path to a HIPAA-compliant deployment</h2>
+        <p class="text-sm mb-3" style="color: #475569;">For real clinical use against actual PHI, the prototype needs to move to a HIPAA-eligible environment. Here's the checklist:</p>
+        <ul class="space-y-2" style="color: #475569;">
+          <li class="flex gap-2"><span style="color: #4f46e5;">&bull;</span><span class="text-sm">Move hosting from Railway to a HIPAA-eligible cloud (AWS / Azure / GCP) with a signed <strong>Business Associate Agreement (BAA)</strong>.</span></li>
+          <li class="flex gap-2"><span style="color: #4f46e5;">&bull;</span><span class="text-sm">Sign a separate <strong>BAA with Anthropic</strong> (available on enterprise plans) covering the API extraction and reasoning calls.</span></li>
+          <li class="flex gap-2"><span style="color: #4f46e5;">&bull;</span><span class="text-sm">Add encryption at rest (KMS-managed keys) for any persisted data, and encryption in transit (TLS 1.2+) — already in place.</span></li>
+          <li class="flex gap-2"><span style="color: #4f46e5;">&bull;</span><span class="text-sm">Per-user authentication and role-based access controls (currently this prototype is single-tenant and unauthenticated).</span></li>
+          <li class="flex gap-2"><span style="color: #4f46e5;">&bull;</span><span class="text-sm">Immutable audit logs of every data access and PA submission, with retention per HIPAA requirements.</span></li>
+          <li class="flex gap-2"><span style="color: #4f46e5;">&bull;</span><span class="text-sm">Workforce training, breach notification procedures, and a security risk assessment.</span></li>
+          <li class="flex gap-2"><span style="color: #4f46e5;">&bull;</span><span class="text-sm">Direct EMR integration (Epic / Cerner FHIR) so chart data flows over a secured channel rather than via uploaded files.</span></li>
+        </ul>
+      </div>
+
+      <div class="card-elevated p-5">
+        <p class="text-xs" style="color: #94a3b8;">Last updated: 2026-04-09 &nbsp;·&nbsp; Questions about how data is handled? Email the maintainer.</p>
+      </div>
+    </div>`;
+  }
+
   function renderDocChecker() {
     const patientOpts = DEMO_PATIENTS.map(p => `<option value="${p.id}">${p.id} — ${p.label}</option>`).join('');
     const procOpts = PROCEDURES.map(p => `<option value="${p.code}">${p.label}</option>`).join('');
