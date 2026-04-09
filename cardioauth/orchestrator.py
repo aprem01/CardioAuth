@@ -29,6 +29,7 @@ class ReviewPackage:
     policy_data: PolicyData
     reasoning: ReasoningResult
     requires_human_action: list[str]
+    taxonomy_match: dict | None = None  # Structured criterion match matrix
 
 
 class Orchestrator:
@@ -119,6 +120,43 @@ class Orchestrator:
             from cardioauth.demo import get_demo_reasoning
             reasoning = get_demo_reasoning(chart_data, policy_data)
 
+        # Step 3b: Match against fixed criterion taxonomy (Layer 2)
+        taxonomy_match = None
+        if self.config.anthropic_api_key:
+            try:
+                from cardioauth.taxonomy import match_case_to_taxonomy, record_emerging_criterion
+                logger.info("ORCHESTRATOR: Step 3b — TAXONOMY_MATCHER")
+                case_id = f"{patient_id}-{procedure_code}"
+                tax_result = match_case_to_taxonomy(
+                    chart_data.model_dump(),
+                    procedure_code,
+                    payer_name,
+                    self.config,
+                    case_id=case_id,
+                )
+                # Record any emerging criteria for review
+                for ec in tax_result.emerging_criteria:
+                    try:
+                        record_emerging_criterion(
+                            suggested_code=ec.get("suggested_code", "MISC"),
+                            category=ec.get("category", "MISC"),
+                            description=ec.get("description", ""),
+                            rationale=ec.get("rationale", ""),
+                            case_id=case_id,
+                            procedure_code=procedure_code,
+                            payer=payer_name,
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to record emerging criterion: %s", e)
+                taxonomy_match = tax_result.to_dict()
+                logger.info(
+                    "ORCHESTRATOR: taxonomy match — %d criteria, score=%.2f (%s), %d emerging",
+                    len(tax_result.matches), tax_result.overall_score,
+                    tax_result.label, len(tax_result.emerging_criteria),
+                )
+            except Exception as e:
+                logger.warning("TAXONOMY_MATCHER failed: %s", e)
+
         requires_human_action: list[str] = []
 
         if chart_data.confidence_score < self.config.chart_confidence_threshold:
@@ -150,6 +188,7 @@ class Orchestrator:
             policy_data=policy_data,
             reasoning=reasoning,
             requires_human_action=requires_human_action,
+            taxonomy_match=taxonomy_match,
         )
 
     def _process_live(

@@ -321,6 +321,37 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
         requires_human_action=[],
     )
     request_id = chart_data.patient_id + "-" + chart_data.procedure_code
+
+    # Run taxonomy matcher on custom case (if Claude available)
+    taxonomy_match = None
+    if config.anthropic_api_key:
+        try:
+            from cardioauth.taxonomy import match_case_to_taxonomy, record_emerging_criterion
+            tax_result = match_case_to_taxonomy(
+                chart_data.model_dump(),
+                req.procedure_code,
+                req.payer_name,
+                config,
+                case_id=request_id,
+            )
+            for ec in tax_result.emerging_criteria:
+                try:
+                    record_emerging_criterion(
+                        suggested_code=ec.get("suggested_code", "MISC"),
+                        category=ec.get("category", "MISC"),
+                        description=ec.get("description", ""),
+                        rationale=ec.get("rationale", ""),
+                        case_id=request_id,
+                        procedure_code=req.procedure_code,
+                        payer=req.payer_name,
+                    )
+                except Exception:
+                    pass
+            taxonomy_match = tax_result.to_dict()
+        except Exception as e:
+            logging.warning("Taxonomy matcher failed for custom case: %s", e)
+
+    review.taxonomy_match = taxonomy_match
     _reviews[request_id] = review
 
     return {
@@ -339,6 +370,7 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
         "chart_confidence": chart_data.confidence_score,
         "chart_data": chart_data.model_dump(),
         "policy_data": policy_data.model_dump(),
+        "taxonomy_match": taxonomy_match,
     }
 
 
@@ -377,6 +409,7 @@ def create_pa_request(req: PARequest) -> dict[str, Any]:
         "chart_confidence": review.chart_data.confidence_score,
         "chart_data": review.chart_data.model_dump(),
         "policy_data": review.policy_data.model_dump(),
+        "taxonomy_match": review.taxonomy_match,
     }
 
 
@@ -523,6 +556,69 @@ def check_documentation(req: DocCheckRequest) -> dict[str, Any]:
         return analyze_documentation(chart.model_dump(), req.procedure_code)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ─────────────────────────── Taxonomy API ───────────────────────────
+
+
+@app.get("/api/taxonomy")
+def get_taxonomy(procedure_code: str = "", category: str = "") -> dict[str, Any]:
+    """Return the full criterion taxonomy, optionally filtered."""
+    from cardioauth.taxonomy import (
+        CRITERION_TAXONOMY, TAXONOMY_VERSION, get_categories,
+        get_criteria_for_procedure,
+    )
+    if procedure_code:
+        criteria = get_criteria_for_procedure(procedure_code)
+    else:
+        criteria = list(CRITERION_TAXONOMY.values())
+    if category:
+        criteria = [c for c in criteria if c.category == category]
+    return {
+        "version": TAXONOMY_VERSION,
+        "categories": get_categories(),
+        "total": len(criteria),
+        "criteria": [
+            {
+                "code": c.code,
+                "category": c.category,
+                "short_name": c.short_name,
+                "definition": c.definition,
+                "evidence_type": c.evidence_type,
+                "applies_to": c.applies_to,
+                "guideline_source": c.guideline_source,
+                "severity": c.severity,
+                "introduced_version": c.introduced_version,
+            }
+            for c in criteria
+        ],
+    }
+
+
+@app.get("/api/taxonomy/categories")
+def get_taxonomy_categories() -> dict[str, Any]:
+    """Return the category code → label map."""
+    from cardioauth.taxonomy import get_categories
+    return {"categories": get_categories()}
+
+
+@app.get("/api/taxonomy/emerging")
+def get_emerging() -> dict[str, Any]:
+    """Return the emerging criteria queue."""
+    from cardioauth.taxonomy import get_emerging_queue
+    return get_emerging_queue()
+
+
+class PromoteRequest(BaseModel):
+    suggested_code: str
+    formal_code: str
+
+
+@app.post("/api/taxonomy/promote")
+def promote_emerging(req: PromoteRequest) -> dict[str, Any]:
+    """Mark an emerging criterion as promoted (manual taxonomy update still required)."""
+    from cardioauth.taxonomy import promote_to_taxonomy
+    return promote_to_taxonomy(req.suggested_code, req.formal_code)
 
 
 @app.post("/api/pa/export-pdf")
