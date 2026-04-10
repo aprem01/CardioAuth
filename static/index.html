@@ -1237,15 +1237,35 @@
     return `
     <div class="fade-in max-w-2xl mx-auto space-y-6">
       <div class="text-center mb-8">
-        <h2 class="text-xl font-bold text-white">Running Authorization Pipeline</h2>
-        <p class="text-slate-400 mt-1">Analyzing clinical data against payer criteria</p>
+        <h2 class="text-3xl font-extrabold mb-2" style="color: #0b1437;">Analyzing your request</h2>
+        <p class="text-base" style="color: #475569;">Four AI agents are working through the chart against payer criteria.</p>
       </div>
+
+      <!-- Live progress header with elapsed timer + expectation -->
+      <div class="card-elevated p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-wider mb-1" style="color: #4f46e5;">In progress</p>
+            <p id="pipeline-current-step" class="text-base font-bold" style="color: #0b1437;">Starting…</p>
+          </div>
+          <div class="text-right">
+            <p class="text-xs" style="color: #94a3b8;">Elapsed</p>
+            <p id="pipeline-elapsed" class="text-2xl font-extrabold tabular-nums" style="color: #0b1437;">0:00</p>
+          </div>
+        </div>
+        <!-- Progress bar -->
+        <div class="w-full h-2 rounded-full overflow-hidden" style="background: #f1f5f9;">
+          <div id="pipeline-progress-bar" class="h-full transition-all duration-500 ease-out" style="width: 0%; background: linear-gradient(90deg, #4f46e5, #7c3aed);"></div>
+        </div>
+        <p class="text-xs mt-2 text-center" style="color: #64748b;">Usually takes about <strong>90 seconds</strong>. Keep this tab open — we'll move you to the review screen automatically.</p>
+      </div>
+
       ${card(`
         <div id="pipeline-steps" class="space-y-0">
-          ${pipelineStep(0, 'CHART_AGENT', 'Extracting clinical data from patient records...', 'waiting')}
-          ${pipelineStep(1, 'POLICY_AGENT', 'Retrieving payer-specific criteria and guidelines...', 'waiting')}
-          ${pipelineStep(2, 'REASONING_AGENT', 'Analyzing criteria match and generating narrative...', 'waiting')}
-          ${pipelineStep(3, 'REVIEW_READY', 'Preparing physician review package...', 'waiting')}
+          ${pipelineStep(0, 'CHART_AGENT', 'Extracting clinical data from patient records', 'waiting')}
+          ${pipelineStep(1, 'POLICY_AGENT', 'Retrieving payer criteria + CMS coverage rules', 'waiting')}
+          ${pipelineStep(2, 'REASONING_AGENT', 'Drafting PA narrative & matching structured criteria', 'waiting')}
+          ${pipelineStep(3, 'REVIEW_READY', 'Assembling physician review package', 'waiting')}
         </div>
       `)}
       <div id="pipeline-error" class="hidden"></div>
@@ -1420,73 +1440,115 @@
       return `<div class="text-emerald-400">Review package assembled. Ready for physician review.</div>`;
     }
 
-    // Animate steps while API call runs
-    let currentStep = 0;
-    const minStepTime = 1200;
-    let stepPromise = null;
+    // ─────────────────────────────────────────────────────────────
+    // Live progress animation driven by REAL elapsed time.
+    // The backend usually takes ~90 seconds total (chart parse instant,
+    // policy ~30s, reasoning + taxonomy in parallel ~50s, assembly ~5s).
+    // We weight the animation by expected per-step duration so the user
+    // never sees a step "hang" with no feedback.
+    // ─────────────────────────────────────────────────────────────
+    const stepDurations = [3, 30, 50, 5]; // seconds per step (rough)
+    const totalDuration = stepDurations.reduce((a, b) => a + b, 0);
+    const startTime = Date.now();
     let apiDone = false;
     let apiResult = null;
-    let apiError = null;
+    let activeIdx = -1;
 
-    function advanceStep() {
-      if (currentStep > 0) setStep(currentStep - 1, 'done');
-      if (currentStep < steps.length) {
-        setStep(currentStep, 'active');
-        currentStep++;
+    function fmtTime(secs) {
+      const m = Math.floor(secs / 60);
+      const s = Math.floor(secs % 60);
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function tick() {
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const elapsedEl = document.getElementById('pipeline-elapsed');
+      const barEl = document.getElementById('pipeline-progress-bar');
+      const stepLabelEl = document.getElementById('pipeline-current-step');
+      if (elapsedEl) elapsedEl.textContent = fmtTime(elapsedSec);
+
+      // Compute expected progress based on elapsed vs total. Cap at 95%
+      // until the API actually returns so the bar never claims done early.
+      let progress = Math.min(elapsedSec / totalDuration, 0.95);
+      if (apiDone) progress = 1;
+      if (barEl) barEl.style.width = `${(progress * 100).toFixed(1)}%`;
+
+      // Determine which step should be "active" based on elapsed time
+      let acc = 0;
+      let newActive = 0;
+      for (let i = 0; i < stepDurations.length; i++) {
+        acc += stepDurations[i];
+        if (elapsedSec < acc) {
+          newActive = i;
+          break;
+        }
+        newActive = i + 1;
+      }
+      newActive = Math.min(newActive, stepDurations.length - 1);
+
+      // If API is done, force the active step to the last one
+      if (apiDone) newActive = stepDurations.length - 1;
+
+      if (newActive !== activeIdx) {
+        // Mark previous steps as done
+        for (let i = 0; i < newActive; i++) setStep(i, 'done');
+        setStep(newActive, 'active');
+        activeIdx = newActive;
+      }
+
+      const stepNames = ['Pulling clinical data', 'Looking up payer rules', 'Drafting narrative + matching criteria', 'Assembling review package'];
+      if (stepLabelEl) {
+        if (apiDone) {
+          stepLabelEl.textContent = 'Done — opening review';
+        } else if (elapsedSec > 120) {
+          stepLabelEl.textContent = `${stepNames[newActive]} (still working — ${fmtTime(elapsedSec)})`;
+        } else {
+          stepLabelEl.textContent = stepNames[newActive];
+        }
       }
     }
 
-    // Fire the API call concurrently with animation
+    const tickInterval = setInterval(tick, 250);
+    tick();
+
+    // Fire the API call
     const apiUrl = req._custom ? '/api/pa/custom-request' : '/api/pa/request';
-    const apiPromise = apiPost(apiUrl, req).catch(err => ({ _error: err }));
+    apiResult = await apiPost(apiUrl, req).catch(err => ({ _error: err }));
+    apiDone = true;
+    tick();
+    clearInterval(tickInterval);
 
-    // Step 0: CHART_AGENT
-    setStep(0, 'active');
-    await new Promise(r => setTimeout(r, 1500));
-    const result = await apiPromise;
-
-    if (result && !result._error) {
-      setStep(0, 'done', buildChartOutput(result.chart_data));
-      await new Promise(r => setTimeout(r, 800));
-
-      // Step 1: POLICY_AGENT
-      setStep(1, 'active');
-      await new Promise(r => setTimeout(r, 1500));
-      setStep(1, 'done', buildPolicyOutput(result.policy_data));
-      await new Promise(r => setTimeout(r, 800));
-
-      // Step 2: REASONING_AGENT
-      setStep(2, 'active');
-      await new Promise(r => setTimeout(r, 2000));
-      setStep(2, 'done', buildReasoningOutput(result));
-      await new Promise(r => setTimeout(r, 800));
-
-      // Step 3: REVIEW_READY
-      setStep(3, 'active');
-      await new Promise(r => setTimeout(r, 1000));
-      setStep(3, 'done', buildReviewOutput());
-    }
-
-    if (result && result._error) {
+    // Handle error
+    if (apiResult && apiResult._error) {
+      // Mark current step as failed visually
       const errDiv = document.getElementById('pipeline-error');
       if (errDiv) {
-        errDiv.className = 'text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4';
+        errDiv.className = 'rounded-2xl px-5 py-4 mt-2';
+        errDiv.setAttribute('style', 'background: rgba(220,38,38,0.06); border: 1.5px solid rgba(220,38,38,0.25);');
         errDiv.innerHTML = `
-          <p class="font-semibold mb-1">Pipeline Error</p>
-          <p>${result._error.message}</p>
-          <div class="mt-3 flex gap-3">
-            <button onclick="navigate('#new')" class="px-4 py-1.5 rounded-lg border border-surface-border text-slate-300 hover:bg-surface-hover transition text-sm">Back to Form</button>
+          <div class="flex items-start gap-3">
+            <svg class="w-6 h-6 flex-shrink-0 mt-0.5" fill="none" stroke="#dc2626" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+            <div class="flex-1">
+              <p class="text-sm font-bold mb-1" style="color: #b91c1c;">Pipeline error</p>
+              <p class="text-sm" style="color: #475569;">${apiResult._error.message}</p>
+              <div class="mt-3 flex gap-2">
+                <button onclick="navigate('#new')" class="btn-secondary text-sm py-2 px-3">Back to form</button>
+              </div>
+            </div>
           </div>`;
       }
       return;
     }
 
-    // Mark last step done
-    setStep(steps.length - 1, 'done');
+    // Mark all steps done with their actual outputs from the response
+    setStep(0, 'done', buildChartOutput(apiResult.chart_data));
+    setStep(1, 'done', buildPolicyOutput(apiResult.policy_data));
+    setStep(2, 'done', buildReasoningOutput(apiResult));
+    setStep(3, 'done', buildReviewOutput());
 
-    // Transform API response to frontend shape
-    state.currentReview = transformApiResponse(result);
-    await new Promise(r => setTimeout(r, 600));
+    // Transform API response to frontend shape and navigate
+    state.currentReview = transformApiResponse(apiResult);
+    await new Promise(r => setTimeout(r, 800));
     navigate('#review');
   }
 

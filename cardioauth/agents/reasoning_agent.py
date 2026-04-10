@@ -92,7 +92,7 @@ class ReasoningAgent:
 
         response = self.client.messages.create(
             model=self.config.model,
-            max_tokens=4000,
+            max_tokens=8000,
             system=SYSTEM_PROMPT,
             messages=[{
                 "role": "user",
@@ -105,14 +105,19 @@ class ReasoningAgent:
         )
 
         raw = response.content[0].text
-
-        # Handle markdown code blocks
-        if "```json" in raw:
-            raw = raw.split("```json")[1].split("```")[0]
-        elif "```" in raw:
-            raw = raw.split("```")[1].split("```")[0]
-
-        data = json.loads(raw.strip())
+        from cardioauth.agents.json_recovery import parse_llm_json
+        data = parse_llm_json(raw)
+        if not data:
+            raise ValueError("REASONING_AGENT: could not parse LLM response")
+        # Fill defaults for required fields if truncation dropped them
+        data.setdefault("criteria_met", [])
+        data.setdefault("criteria_not_met", [])
+        data.setdefault("approval_likelihood_score", 0.0)
+        data.setdefault("approval_likelihood_label", "LOW")
+        data.setdefault("pa_narrative_draft", "")
+        data.setdefault("guideline_citations", [])
+        data.setdefault("cardiologist_review_flags", [])
+        data.setdefault("missing_documentation", [])
         result = ReasoningResult(**data)
 
         if result.approval_likelihood_score < self.config.approval_likelihood_threshold:

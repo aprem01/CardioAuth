@@ -138,63 +138,80 @@ class Orchestrator:
         else:
             policy_data = get_demo_policy(procedure_code, payer_name)
 
-        # Step 3: Use real Claude reasoning if API key available, else fallback
-        logger.info("ORCHESTRATOR: Step 3 — REASONING_AGENT")
-        if self.config.anthropic_api_key:
+        # Steps 3 + 3b: Run REASONING_AGENT and TAXONOMY_MATCHER in parallel.
+        # Both need chart_data and policy_data but not each other, so we can
+        # roughly halve the end-to-end latency by running them concurrently.
+        reasoning = None
+        taxonomy_match = None
+
+        def _run_reasoning():
+            if not self.config.anthropic_api_key:
+                from cardioauth.demo import get_demo_reasoning
+                return get_demo_reasoning(chart_data, policy_data), None
             from cardioauth.agents.reasoning_agent import ReasoningAgent
-            reasoning_agent = ReasoningAgent(self.config)
             try:
-                reasoning = reasoning_agent.run(chart_data, policy_data)
-                logger.info("ORCHESTRATOR: Claude reasoning succeeded")
+                return ReasoningAgent(self.config).run(chart_data, policy_data), None
             except Exception as e:
-                w = _classify_anthropic_error(e)
-                w["agent"] = "REASONING_AGENT"
-                system_warnings.append(w)
                 logger.warning("REASONING_AGENT failed (%s), using demo reasoning", e)
                 from cardioauth.demo import get_demo_reasoning
-                reasoning = get_demo_reasoning(chart_data, policy_data)
-        else:
-            from cardioauth.demo import get_demo_reasoning
-            reasoning = get_demo_reasoning(chart_data, policy_data)
+                w = _classify_anthropic_error(e)
+                w["agent"] = "REASONING_AGENT"
+                return get_demo_reasoning(chart_data, policy_data), w
 
-        # Step 3b: Match against fixed criterion taxonomy (Layer 2)
-        taxonomy_match = None
-        if self.config.anthropic_api_key:
+        def _run_taxonomy():
+            if not self.config.anthropic_api_key:
+                return None, None
             try:
-                from cardioauth.taxonomy import match_case_to_taxonomy, record_emerging_criterion
-                logger.info("ORCHESTRATOR: Step 3b — TAXONOMY_MATCHER")
-                case_id = f"{patient_id}-{procedure_code}"
+                from cardioauth.taxonomy import match_case_to_taxonomy
                 tax_result = match_case_to_taxonomy(
                     chart_data.model_dump(),
                     procedure_code,
                     payer_name,
                     self.config,
-                    case_id=case_id,
+                    case_id=f"{patient_id}-{procedure_code}",
                 )
-                for ec in tax_result.emerging_criteria:
-                    try:
-                        record_emerging_criterion(
-                            suggested_code=ec.get("suggested_code", "MISC"),
-                            category=ec.get("category", "MISC"),
-                            description=ec.get("description", ""),
-                            rationale=ec.get("rationale", ""),
-                            case_id=case_id,
-                            procedure_code=procedure_code,
-                            payer=payer_name,
-                        )
-                    except Exception as e:
-                        logger.warning("Failed to record emerging criterion: %s", e)
-                taxonomy_match = tax_result.to_dict()
-                logger.info(
-                    "ORCHESTRATOR: taxonomy match — %d criteria, score=%.2f (%s), %d emerging",
-                    len(tax_result.matches), tax_result.overall_score,
-                    tax_result.label, len(tax_result.emerging_criteria),
-                )
+                return tax_result, None
             except Exception as e:
+                logger.warning("TAXONOMY_MATCHER failed: %s", e)
                 w = _classify_anthropic_error(e)
                 w["agent"] = "TAXONOMY_MATCHER"
-                system_warnings.append(w)
-                logger.warning("TAXONOMY_MATCHER failed: %s", e)
+                return None, w
+
+        logger.info("ORCHESTRATOR: Step 3 + 3b — REASONING_AGENT and TAXONOMY_MATCHER in parallel")
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_reason = pool.submit(_run_reasoning)
+            fut_tax = pool.submit(_run_taxonomy)
+            reasoning, reason_warn = fut_reason.result()
+            tax_result, tax_warn = fut_tax.result()
+
+        if reason_warn:
+            system_warnings.append(reason_warn)
+        if tax_warn:
+            system_warnings.append(tax_warn)
+
+        if tax_result is not None:
+            from cardioauth.taxonomy import record_emerging_criterion
+            case_id = f"{patient_id}-{procedure_code}"
+            for ec in tax_result.emerging_criteria:
+                try:
+                    record_emerging_criterion(
+                        suggested_code=ec.get("suggested_code", "MISC"),
+                        category=ec.get("category", "MISC"),
+                        description=ec.get("description", ""),
+                        rationale=ec.get("rationale", ""),
+                        case_id=case_id,
+                        procedure_code=procedure_code,
+                        payer=payer_name,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to record emerging criterion: %s", e)
+            taxonomy_match = tax_result.to_dict()
+            logger.info(
+                "ORCHESTRATOR: taxonomy match — %d criteria, score=%.2f (%s), %d emerging",
+                len(tax_result.matches), tax_result.overall_score,
+                tax_result.label, len(tax_result.emerging_criteria),
+            )
 
         requires_human_action: list[str] = []
 

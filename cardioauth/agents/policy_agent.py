@@ -92,7 +92,7 @@ class PolicyAgent:
 
         response = self.client.messages.create(
             model=self.config.model,
-            max_tokens=4000,
+            max_tokens=8000,
             system=SYSTEM_PROMPT,
             messages=[{
                 "role": "user",
@@ -109,14 +109,17 @@ class PolicyAgent:
         )
 
         raw = response.content[0].text
-
-        # Handle markdown code blocks
-        if "```json" in raw:
-            raw = raw.split("```json")[1].split("```")[0]
-        elif "```" in raw:
-            raw = raw.split("```")[1].split("```")[0]
-
-        data = json.loads(raw.strip())
+        from cardioauth.agents.json_recovery import parse_llm_json
+        data = parse_llm_json(raw)
+        if not data:
+            raise ValueError("POLICY_AGENT: could not parse LLM response")
+        data.setdefault("payer", payer_name)
+        data.setdefault("procedure", "")
+        data.setdefault("cpt_code", procedure_code)
+        data.setdefault("clinical_criteria", [])
+        data.setdefault("documentation_required", [])
+        data.setdefault("common_denial_reasons", [])
+        data.setdefault("appeal_success_factors", [])
         policy = PolicyData(**data)
 
         if policy.auth_required is None:

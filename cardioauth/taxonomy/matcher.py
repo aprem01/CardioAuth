@@ -172,7 +172,7 @@ class TaxonomyMatcher:
 
         response = self.client.messages.create(
             model=self.config.model,
-            max_tokens=4000,
+            max_tokens=8000,
             system=SYSTEM_PROMPT,
             messages=[{
                 "role": "user",
@@ -193,16 +193,10 @@ class TaxonomyMatcher:
         )
 
         raw = response.content[0].text
-        if "```json" in raw:
-            raw = raw.split("```json")[1].split("```")[0]
-        elif "```" in raw:
-            raw = raw.split("```")[1].split("```")[0]
-
-        try:
-            data = json.loads(raw.strip())
-        except json.JSONDecodeError as e:
-            logger.error("TAXONOMY_MATCHER: failed to parse JSON: %s", e)
-            data = {"matches": [], "emerging_criteria": []}
+        from cardioauth.agents.json_recovery import parse_llm_json
+        data = parse_llm_json(raw, fallback={"matches": [], "emerging_criteria": []})
+        data.setdefault("matches", [])
+        data.setdefault("emerging_criteria", [])
 
         matches = [
             CriterionMatch(
