@@ -1,0 +1,280 @@
+"""Pre-bucket chart data by evidence type for strict criterion matching.
+
+The matcher used to send the entire chart blob to Claude with a list of
+criteria, and the LLM would semantic-match anything that looked clinical.
+This led to two failure modes Peter identified:
+
+  1. Reduced LVEF marked "met" with LVEF 50-55% (low normal)
+  2. BMI/ECG criteria supported by echocardiogram reports
+
+The fix: physically separate chart data into evidence-type buckets so
+the matcher can ONLY look at the right slice for a given criterion type.
+For BMI criteria the matcher only sees BMI/demographic fields. For ECG
+criteria it only sees the ECG findings field. For lab criteria only labs.
+For imaging only imaging. The LLM cannot accidentally cite the wrong
+source because the wrong source isn't even in its context for that
+evaluation.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Quantitative threshold extraction helpers
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _extract_lvef(chart: dict) -> dict | None:
+    """Pull the LVEF value from imaging if present, with units and date."""
+    for img in chart.get("relevant_imaging", []) or []:
+        text = (img.get("result_summary", "") + " " + img.get("type", "")).lower()
+        # Look for explicit LVEF mentions like "LVEF 35%", "EF 50%", "ejection fraction of 45"
+        m = re.search(r"(?:lvef|ejection fraction|\bef\b)[\s:]*(?:of)?[\s:]*(\d{1,3})\s*[-–to]+\s*(\d{1,3})\s*%?", text)
+        if m:
+            low = int(m.group(1))
+            high = int(m.group(2))
+            return {"value_low": low, "value_high": high, "value_avg": (low + high) / 2,
+                    "source_type": "echocardiogram",
+                    "source_date": img.get("date", ""),
+                    "raw": img.get("result_summary", "")[:200]}
+        m = re.search(r"(?:lvef|ejection fraction|\bef\b)[\s:]*(?:of)?[\s:]*(\d{1,3})\s*%", text)
+        if m:
+            v = int(m.group(1))
+            return {"value": v, "source_type": "echocardiogram",
+                    "source_date": img.get("date", ""),
+                    "raw": img.get("result_summary", "")[:200]}
+    return None
+
+
+def _extract_bmi(chart: dict) -> dict | None:
+    """Pull BMI from comorbidities, additional notes, or imaging."""
+    haystacks = []
+    for c in chart.get("comorbidities", []) or []:
+        haystacks.append(("comorbidities", c))
+    for img in chart.get("relevant_imaging", []) or []:
+        haystacks.append(("imaging", img.get("result_summary", "")))
+    for src, text in haystacks:
+        m = re.search(r"bmi\s*(?:of)?[\s:]*(\d{1,2}(?:\.\d)?)", str(text).lower())
+        if m:
+            return {"value": float(m.group(1)), "source": src, "raw": str(text)[:200]}
+    return None
+
+
+def _extract_hr_percent(chart: dict) -> dict | None:
+    """Pull % maximum predicted HR from prior stress test imaging."""
+    for img in chart.get("relevant_imaging", []) or []:
+        text = (img.get("result_summary", "") + " " + img.get("type", "")).lower()
+        if "stress" not in text and "ett" not in text and "treadmill" not in text:
+            continue
+        m = re.search(r"(\d{1,3})\s*%\s*(?:of\s*)?(?:max|mphr|maximum predicted)", text)
+        if m:
+            return {"value": int(m.group(1)),
+                    "source_date": img.get("date", ""),
+                    "raw": img.get("result_summary", "")[:200]}
+    return None
+
+
+def _extract_ecg_findings(chart: dict) -> str:
+    """Pull explicit ECG findings only (not echo, not stress test)."""
+    findings = []
+    for img in chart.get("relevant_imaging", []) or []:
+        img_type = (img.get("type", "")).lower()
+        if "ecg" in img_type or "ekg" in img_type or "12-lead" in img_type or "electrocardiogram" in img_type:
+            findings.append(f"{img.get('type')} ({img.get('date', '')}): {img.get('result_summary', '')}")
+    return "\n".join(findings) if findings else ""
+
+
+def _extract_symptoms(chart: dict) -> str:
+    """Pull symptom-relevant clinical notes (NOT diagnosis codes)."""
+    bits = []
+    # Look in comorbidities for symptom phrases (not diagnoses)
+    for c in chart.get("comorbidities", []) or []:
+        text = str(c).lower()
+        if any(sym in text for sym in ["dyspnea", "chest pain", "syncope", "palpitations", "fatigue",
+                                        "exertional", "orthopnea", "pnd", "angina", "lightheaded",
+                                        "dizziness", "presyncope", "shortness of breath", "edema"]):
+            bits.append(c)
+    # Sometimes symptoms are mentioned in additional notes / prior treatments
+    for pt in chart.get("prior_treatments", []) or []:
+        if "symptom" in str(pt).lower() or "stress" in str(pt).lower():
+            bits.append(pt)
+    return " | ".join(str(b) for b in bits) if bits else ""
+
+
+def _extract_medication_trials(chart: dict) -> list[dict]:
+    """Pull medication list with focus on cardiac drugs."""
+    return [
+        {
+            "name": m.get("name", ""),
+            "dose": m.get("dose", ""),
+            "start_date": m.get("start_date", ""),
+            "indication": m.get("indication", ""),
+        }
+        for m in (chart.get("relevant_medications", []) or [])
+    ]
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Main bucketing function
+# ────────────────────────────────────────────────────────────────────────
+
+
+def bucket_chart_evidence(chart: dict) -> dict[str, Any]:
+    """Reshape chart data into typed evidence buckets.
+
+    The output dict maps each evidence_type used in the taxonomy to a
+    specific slice of chart data — and ONLY that slice. The matcher
+    will be told to look only in the bucket matching the criterion's
+    evidence_type, making cross-type contamination impossible.
+    """
+    lvef = _extract_lvef(chart)
+    bmi = _extract_bmi(chart)
+    hr_pct = _extract_hr_percent(chart)
+
+    return {
+        # Imaging — keep only actual imaging studies
+        "imaging": [
+            {
+                "type": img.get("type", ""),
+                "date": img.get("date", ""),
+                "result_summary": img.get("result_summary", ""),
+            }
+            for img in (chart.get("relevant_imaging", []) or [])
+            if img.get("type") and img.get("result_summary")
+        ],
+
+        # Labs — only lab values, never imaging or notes
+        "lab": [
+            {
+                "name": l.get("name", ""),
+                "value": l.get("value", ""),
+                "unit": l.get("unit", ""),
+                "date": l.get("date", ""),
+                "flag": l.get("flag", ""),
+            }
+            for l in (chart.get("relevant_labs", []) or [])
+            if l.get("name") and l.get("value")
+        ],
+
+        # ECG — only documented ECG findings (ECG modality, not echo or stress)
+        "ecg": _extract_ecg_findings(chart),
+
+        # Demographic — age, sex, BMI, body habitus
+        "demographic": {
+            "age": chart.get("age"),
+            "sex": chart.get("sex"),
+            "bmi": bmi,
+            "body_habitus_notes": [c for c in (chart.get("comorbidities", []) or [])
+                                   if "obesity" in str(c).lower() or "bmi" in str(c).lower()],
+        },
+
+        # Medications — for medical-therapy criteria
+        "medication": _extract_medication_trials(chart),
+
+        # Clinical notes — symptom documentation, NOT diagnoses
+        "clinical_note": {
+            "symptoms": _extract_symptoms(chart),
+            "prior_treatments": chart.get("prior_treatments", []) or [],
+            "comorbidities_full": chart.get("comorbidities", []) or [],
+            "additional_notes": chart.get("additional_notes", "") or "",
+        },
+
+        # Scores — extracted quantitative measurements
+        "score": {
+            "lvef": lvef,
+            "bmi": bmi,
+            "max_hr_percent": hr_pct,
+        },
+
+        # Diagnoses — separate so we don't conflate ICD-10 with symptom notes
+        "diagnosis_codes": chart.get("diagnosis_codes", []) or [],
+    }
+
+
+def chart_section_for_evidence_type(buckets: dict, evidence_type: str) -> Any:
+    """Return ONLY the section of chart data appropriate for an evidence_type."""
+    return buckets.get(evidence_type, None)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Deterministic threshold validation
+# ────────────────────────────────────────────────────────────────────────
+
+
+def validate_threshold(criterion_code: str, buckets: dict) -> dict | None:
+    """For criteria with hard quantitative thresholds, validate
+    deterministically before trusting the LLM's judgment.
+
+    Returns:
+      None if no threshold rule exists for this criterion
+      {"met": True/False, "value": ..., "rule": "..."} if validated
+    """
+    scores = buckets.get("score", {})
+
+    # LVEF-002: LVEF ≤ 40% (reduced)
+    if criterion_code == "LVEF-002":
+        lvef = scores.get("lvef")
+        if not lvef:
+            return {"met": False, "rule": "LVEF ≤ 40", "value": None,
+                    "explanation": "No LVEF documented in imaging"}
+        v = lvef.get("value") or lvef.get("value_avg") or lvef.get("value_high")
+        if v is None:
+            return None
+        return {"met": v <= 40, "rule": "LVEF ≤ 40", "value": v,
+                "explanation": f"Documented LVEF {v}%, threshold ≤40%"}
+
+    # LVEF-001: LVEF documented at all
+    if criterion_code == "LVEF-001":
+        lvef = scores.get("lvef")
+        if not lvef:
+            return {"met": False, "rule": "LVEF documented", "value": None,
+                    "explanation": "No LVEF found in imaging"}
+        v = lvef.get("value") or lvef.get("value_avg") or lvef.get("value_high")
+        return {"met": v is not None, "rule": "LVEF documented", "value": v,
+                "explanation": f"Documented LVEF {v}% from {lvef.get('source_type', 'imaging')} on {lvef.get('source_date', 'unknown date')}"}
+
+    # BMI-001: BMI ≥ 35
+    if criterion_code == "BMI-001":
+        bmi = scores.get("bmi")
+        if not bmi:
+            return {"met": False, "rule": "BMI ≥ 35 documented", "value": None,
+                    "explanation": "No BMI value found in chart"}
+        v = bmi.get("value")
+        return {"met": v is not None and v >= 35, "rule": "BMI ≥ 35", "value": v,
+                "explanation": f"Documented BMI {v}, threshold ≥35"}
+
+    # NDX-002: Submaximal HR <85% MPHR
+    if criterion_code == "NDX-002":
+        hr = scores.get("max_hr_percent")
+        if not hr:
+            return None  # not necessarily missing, may not have had stress test
+        v = hr.get("value")
+        if v is None:
+            return None
+        return {"met": v < 85, "rule": "HR <85% MPHR", "value": v,
+                "explanation": f"Achieved {v}% MPHR, threshold <85%"}
+
+    # ECG-001: LBBB on ECG
+    if criterion_code == "ECG-001":
+        ecg_text = (buckets.get("ecg") or "").lower()
+        if not ecg_text:
+            return {"met": False, "rule": "LBBB on ECG", "value": None,
+                    "explanation": "No ECG findings documented in chart"}
+        has_lbbb = "lbbb" in ecg_text or "left bundle branch block" in ecg_text
+        return {"met": has_lbbb, "rule": "LBBB on ECG", "value": ecg_text[:100],
+                "explanation": f"ECG findings: {ecg_text[:120]}"}
+
+    # ECG-002: Paced rhythm
+    if criterion_code == "ECG-002":
+        ecg_text = (buckets.get("ecg") or "").lower()
+        if not ecg_text:
+            return {"met": False, "rule": "Paced rhythm on ECG", "value": None,
+                    "explanation": "No ECG findings documented"}
+        has_paced = "paced" in ecg_text or "pacemaker rhythm" in ecg_text or "ventricular pacing" in ecg_text
+        return {"met": has_paced, "rule": "Paced rhythm", "value": ecg_text[:100],
+                "explanation": f"ECG findings: {ecg_text[:120]}"}
+
+    return None

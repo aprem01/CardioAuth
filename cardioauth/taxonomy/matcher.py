@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -55,6 +56,7 @@ class CaseMatchResult:
     score_supporting: float = 0.0
     overall_score: float = 0.0
     label: str = "LOW"
+    validation_warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -78,58 +80,93 @@ class CaseMatchResult:
             "score_supporting": self.score_supporting,
             "overall_score": self.overall_score,
             "label": self.label,
+            "validation_warnings": self.validation_warnings,
         }
 
 
 SYSTEM_PROMPT = """\
 You are TAXONOMY_MATCHER, a clinical reasoning specialist for CardioAuth.
 
-You receive:
-1. A patient's chart data (labs, imaging, medications, diagnoses, prior procedures)
-2. A FIXED list of coded clinical criteria (the taxonomy)
-3. Optional payer-specific context
+CORE RULES — STRICT EVIDENCE TYPE ENFORCEMENT (READ CAREFULLY)
 
-Your job is to evaluate EACH criterion in the taxonomy against the chart
-data and return a structured match result. You DO NOT generate new criteria
-or paraphrase existing ones — you only assign one of three statuses:
+You evaluate each criterion against pre-bucketed chart data. Each
+criterion has an `evidence_type` (lab, imaging, ecg, demographic,
+clinical_note, score, medication). For each criterion you must:
 
-  • met            — chart data clearly satisfies this criterion
-  • not_met        — criterion applies but chart data does not satisfy it
-  • not_applicable — criterion does not apply to this specific case
+  STEP 1 — Identify the required evidence type from the criterion.
+  STEP 2 — Look ONLY in the matching bucket of chart_buckets.
+           DO NOT cite data from any other bucket.
+  STEP 3 — Verify the data quantitatively or qualitatively satisfies the
+           criterion. Just having data of the right TYPE is not enough —
+           the VALUE must satisfy the requirement.
+  STEP 4 — Assign exactly one status: met / not_met / not_applicable.
 
-For each criterion you must provide:
-  • status (met / not_met / not_applicable)
-  • confidence (0.0 - 1.0)
-  • evidence — exact chart data that satisfies it (when met)
-  • gap — what is missing (when not_met)
-  • recommendation — what the cardiologist should add (when not_met)
+NEGATIVE EXAMPLES (never do this):
 
-ADDITIONALLY, capture EMERGING CRITERIA: clinical findings or payer
-considerations the chart suggests that DO NOT match any criterion in the
-provided taxonomy. These will be reviewed for promotion to the formal
-taxonomy. Do not invent — only flag genuine clinical observations the
-taxonomy does not yet capture.
+  ✗ BMI criterion → cite an echocardiogram report
+    (BMI is a demographic measurement; echo reports are imaging.)
+
+  ✗ ECG criterion (LBBB, paced rhythm) → cite an echocardiogram or
+    stress test report. ECG findings come from the ECG bucket only.
+
+  ✗ Symptom criterion → cite a diagnosis code (I25.10) as evidence.
+    Diagnosis codes are NOT documented symptoms — they are payer
+    billing codes. Symptoms must come from clinical_note.symptoms.
+
+  ✗ "Reduced LVEF" criterion (LVEF ≤ 40%) → marking it MET when the
+    actual LVEF in the chart is 50%, 55%, or "low normal".
+    50% is NOT reduced. Read the actual value.
+
+  ✗ Marking "Failed maximally tolerated medical therapy" as MET when
+    the chart shows the patient is taking medications but with no
+    documentation of trial duration or failure reason.
+
+QUANTITATIVE PRECISION
+
+If a criterion has a numeric threshold (LVEF ≤ 40%, BMI ≥ 35, HR < 85%
+of maximum predicted, age ≥ 65, gradient ≥ 40 mmHg, etc.), you MUST
+extract the actual value from the chart and compare it against the
+threshold. If the value does not satisfy the threshold, the criterion
+is NOT met. There is no rounding, no "close enough", no semantic match.
+
+REASONING OUTPUT REQUIRED
+
+For each criterion, before assigning status, fill in `reasoning`:
+  - what evidence type the criterion requires
+  - which bucket you searched
+  - what specific value or finding you found (or did not find)
+  - whether the value satisfies the criterion threshold
+
+EMERGING CRITERIA — only flag findings the taxonomy does not yet capture.
+Do not invent. Do not add aliases for existing criteria.
 
 Return ONLY valid JSON matching this schema:
 {
   "matches": [
     {
-      "code": "NDX-001",
+      "code": "LVEF-002",
+      "reasoning": "Required evidence type: score. Searched chart_buckets.score.lvef. Found LVEF 55% from echocardiogram dated 2025-11-12. Threshold for this criterion is LVEF ≤ 40%. Value 55% does NOT satisfy threshold.",
+      "status": "not_met",
+      "confidence": 0.98,
+      "evidence_type_required": "score",
+      "evidence_source_bucket": "score.lvef",
+      "evidence": "",
+      "gap": "LVEF documented at 55%, which is preserved (not reduced). Criterion requires LVEF ≤ 40%.",
+      "recommendation": "This criterion may be not_applicable for this case if patient does not have HFrEF."
+    },
+    {
+      "code": "BMI-001",
+      "reasoning": "Required evidence type: demographic. Searched chart_buckets.demographic.bmi. Found BMI 38 from comorbidities. Threshold ≥ 35. Value 38 ≥ 35: SATISFIED.",
       "status": "met",
-      "confidence": 0.95,
-      "evidence": "Exercise treadmill 2025-11-10: equivocal/non-diagnostic, 6 METs, submaximal HR",
+      "confidence": 0.99,
+      "evidence_type_required": "demographic",
+      "evidence_source_bucket": "demographic.bmi",
+      "evidence": "BMI 38 documented in comorbidities (≥ 35 threshold)",
       "gap": "",
       "recommendation": ""
     }
   ],
-  "emerging_criteria": [
-    {
-      "category": "MISC",
-      "description": "Family history of premature CAD documented (father MI age 52)",
-      "suggested_code": "RISK-FAMHX",
-      "rationale": "Strong family history supports advanced imaging but no taxonomy code exists"
-    }
-  ]
+  "emerging_criteria": []
 }
 """
 
@@ -146,7 +183,7 @@ class TaxonomyMatcher:
         payer_name: str,
         case_id: str = "",
     ) -> CaseMatchResult:
-        """Run the matcher: chart → taxonomy → structured matrix."""
+        """Run the matcher: chart → buckets → criteria → validated matrix."""
         applicable = get_criteria_for_procedure(procedure_code, payer_name)
         if not applicable:
             logger.warning("No taxonomy criteria for CPT %s", procedure_code)
@@ -157,7 +194,11 @@ class TaxonomyMatcher:
                 taxonomy_version=TAXONOMY_VERSION,
             )
 
-        # Build the criterion list as compact JSON for Claude
+        # ── Step A: Pre-bucket chart data by evidence type ──
+        from cardioauth.taxonomy.evidence_buckets import bucket_chart_evidence, validate_threshold
+        chart_buckets = bucket_chart_evidence(chart_data)
+
+        # Build the criterion list with explicit evidence type
         criteria_for_claude = [
             {
                 "code": c.code,
@@ -181,13 +222,15 @@ class TaxonomyMatcher:
                     f"PROCEDURE: CPT {procedure_code}\n"
                     f"PAYER: {payer_name}\n"
                     f"TAXONOMY VERSION: {TAXONOMY_VERSION}\n\n"
-                    f"FIXED CRITERIA TO EVALUATE:\n"
+                    f"FIXED CRITERIA TO EVALUATE (each has a required evidence_type):\n"
                     f"{json.dumps(criteria_for_claude, indent=2)}\n\n"
-                    f"CHART DATA:\n"
-                    f"{json.dumps(chart_data, indent=2, default=str)}\n\n"
-                    f"For EACH criterion above, return its match status. "
-                    f"Then list any emerging criteria the chart suggests "
-                    f"that the taxonomy does not yet capture."
+                    f"CHART DATA — PRE-BUCKETED BY EVIDENCE TYPE.\n"
+                    f"For each criterion, look ONLY in the bucket matching its\n"
+                    f"`evidence_type`. Crossing buckets is forbidden.\n\n"
+                    f"chart_buckets = {json.dumps(chart_buckets, indent=2, default=str)}\n\n"
+                    f"For each criterion: fill in `reasoning` first, then the status. "
+                    f"Verify quantitative thresholds against actual values. "
+                    f"Then list emerging criteria not in the taxonomy."
                 ),
             }],
         )
@@ -198,17 +241,78 @@ class TaxonomyMatcher:
         data.setdefault("matches", [])
         data.setdefault("emerging_criteria", [])
 
-        matches = [
-            CriterionMatch(
-                code=m.get("code", ""),
+        # ── Step B: Build CriterionMatch objects ──
+        crit_by_code = {c.code: c for c in applicable}
+        matches = []
+        for m in data.get("matches", []):
+            code = m.get("code", "")
+            matches.append(CriterionMatch(
+                code=code,
                 status=m.get("status", "not_applicable"),
                 confidence=float(m.get("confidence", 0.0)),
                 evidence=m.get("evidence", ""),
                 gap=m.get("gap", ""),
                 recommendation=m.get("recommendation", ""),
-            )
-            for m in data.get("matches", [])
-        ]
+            ))
+
+        # ── Step C: Post-validation pass ──
+        # 1) Override with deterministic threshold checks for criteria that have them
+        # 2) Detect evidence-type mismatches (cited evidence comes from wrong bucket)
+        validation_warnings: list[str] = []
+        for match in matches:
+            crit = crit_by_code.get(match.code)
+            if not crit:
+                continue
+
+            # Deterministic threshold validation (LVEF, BMI, HR%, ECG findings)
+            det = validate_threshold(match.code, chart_buckets)
+            if det is not None:
+                expected_status = "met" if det["met"] else "not_met"
+                if match.status != expected_status:
+                    validation_warnings.append(
+                        f"{match.code}: LLM said '{match.status}' but deterministic "
+                        f"check says '{expected_status}' ({det['explanation']}). Override applied."
+                    )
+                    match.status = expected_status
+                    match.evidence = det["explanation"] if det["met"] else ""
+                    match.gap = "" if det["met"] else det["explanation"]
+                    match.confidence = 1.0  # deterministic = certain
+
+            # Evidence-type sanity check on remaining LLM-judged matches
+            if match.status == "met" and match.evidence:
+                ev_lower = match.evidence.lower()
+                req_type = crit.evidence_type
+                if req_type == "ecg":
+                    # ECG criteria should not cite echo or stress test
+                    if any(x in ev_lower for x in ["echocardiogram", "stress test", "treadmill",
+                                                     "spect", "pet", "tte ", "tee "]) and \
+                       not any(x in ev_lower for x in ["ecg", "ekg", "12-lead", "electrocardiogram"]):
+                        validation_warnings.append(
+                            f"{match.code} (ECG criterion): cited evidence appears to come from "
+                            f"non-ECG source: '{match.evidence[:80]}'. Demoting confidence."
+                        )
+                        match.confidence = min(match.confidence, 0.3)
+                if req_type == "demographic":
+                    # BMI/demographic criteria should not cite imaging studies
+                    if any(x in ev_lower for x in ["echocardiogram", "ecg", "stress test"]) and \
+                       "bmi" not in ev_lower and "obesity" not in ev_lower:
+                        validation_warnings.append(
+                            f"{match.code} (demographic): cited evidence is from imaging instead "
+                            f"of demographic data: '{match.evidence[:80]}'."
+                        )
+                        match.confidence = min(match.confidence, 0.3)
+                if req_type == "clinical_note":
+                    # Symptom criteria should not cite ICD-10 codes alone
+                    if re.match(r"^[A-Z]\d{2}\.[\d]+", match.evidence.strip()):
+                        validation_warnings.append(
+                            f"{match.code} (symptom/clinical_note): cited evidence is a diagnosis "
+                            f"code, not symptom documentation: '{match.evidence[:80]}'."
+                        )
+                        match.confidence = min(match.confidence, 0.3)
+
+        if validation_warnings:
+            for w in validation_warnings:
+                logger.info("VALIDATION: %s", w)
 
         result = CaseMatchResult(
             case_id=case_id,
@@ -217,6 +321,7 @@ class TaxonomyMatcher:
             taxonomy_version=TAXONOMY_VERSION,
             matches=matches,
             emerging_criteria=data.get("emerging_criteria", []),
+            validation_warnings=validation_warnings,
         )
 
         # Compute scores
