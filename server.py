@@ -588,6 +588,8 @@ def check_documentation(req: DocCheckRequest) -> dict[str, Any]:
 def rag_corpus(payer: str | None = None, cpt: str | None = None) -> dict[str, Any]:
     """List all policy chunks in the corpus, optionally filtered."""
     from cardioauth.rag import load_corpus, get_corpus_stats
+    from cardioauth.rag.corpus import ensure_corpus_seeded
+    ensure_corpus_seeded()
     chunks = load_corpus()
     if payer:
         chunks = [c for c in chunks if c.payer.lower() == payer.lower() or c.chunk_type in ("ncd", "lcd")]
@@ -605,6 +607,8 @@ def rag_corpus(payer: str | None = None, cpt: str | None = None) -> dict[str, An
 def rag_stats() -> dict[str, Any]:
     """Aggregate stats over the corpus for the Policy Library page."""
     from cardioauth.rag import get_corpus_stats
+    from cardioauth.rag.corpus import ensure_corpus_seeded
+    ensure_corpus_seeded()
     return get_corpus_stats()
 
 
