@@ -656,16 +656,138 @@ class RAGIngestRequest(BaseModel):
 
 @app.post("/api/rag/ingest")
 def rag_ingest(req: RAGIngestRequest) -> dict[str, Any]:
-    """Add new policy chunks to the corpus.
-
-    Future enhancement: accept PDF uploads, run a chunker, and ingest
-    the resulting chunks automatically. For now this is a manual
-    insertion endpoint that takes pre-chunked text.
-    """
+    """Add pre-chunked policy text to the corpus."""
     from cardioauth.rag import PolicyChunk, add_chunks
     new_chunks = [PolicyChunk.new(**c.model_dump()) for c in req.chunks]
     added = add_chunks(new_chunks)
     return {"requested": len(req.chunks), "added": added}
+
+
+@app.post("/api/rag/upload-document")
+async def rag_upload_document(
+    file: UploadFile = File(...),
+    payer: str = "",
+    applies_to_cpt: str = "",
+    procedure_name: str = "",
+    source_document: str = "",
+    source_document_number: str = "",
+    last_updated: str = "",
+    source_url: str = "",
+    chunk_type: str = "policy",
+    preview: bool = False,
+    force_vision: bool = False,
+) -> dict[str, Any]:
+    """Upload a payer policy document, chunk it, and add to the corpus.
+
+    Accepts PDF, plain text, markdown, and images (PNG/JPG/WEBP).
+
+    Routing inside the chunker:
+      - Clean text PDFs go through pypdf (fast, free)
+      - Scanned, table-heavy, or image-heavy PDFs auto-fall-back to
+        Claude vision PDF extraction (handles tables, multi-column,
+        embedded figures, scans)
+      - Image uploads always go through Claude vision
+      - force_vision=true skips the pypdf attempt entirely
+
+    If preview=true, returns the extracted chunks WITHOUT writing them
+    to the corpus so the user can review before confirming.
+    """
+    contents = await file.read()
+    if len(contents) > 30 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 30MB)")
+    if not contents:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # Parse CPT list (comma-separated string from the form)
+    cpts = [c.strip() for c in (applies_to_cpt or "").split(",") if c.strip()]
+    if not cpts:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one CPT code is required so the chunks can be retrieved.",
+        )
+    if not payer:
+        raise HTTPException(status_code=400, detail="Payer name is required.")
+    if not source_document:
+        source_document = file.filename or "Uploaded document"
+
+    from cardioauth.rag import PolicyChunk, add_chunks, chunk_document
+    try:
+        drafts = chunk_document(
+            data=contents,
+            content_type=file.content_type or "",
+            filename=file.filename or "",
+            force_vision=force_vision,
+        )
+    except Exception as e:
+        logging.exception("Document chunking failed")
+        raise HTTPException(status_code=500, detail=f"Could not parse document: {e}")
+
+    if not drafts:
+        raise HTTPException(
+            status_code=400,
+            detail="No usable text could be extracted from this document. "
+                   "If this is a scanned PDF, OCR is required (not supported yet).",
+        )
+
+    # Build PolicyChunk objects from the drafts + form metadata
+    new_chunks = [
+        PolicyChunk.new(
+            payer=payer,
+            applies_to_cpt=cpts,
+            procedure_name=procedure_name or source_document,
+            text=d.text,
+            source_document=source_document,
+            source_document_number=source_document_number,
+            section_heading=d.section_heading,
+            page=d.page,
+            last_updated=last_updated,
+            source_url=source_url,
+            chunk_type=chunk_type,
+        )
+        for d in drafts
+    ]
+
+    if preview:
+        # Don't persist; return the chunks so the user can review.
+        return {
+            "filename": file.filename,
+            "preview": True,
+            "extracted_chunks": [c.to_dict() for c in new_chunks],
+            "chunk_count": len(new_chunks),
+            "total_chars": sum(len(c.text) for c in new_chunks),
+        }
+
+    added = add_chunks(new_chunks)
+    return {
+        "filename": file.filename,
+        "preview": False,
+        "extracted_chunks": [c.to_dict() for c in new_chunks],
+        "chunk_count": len(new_chunks),
+        "added": added,
+        "total_chars": sum(len(c.text) for c in new_chunks),
+    }
+
+
+class DeleteChunksRequest(BaseModel):
+    chunk_ids: list[str] = []
+    source_document: str = ""
+
+
+@app.post("/api/rag/delete")
+def rag_delete(req: DeleteChunksRequest) -> dict[str, Any]:
+    """Delete chunks from the corpus by id, or delete all chunks of a document."""
+    from cardioauth.rag import delete_chunks, delete_document
+    removed_by_id = 0
+    removed_by_doc = 0
+    if req.chunk_ids:
+        removed_by_id = delete_chunks(req.chunk_ids)
+    if req.source_document:
+        removed_by_doc = delete_document(req.source_document)
+    return {
+        "removed_by_id": removed_by_id,
+        "removed_by_document": removed_by_doc,
+        "total_removed": removed_by_id + removed_by_doc,
+    }
 
 
 # ─────────────────────────── Taxonomy API ───────────────────────────

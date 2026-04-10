@@ -3376,34 +3376,74 @@ This procedure is essential for determining whether percutaneous coronary interv
         byPayer[k].push(c);
       });
 
+      // Group chunks within each payer by source_document so we can offer
+      // "delete entire document" buttons.
+      function groupByDocument(items) {
+        const out = {};
+        items.forEach(c => {
+          const k = c.source_document || 'Untitled';
+          if (!out[k]) out[k] = [];
+          out[k].push(c);
+        });
+        return out;
+      }
+
       const payerCards = Object.entries(byPayer).map(([payer, items]) => {
+        const docs = groupByDocument(items);
+        const docBlocks = Object.entries(docs).map(([docName, docChunks]) => {
+          const meta = docChunks[0];
+          return `
+            <div class="rounded-xl p-4 mb-3" style="background: #fafbff; border: 1px solid #e8ecf5;">
+              <div class="flex items-start justify-between gap-3 mb-2">
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-semibold" style="color: #0b1437;">${escapeHtml(docName)}</div>
+                  <div class="text-xs mt-0.5" style="color: #64748b;">
+                    ${meta.source_document_number || ''}${meta.last_updated ? ` · updated ${meta.last_updated}` : ''} · ${docChunks.length} chunks
+                  </div>
+                </div>
+                <button onclick="deletePolicyDocument('${escapeHtml(docName).replace(/'/g, '&apos;')}', '${docChunks.length}')"
+                  class="text-xs font-semibold px-2.5 py-1 rounded-md transition flex-shrink-0"
+                  style="color: #b91c1c; background: rgba(220,38,38,0.06); border: 1px solid rgba(220,38,38,0.2);"
+                  title="Delete this entire document and all its chunks">
+                  Delete document
+                </button>
+              </div>
+              <div class="space-y-1.5 mt-3">
+                ${docChunks.map(c => `
+                  <details class="rounded-lg overflow-hidden" style="background: #ffffff; border: 1px solid #e8ecf5;">
+                    <summary class="cursor-pointer px-3 py-2 hover:bg-gray-50 transition flex items-start gap-2">
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span class="text-[0.7rem] font-mono font-semibold" style="color: #4f46e5;">${c.id}</span>
+                          <span class="text-[0.7rem]" style="color: #94a3b8;">CPTs: ${(c.applies_to_cpt || []).join(', ')}</span>
+                          ${c.section_heading ? `<span class="text-[0.7rem]" style="color: #94a3b8;">· ${escapeHtml(c.section_heading)}</span>` : ''}
+                          ${c.page ? `<span class="text-[0.7rem]" style="color: #94a3b8;">· p.${c.page}</span>` : ''}
+                        </div>
+                      </div>
+                      <button onclick="event.preventDefault(); event.stopPropagation(); deletePolicyChunk('${c.id}')"
+                        class="text-[0.7rem] font-semibold px-2 py-0.5 rounded transition flex-shrink-0"
+                        style="color: #b91c1c; opacity: 0.6;"
+                        title="Delete this chunk">
+                        ✕
+                      </button>
+                    </summary>
+                    <div class="px-3 pb-3 pt-1 ml-1">
+                      <div class="text-xs leading-relaxed whitespace-pre-wrap" style="color: #475569;">${escapeHtml(c.text)}</div>
+                      ${c.source_url ? `<a href="${c.source_url}" target="_blank" rel="noopener" class="mt-2 text-[0.7rem] font-semibold inline-flex items-center gap-1" style="color: #4f46e5;">View source <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></a>` : ''}
+                    </div>
+                  </details>
+                `).join('')}
+              </div>
+            </div>
+          `;
+        }).join('');
         return `
           <div class="card-elevated p-6 mb-4">
             <div class="flex items-center justify-between mb-4">
               <h3 class="text-lg font-bold" style="color: #0b1437;">${payer}</h3>
               <span class="pill pill-info">${items.length} chunks</span>
             </div>
-            <div class="space-y-2">
-              ${items.map(c => `
-                <details class="rounded-xl overflow-hidden" style="background: #fafbff; border: 1px solid #e8ecf5;">
-                  <summary class="cursor-pointer px-4 py-3 hover:bg-white transition">
-                    <div class="flex items-center gap-2 mb-1 flex-wrap">
-                      <span class="text-xs font-mono font-semibold" style="color: #4f46e5;">${c.id}</span>
-                      <span class="text-xs" style="color: #94a3b8;">CPTs: ${(c.applies_to_cpt || []).join(', ')}</span>
-                      ${c.section_heading ? `<span class="text-xs" style="color: #94a3b8;">· ${c.section_heading}</span>` : ''}
-                    </div>
-                    <div class="text-sm font-semibold" style="color: #0b1437;">${escapeHtml(c.source_document || 'Untitled')}</div>
-                    <div class="text-xs mt-0.5" style="color: #64748b;">
-                      ${c.source_document_number || ''}${c.page ? ` · p.${c.page}` : ''}${c.last_updated ? ` · updated ${c.last_updated}` : ''}
-                    </div>
-                  </summary>
-                  <div class="px-4 pb-4">
-                    <div class="text-sm leading-relaxed" style="color: #475569;">${escapeHtml(c.text)}</div>
-                    ${c.source_url ? `<a href="${c.source_url}" target="_blank" rel="noopener" class="mt-3 text-xs font-semibold inline-flex items-center gap-1" style="color: #4f46e5;">View source <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></a>` : ''}
-                  </div>
-                </details>
-              `).join('')}
-            </div>
+            ${docBlocks}
           </div>
         `;
       }).join('');
@@ -3442,11 +3482,254 @@ This procedure is essential for determining whether percutaneous coronary interv
               </div>
             </div>
           </div>
+
+          ${renderPolicyUploadCard()}
+
           ${payerCards}
         </div>
       `;
+
+      // Wire up the upload form after innerHTML
+      setTimeout(attachPolicyUploadHandlers, 50);
     } catch(e) {
       app.innerHTML = `<div class="card-elevated p-6 text-sm" style="color: #dc2626;">Failed to load policy library: ${e.message}</div>`;
+    }
+  }
+
+  function renderPolicyUploadCard() {
+    return `
+      <div class="card-elevated p-6 lg:p-8">
+        <div class="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 class="text-xl font-bold mb-1" style="color: #0b1437;">Add Policy Document</h2>
+            <p class="text-sm" style="color: #64748b;">
+              Upload a payer medical policy, CMS NCD/LCD, or clinical guideline.
+              Complex tables, multi-column layouts, scanned PDFs, and images are
+              supported — the system uses Claude vision when text extraction
+              isn't enough.
+            </p>
+          </div>
+        </div>
+
+        <form id="policy-upload-form" class="space-y-4">
+          <!-- Drop zone -->
+          <div id="policy-upload-zone" class="rounded-2xl text-center transition-all"
+            style="cursor:pointer; padding: 2rem 1.5rem; background: linear-gradient(135deg, #fafbff, #f4f6fb); border: 2px dashed #cbd5e1;">
+            <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-3" style="background: linear-gradient(135deg, #eef2ff, #faf5ff);">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: #4f46e5;"><path stroke-linecap="round" stroke-linejoin="round" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            </div>
+            <p id="policy-upload-zone-text" class="text-sm font-semibold" style="color: #0b1437;">Drop a policy document here, or click to browse</p>
+            <p class="text-xs mt-1" style="color: #64748b;">PDF, PNG, JPG, TXT, MD &nbsp;·&nbsp; up to 30 MB &nbsp;·&nbsp; tables &amp; images supported via Claude vision</p>
+            <input type="file" id="policy-file-input" class="hidden" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md">
+          </div>
+
+          <!-- Required metadata -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Payer</label>
+              <input id="up-payer" type="text" required placeholder="e.g., UnitedHealthcare" class="input-friendly">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">CPT codes <span class="text-xs font-normal" style="color: #94a3b8;">(comma-separated)</span></label>
+              <input id="up-cpts" type="text" required placeholder="e.g., 78492, 78491" class="input-friendly">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Procedure name <span class="text-xs font-normal" style="color: #94a3b8;">(optional)</span></label>
+              <input id="up-procedure" type="text" placeholder="e.g., Cardiac PET Imaging" class="input-friendly">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Document title <span class="text-xs font-normal" style="color: #94a3b8;">(defaults to filename)</span></label>
+              <input id="up-doc-title" type="text" placeholder="e.g., UHC Commercial Medical Policy: Cardiac PET" class="input-friendly">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Document number</label>
+              <input id="up-doc-number" type="text" placeholder="e.g., 2025T0501U" class="input-friendly">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Last updated</label>
+              <input id="up-last-updated" type="date" class="input-friendly">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Source URL</label>
+              <input id="up-source-url" type="url" placeholder="https://..." class="input-friendly">
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 pt-2">
+            <label class="flex items-center gap-2 text-sm" style="color: #475569;">
+              <input type="checkbox" id="up-force-vision" class="w-4 h-4">
+              Force Claude vision (slower, but handles complex tables and scans)
+            </label>
+            <div class="flex items-center gap-2">
+              <button type="button" id="policy-upload-preview-btn" class="btn-secondary text-sm py-2 px-4">
+                Preview chunks
+              </button>
+              <button type="button" id="policy-upload-confirm-btn" class="btn-primary text-sm py-2 px-4">
+                Add to library
+              </button>
+            </div>
+          </div>
+
+          <div id="policy-upload-status" class="hidden"></div>
+          <div id="policy-upload-preview" class="hidden"></div>
+        </form>
+      </div>
+    `;
+  }
+
+  function attachPolicyUploadHandlers() {
+    const zone = document.getElementById('policy-upload-zone');
+    const fileInput = document.getElementById('policy-file-input');
+    const zoneText = document.getElementById('policy-upload-zone-text');
+    if (!zone || !fileInput) return;
+
+    zone.onclick = () => fileInput.click();
+    zone.ondragover = (e) => { e.preventDefault(); zone.style.borderColor = '#4f46e5'; zone.style.background = 'linear-gradient(135deg, #eef2ff, #faf5ff)'; };
+    zone.ondragleave = () => { zone.style.borderColor = '#cbd5e1'; zone.style.background = 'linear-gradient(135deg, #fafbff, #f4f6fb)'; };
+    zone.ondrop = (e) => {
+      e.preventDefault();
+      zone.style.borderColor = '#cbd5e1';
+      zone.style.background = 'linear-gradient(135deg, #fafbff, #f4f6fb)';
+      if (e.dataTransfer.files[0]) {
+        fileInput.files = e.dataTransfer.files;
+        zoneText.textContent = `📄 ${e.dataTransfer.files[0].name}`;
+      }
+    };
+    fileInput.onchange = () => {
+      if (fileInput.files[0]) zoneText.textContent = `📄 ${fileInput.files[0].name}`;
+    };
+
+    document.getElementById('policy-upload-preview-btn').onclick = () => uploadPolicyDocument(true);
+    document.getElementById('policy-upload-confirm-btn').onclick = () => uploadPolicyDocument(false);
+  }
+
+  async function uploadPolicyDocument(previewOnly) {
+    const fileInput = document.getElementById('policy-file-input');
+    const statusEl = document.getElementById('policy-upload-status');
+    const previewEl = document.getElementById('policy-upload-preview');
+
+    const file = fileInput.files[0];
+    if (!file) {
+      statusEl.className = 'rounded-xl px-4 py-3 mt-2';
+      statusEl.setAttribute('style', 'background: rgba(220,38,38,0.06); border: 1px solid rgba(220,38,38,0.25); color: #b91c1c;');
+      statusEl.textContent = 'Pick a file first.';
+      return;
+    }
+
+    const payer = document.getElementById('up-payer').value.trim();
+    const cpts = document.getElementById('up-cpts').value.trim();
+    if (!payer || !cpts) {
+      statusEl.className = 'rounded-xl px-4 py-3 mt-2';
+      statusEl.setAttribute('style', 'background: rgba(220,38,38,0.06); border: 1px solid rgba(220,38,38,0.25); color: #b91c1c;');
+      statusEl.textContent = 'Payer and at least one CPT code are required.';
+      return;
+    }
+
+    statusEl.className = 'rounded-xl px-4 py-3 mt-2';
+    statusEl.setAttribute('style', 'background: #eef2ff; border: 1px solid rgba(79,70,229,0.25); color: #4338ca;');
+    statusEl.innerHTML = `${spinnerSVG(4)} Parsing ${file.name}... <span class="text-xs">${previewOnly ? '(preview only)' : '(adding to corpus)'}</span>`;
+    previewEl.classList.add('hidden');
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('payer', payer);
+    fd.append('applies_to_cpt', cpts);
+    fd.append('procedure_name', document.getElementById('up-procedure').value.trim());
+    fd.append('source_document', document.getElementById('up-doc-title').value.trim());
+    fd.append('source_document_number', document.getElementById('up-doc-number').value.trim());
+    fd.append('last_updated', document.getElementById('up-last-updated').value.trim());
+    fd.append('source_url', document.getElementById('up-source-url').value.trim());
+    fd.append('preview', previewOnly ? 'true' : 'false');
+    fd.append('force_vision', document.getElementById('up-force-vision').checked ? 'true' : 'false');
+
+    try {
+      const res = await fetch('/api/rag/upload-document?' + new URLSearchParams({
+        payer,
+        applies_to_cpt: cpts,
+        procedure_name: document.getElementById('up-procedure').value.trim(),
+        source_document: document.getElementById('up-doc-title').value.trim(),
+        source_document_number: document.getElementById('up-doc-number').value.trim(),
+        last_updated: document.getElementById('up-last-updated').value.trim(),
+        source_url: document.getElementById('up-source-url').value.trim(),
+        preview: previewOnly ? 'true' : 'false',
+        force_vision: document.getElementById('up-force-vision').checked ? 'true' : 'false',
+      }).toString(), {
+        method: 'POST',
+        body: (() => { const f = new FormData(); f.append('file', file); return f; })(),
+      });
+
+      if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.json()).detail; } catch { detail = await res.text(); }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+
+      if (previewOnly) {
+        statusEl.className = 'rounded-xl px-4 py-3 mt-2';
+        statusEl.setAttribute('style', 'background: rgba(5,150,105,0.06); border: 1px solid rgba(5,150,105,0.25); color: #047857;');
+        statusEl.innerHTML = `Extracted <strong>${data.chunk_count}</strong> chunks (${data.total_chars.toLocaleString()} chars). Review below, then click <strong>Add to library</strong>.`;
+
+        const chunksHtml = (data.extracted_chunks || []).map((c, i) => `
+          <div class="rounded-lg p-3 mb-2" style="background: #fafbff; border: 1px solid #e8ecf5;">
+            <div class="flex items-center gap-2 mb-1 flex-wrap">
+              <span class="text-[0.7rem] font-mono font-semibold" style="color: #4f46e5;">Chunk ${i + 1}</span>
+              ${c.section_heading ? `<span class="text-[0.7rem]" style="color: #94a3b8;">· ${escapeHtml(c.section_heading)}</span>` : ''}
+              ${c.page ? `<span class="text-[0.7rem]" style="color: #94a3b8;">· p.${c.page}</span>` : ''}
+              <span class="text-[0.7rem]" style="color: #94a3b8;">· ${c.text.length} chars</span>
+            </div>
+            <div class="text-xs leading-relaxed whitespace-pre-wrap" style="color: #475569; max-height: 200px; overflow-y: auto;">${escapeHtml(c.text)}</div>
+          </div>
+        `).join('');
+        previewEl.className = 'rounded-xl p-4 mt-3';
+        previewEl.setAttribute('style', 'background: #ffffff; border: 1px solid #e8ecf5; max-height: 600px; overflow-y: auto;');
+        previewEl.innerHTML = `<h4 class="text-sm font-bold mb-3" style="color: #0b1437;">Preview — ${data.chunk_count} chunks</h4>${chunksHtml}`;
+      } else {
+        statusEl.className = 'rounded-xl px-4 py-3 mt-2';
+        statusEl.setAttribute('style', 'background: rgba(5,150,105,0.06); border: 1px solid rgba(5,150,105,0.25); color: #047857;');
+        statusEl.innerHTML = `Added <strong>${data.added}</strong> new chunks to the policy library. Reloading…`;
+        setTimeout(() => loadPolicyLibrary(), 1200);
+      }
+    } catch (err) {
+      statusEl.className = 'rounded-xl px-4 py-3 mt-2';
+      statusEl.setAttribute('style', 'background: rgba(220,38,38,0.06); border: 1px solid rgba(220,38,38,0.25); color: #b91c1c;');
+      statusEl.innerHTML = `<strong>Upload failed:</strong> ${escapeHtml(String(err.message || err))}`;
+    }
+  }
+
+  async function deletePolicyChunk(chunkId) {
+    if (!confirm(`Delete chunk ${chunkId}? This cannot be undone.`)) return;
+    try {
+      const res = await fetch('/api/rag/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chunk_ids: [chunkId] }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      loadPolicyLibrary();
+    } catch (e) {
+      alert('Delete failed: ' + e.message);
+    }
+  }
+
+  async function deletePolicyDocument(docName, chunkCount) {
+    if (!confirm(`Delete the entire document "${docName}" (${chunkCount} chunks)? This cannot be undone.`)) return;
+    try {
+      const res = await fetch('/api/rag/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_document: docName }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      loadPolicyLibrary();
+    } catch (e) {
+      alert('Delete failed: ' + e.message);
     }
   }
 

@@ -107,6 +107,29 @@ def add_chunks(new_chunks: Iterable[PolicyChunk], path: Path | None = None) -> i
     return added
 
 
+def delete_chunks(chunk_ids: Iterable[str], path: Path | None = None) -> int:
+    """Remove chunks from the corpus by id. Returns the number removed."""
+    ids = set(chunk_ids)
+    if not ids:
+        return 0
+    existing = load_corpus(path)
+    kept = [c for c in existing if c.id not in ids]
+    removed = len(existing) - len(kept)
+    save_corpus(kept, path)
+    return removed
+
+
+def delete_document(source_document: str, path: Path | None = None) -> int:
+    """Remove all chunks sharing the same source_document string."""
+    if not source_document:
+        return 0
+    existing = load_corpus(path)
+    kept = [c for c in existing if c.source_document != source_document]
+    removed = len(existing) - len(kept)
+    save_corpus(kept, path)
+    return removed
+
+
 def get_corpus_stats(path: Path | None = None) -> dict:
     """Summary stats over the corpus for the Policy Library page."""
     chunks = load_corpus(path)

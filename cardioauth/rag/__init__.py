@@ -13,12 +13,19 @@ from cardioauth.rag.corpus import (
     save_corpus,
     get_corpus_stats,
     add_chunks,
+    delete_chunks,
+    delete_document,
     DEFAULT_CORPUS_PATH,
 )
 from cardioauth.rag.retriever import (
     PolicyRetriever,
     RetrievalResult,
     retrieve_for_pa,
+)
+from cardioauth.rag.chunker import (
+    ChunkDraft,
+    chunk_document,
+    chunks_from_plain_text,
 )
 
 __all__ = [
@@ -29,6 +36,11 @@ __all__ = [
     "save_corpus",
     "get_corpus_stats",
     "add_chunks",
+    "delete_chunks",
+    "delete_document",
     "retrieve_for_pa",
     "DEFAULT_CORPUS_PATH",
+    "ChunkDraft",
+    "chunk_document",
+    "chunks_from_plain_text",
 ]
