@@ -61,6 +61,8 @@ class ReviewPackage:
     requires_human_action: list[str]
     taxonomy_match: dict | None = None  # Structured criterion match matrix
     system_warnings: list[dict] = field(default_factory=list)  # Agent failures, fallbacks
+    retrieved_chunks: list[dict] = field(default_factory=list)  # Stage 1 RAG chunks
+    criterion_citations: list[dict] = field(default_factory=list)  # criterion → chunk_ids
 
 
 class Orchestrator:
@@ -114,10 +116,11 @@ class Orchestrator:
         chart_data = get_demo_chart(patient_id, procedure_code)
 
         system_warnings: list[dict] = []
+        retrieved_chunks: list[dict] = []
+        criterion_citations: list[dict] = []
 
-        # Step 2: Get policy — use Claude to generate criteria from real payer
-        # knowledge and CMS NCDs/LCDs. No hardcoded policy baselines.
-        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT")
+        # Step 2: Get policy — RAG-grounded via POLICY_AGENT (Stage 1)
+        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT (RAG)")
         if self.config.anthropic_api_key:
             from cardioauth.agents.policy_agent import PolicyAgent
             from cardioauth.integrations.cms_coverage import get_cms_coverage_context
@@ -128,7 +131,13 @@ class Orchestrator:
                     procedure_code, payer_name,
                     cms_context=cms_context,
                 )
-                logger.info("ORCHESTRATOR: Claude policy generation succeeded")
+                # Extract RAG metadata stashed by POLICY_AGENT
+                retrieved_chunks = policy_data.__dict__.get("_retrieved_chunks", [])
+                criterion_citations = policy_data.__dict__.get("_criterion_citations", [])
+                logger.info(
+                    "ORCHESTRATOR: POLICY_AGENT succeeded — %d chunks retrieved, %d citations",
+                    len(retrieved_chunks), sum(len(c.get("citations", [])) for c in criterion_citations),
+                )
             except Exception as e:
                 w = _classify_anthropic_error(e)
                 w["agent"] = "POLICY_AGENT"
@@ -246,6 +255,8 @@ class Orchestrator:
             requires_human_action=requires_human_action,
             taxonomy_match=taxonomy_match,
             system_warnings=system_warnings,
+            retrieved_chunks=retrieved_chunks,
+            criterion_citations=criterion_citations,
         )
 
     def _process_live(

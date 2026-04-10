@@ -389,6 +389,8 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
         "policy_data": policy_data.model_dump(),
         "taxonomy_match": taxonomy_match,
         "system_warnings": review.system_warnings if hasattr(review, 'system_warnings') else [],
+        "retrieved_chunks": getattr(policy_data, "__dict__", {}).get("_retrieved_chunks", []),
+        "criterion_citations": getattr(policy_data, "__dict__", {}).get("_criterion_citations", []),
     }
 
 
@@ -429,6 +431,8 @@ def create_pa_request(req: PARequest) -> dict[str, Any]:
         "policy_data": review.policy_data.model_dump(),
         "taxonomy_match": review.taxonomy_match,
         "system_warnings": review.system_warnings,
+        "retrieved_chunks": review.retrieved_chunks,
+        "criterion_citations": review.criterion_citations,
     }
 
 
@@ -575,6 +579,89 @@ def check_documentation(req: DocCheckRequest) -> dict[str, Any]:
         return analyze_documentation(chart.model_dump(), req.procedure_code)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ─────────────────────────── RAG API ───────────────────────────
+
+
+@app.get("/api/rag/corpus")
+def rag_corpus(payer: str | None = None, cpt: str | None = None) -> dict[str, Any]:
+    """List all policy chunks in the corpus, optionally filtered."""
+    from cardioauth.rag import load_corpus, get_corpus_stats
+    chunks = load_corpus()
+    if payer:
+        chunks = [c for c in chunks if c.payer.lower() == payer.lower() or c.chunk_type in ("ncd", "lcd")]
+    if cpt:
+        chunks = [c for c in chunks if cpt in c.applies_to_cpt]
+    return {
+        "stats": get_corpus_stats(),
+        "chunks": [c.to_dict() for c in chunks],
+        "filter": {"payer": payer, "cpt": cpt},
+        "count": len(chunks),
+    }
+
+
+@app.get("/api/rag/stats")
+def rag_stats() -> dict[str, Any]:
+    """Aggregate stats over the corpus for the Policy Library page."""
+    from cardioauth.rag import get_corpus_stats
+    return get_corpus_stats()
+
+
+class RAGSearchRequest(BaseModel):
+    cpt_code: str
+    payer: str
+    procedure_name: str = ""
+    top_k: int = 6
+
+
+@app.post("/api/rag/search")
+def rag_search(req: RAGSearchRequest) -> dict[str, Any]:
+    """Run a retrieval against the policy corpus and return ranked chunks."""
+    from cardioauth.rag import retrieve_for_pa
+    results = retrieve_for_pa(
+        cpt_code=req.cpt_code,
+        payer=req.payer,
+        procedure_name=req.procedure_name,
+        top_k=req.top_k,
+    )
+    return {
+        "query": {"cpt_code": req.cpt_code, "payer": req.payer, "procedure_name": req.procedure_name},
+        "count": len(results),
+        "results": [r.to_dict() for r in results],
+    }
+
+
+class RAGIngestChunk(BaseModel):
+    payer: str
+    applies_to_cpt: list[str]
+    procedure_name: str
+    text: str
+    source_document: str
+    source_document_number: str = ""
+    section_heading: str = ""
+    page: int | None = None
+    last_updated: str = ""
+    source_url: str = ""
+    chunk_type: str = "policy"
+
+
+class RAGIngestRequest(BaseModel):
+    chunks: list[RAGIngestChunk]
+
+
+@app.post("/api/rag/ingest")
+def rag_ingest(req: RAGIngestRequest) -> dict[str, Any]:
+    """Add new policy chunks to the corpus.
+
+    Future enhancement: accept PDF uploads, run a chunker, and ingest
+    the resulting chunks automatically. For now this is a manual
+    insertion endpoint that takes pre-chunked text.
+    """
+    from cardioauth.rag import PolicyChunk, add_chunks
+    new_chunks = [PolicyChunk.new(**c.model_dump()) for c in req.chunks]
+    added = add_chunks(new_chunks)
+    return {"requested": len(req.chunks), "added": added}
 
 
 # ─────────────────────────── Taxonomy API ───────────────────────────
