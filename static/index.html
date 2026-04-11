@@ -1097,36 +1097,28 @@
           </div>
 
           <!-- Extraction Engine Toggle -->
-          <div class="rounded-2xl p-5" style="background: linear-gradient(135deg, #fafbff, #f0f4ff); border: 1.5px solid #e8ecf5;">
+          <div id="engine-section" class="rounded-2xl p-5" style="background: linear-gradient(135deg, #fafbff, #f0f4ff); border: 1.5px solid #e8ecf5;">
             <div class="flex items-center gap-2 mb-3">
               <svg class="w-5 h-5" fill="none" stroke="#4f46e5" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
               <span class="text-sm font-bold" style="color: #0b1437;">Extraction Engine</span>
               <span id="comprehend-badge" class="hidden pill" style="background: rgba(5,150,105,0.1); color: #047857; font-size: 0.65rem;">HIPAA Eligible</span>
             </div>
-            <div class="grid grid-cols-3 gap-2" id="engine-toggle">
-              <label class="relative cursor-pointer">
-                <input type="radio" name="extraction_engine" value="claude" checked class="sr-only peer">
-                <div class="rounded-xl p-3 text-center transition-all peer-checked:ring-2 peer-checked:ring-indigo-500 peer-checked:bg-white peer-checked:shadow-md" style="background: #ffffff; border: 1.5px solid #e8ecf5;">
-                  <div class="text-xs font-bold mb-0.5" style="color: #4f46e5;">Claude Only</div>
-                  <div class="text-[0.65rem] leading-tight" style="color: #64748b;">Default. Claude handles all extraction + reasoning.</div>
-                </div>
-              </label>
-              <label class="relative cursor-pointer">
-                <input type="radio" name="extraction_engine" value="comprehend+claude" class="sr-only peer">
-                <div class="rounded-xl p-3 text-center transition-all peer-checked:ring-2 peer-checked:ring-indigo-500 peer-checked:bg-white peer-checked:shadow-md" style="background: #ffffff; border: 1.5px solid #e8ecf5;">
-                  <div class="text-xs font-bold mb-0.5" style="color: #059669;">Comprehend + Claude</div>
-                  <div class="text-[0.65rem] leading-tight" style="color: #64748b;">AWS NLP extracts entities first, Claude reasons over them.</div>
-                </div>
-              </label>
-              <label class="relative cursor-pointer">
-                <input type="radio" name="extraction_engine" value="comprehend" class="sr-only peer">
-                <div class="rounded-xl p-3 text-center transition-all peer-checked:ring-2 peer-checked:ring-indigo-500 peer-checked:bg-white peer-checked:shadow-md" style="background: #ffffff; border: 1.5px solid #e8ecf5;">
-                  <div class="text-xs font-bold mb-0.5" style="color: #d97706;">Comprehend Only</div>
-                  <div class="text-[0.65rem] leading-tight" style="color: #64748b;">AWS extraction only — for comparing NLP quality.</div>
-                </div>
-              </label>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem;" id="engine-toggle">
+              <div onclick="selectEngine('claude', this)" id="eng-claude" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1), 0 2px 8px -2px rgba(79,70,229,0.15);">
+                <div style="font-size:0.75rem; font-weight:700; color:#4f46e5; margin-bottom:0.25rem;">Claude Only</div>
+                <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">Default. Claude handles all extraction + reasoning.</div>
+              </div>
+              <div onclick="selectEngine('comprehend+claude', this)" id="eng-comprehend-claude" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+                <div style="font-size:0.75rem; font-weight:700; color:#059669; margin-bottom:0.25rem;">Comprehend + Claude</div>
+                <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">AWS NLP extracts entities first, Claude reasons over them.</div>
+              </div>
+              <div onclick="selectEngine('comprehend', this)" id="eng-comprehend" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+                <div style="font-size:0.75rem; font-weight:700; color:#d97706; margin-bottom:0.25rem;">Comprehend Only</div>
+                <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">AWS extraction only — for comparing NLP quality.</div>
+              </div>
             </div>
-            <p class="text-[0.65rem] mt-2" style="color: #94a3b8;">AWS Comprehend Medical is HIPAA-eligible with a BAA. Free tier: 25K units/month. Best for LVEF, meds, ECG findings.</p>
+            <input type="hidden" id="c-extraction-engine" value="claude">
+            <p style="font-size:0.65rem; margin-top:0.5rem; color:#94a3b8;">AWS Comprehend Medical is HIPAA-eligible with a BAA. Free tier: 25K units/month. Best for LVEF, meds, ECG findings.</p>
           </div>
 
           <div id="custom-form-error" class="hidden text-sm rounded-xl px-4 py-3" style="color: #b91c1c; background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2);"></div>
@@ -1285,6 +1277,21 @@
     fileInput.onchange = () => { if (fileInput.files[0]) handleFileUpload(fileInput.files[0]); };
   }
 
+  // Extraction engine toggle
+  function selectEngine(value, el) {
+    // Update hidden input
+    const hidden = document.getElementById('c-extraction-engine');
+    if (hidden) hidden.value = value;
+
+    // Update visual state
+    document.querySelectorAll('#engine-toggle .engine-opt').forEach(opt => {
+      opt.style.border = '2px solid #e8ecf5';
+      opt.style.boxShadow = 'none';
+    });
+    el.style.border = '2px solid #4f46e5';
+    el.style.boxShadow = '0 0 0 3px rgba(79,70,229,0.1), 0 2px 8px -2px rgba(79,70,229,0.15)';
+  }
+
   // Check Comprehend Medical availability and show badge
   async function checkComprehendStatus() {
     try {
@@ -1346,8 +1353,8 @@
     const dxCodes = (document.getElementById('c-dx').value || '').split(',').map(s => s.trim()).filter(Boolean);
 
     // Get selected extraction engine
-    const engineRadio = document.querySelector('input[name="extraction_engine"]:checked');
-    const extractionEngine = engineRadio ? engineRadio.value : 'claude';
+    const engineInput = document.getElementById('c-extraction-engine');
+    const extractionEngine = engineInput ? engineInput.value : 'claude';
 
     state._pendingRequest = {
       _custom: true,
