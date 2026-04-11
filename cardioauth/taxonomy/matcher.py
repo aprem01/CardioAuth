@@ -101,6 +101,26 @@ clinical_note, score, medication). For each criterion you must:
            the VALUE must satisfy the requirement.
   STEP 4 — Assign exactly one status: met / not_met / not_applicable.
 
+STATUS ASSIGNMENT RULES:
+
+  - "met" = The criterion IS clinically relevant AND the chart provides
+    sufficient evidence satisfying it.
+  - "not_met" = The criterion IS clinically relevant to this case but
+    the chart lacks sufficient documentation or the value does not meet
+    the threshold. This represents a real gap the provider should address.
+  - "not_applicable" = The criterion is NOT clinically relevant to THIS
+    patient's situation. Examples:
+      • ECG-001 (LBBB) → not_applicable if patient has no LBBB
+      • ECG-002 (paced rhythm) → not_applicable if patient has no pacemaker
+      • BMI-001 (BMI ≥ 35) → not_applicable if patient's BMI is normal
+      • LVEF-002 (LVEF ≤ 40%) → not_applicable if patient has preserved EF
+      • NDX-002 (submaximal HR) → not_applicable if no prior stress test
+      • MED-003 (failed antiarrhythmic) → not_applicable if no AF
+
+  Use not_applicable generously for supporting criteria that describe
+  clinical scenarios the patient simply does not have. Reserve not_met
+  for criteria that SHOULD be documented but are missing.
+
 NEGATIVE EXAMPLES (never do this):
 
   ✗ BMI criterion → cite an echocardiogram report
@@ -120,6 +140,25 @@ NEGATIVE EXAMPLES (never do this):
   ✗ Marking "Failed maximally tolerated medical therapy" as MET when
     the chart shows the patient is taking medications but with no
     documentation of trial duration or failure reason.
+
+SPECIAL CRITERION GUIDANCE
+
+  DOC-001 (Cardiology consultation note attached):
+    Evidence MUST come from chart_buckets.clinical_note.office_notes or
+    chart_buckets.clinical_note.additional_notes. Look for explicit
+    mention of an office visit note, consultation note, clinic note,
+    progress note, or H&P being included with the submission. Do NOT
+    cite diagnosis codes, imaging reports, or medication lists as
+    evidence for DOC-001. If the chart has an "additional_notes" or
+    "office_notes" field with substantive clinical narrative (history,
+    exam findings, assessment/plan), that IS the consultation note.
+
+  SX-004 (Symptom burden quantified — NYHA / CCS / EHRA class):
+    Evidence MUST come from chart_buckets.clinical_note.functional_class
+    or chart_buckets.clinical_note.symptoms. Look for explicit functional
+    class grading: "NYHA Class II", "CCS Class III", "EHRA 2b", etc.
+    If no validated functional class scale is documented, mark as not_met
+    with a recommendation to document the appropriate scale.
 
 QUANTITATIVE PRECISION
 
@@ -331,13 +370,27 @@ class TaxonomyMatcher:
 
 
 def score_from_matches(result: CaseMatchResult, applicable: list[Criterion]) -> None:
-    """Compute weighted approval scores from criterion matches."""
+    """Compute weighted approval scores from criterion matches.
+
+    Scoring philosophy (post-Peter-validation fix):
+      - Required criteria: met/not_met ratio drives the base score.
+        These are genuine documentation requirements the payer checks.
+      - Supporting criteria: only BOOST the score, never penalize.
+        A patient who doesn't have LBBB shouldn't be penalized for
+        ECG-001 being "not_met". Supporting criteria that are met add
+        strength; those that are not_met or n/a are ignored.
+      - Base score = required ratio (0-100%)
+      - Boost = up to +15% based on how many supporting criteria are met
+      - This prevents the old failure mode where 5/18 supporting criteria
+        met → 28% supporting score → drags overall to ~35% even with
+        decent required score.
+    """
     crit_by_code = {c.code: c for c in applicable}
 
     req_total = 0
     req_met = 0
-    sup_total = 0
     sup_met = 0
+    sup_evaluated = 0  # supporting criteria that are met or not_met (not n/a)
 
     for m in result.matches:
         c = crit_by_code.get(m.code)
@@ -350,23 +403,28 @@ def score_from_matches(result: CaseMatchResult, applicable: list[Criterion]) -> 
             if m.status == "met":
                 req_met += 1
         else:
-            sup_total += 1
+            sup_evaluated += 1
             if m.status == "met":
                 sup_met += 1
 
     result.score_required = (req_met / req_total) if req_total > 0 else 1.0
-    result.score_supporting = (sup_met / sup_total) if sup_total > 0 else 1.0
-    # Weighted combined score: 75% required, 25% supporting
-    result.overall_score = round(0.75 * result.score_required + 0.25 * result.score_supporting, 2)
+    result.score_supporting = (sup_met / sup_evaluated) if sup_evaluated > 0 else 1.0
 
-    if result.overall_score >= 0.85:
+    # Base score from required criteria (0-100%)
+    base = result.score_required
+    # Supporting criteria boost: up to +15 percentage points
+    # Only count met supporting criteria as a bonus
+    boost = 0.15 * result.score_supporting if sup_evaluated > 0 else 0.0
+    result.overall_score = round(min(1.0, base + boost), 2)
+
+    if result.overall_score >= 0.80:
         result.label = "HIGH"
-    elif result.overall_score >= 0.65:
+    elif result.overall_score >= 0.60:
         result.label = "MEDIUM"
-    elif result.overall_score >= 0.45:
+    elif result.overall_score >= 0.40:
         result.label = "LOW"
     else:
-        result.label = "DO NOT SUBMIT"
+        result.label = "INSUFFICIENT"
 
 
 def match_case_to_taxonomy(

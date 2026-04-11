@@ -101,7 +101,52 @@ def _extract_symptoms(chart: dict) -> str:
     for pt in chart.get("prior_treatments", []) or []:
         if "symptom" in str(pt).lower() or "stress" in str(pt).lower():
             bits.append(pt)
+    # Also check additional_notes for symptom mentions
+    notes = chart.get("additional_notes", "") or ""
+    if notes:
+        notes_lower = notes.lower()
+        if any(sym in notes_lower for sym in ["dyspnea", "chest pain", "syncope", "palpitations",
+                                               "fatigue", "angina", "shortness of breath", "edema"]):
+            bits.append(notes)
     return " | ".join(str(b) for b in bits) if bits else ""
+
+
+def _extract_functional_class(chart: dict) -> str:
+    """Pull NYHA, CCS angina class, or EHRA score from chart data.
+
+    These functional classifications may appear in comorbidities,
+    additional_notes, prior_treatments, or imaging result summaries.
+    """
+    patterns = [
+        r"(?:nyha|new york heart association)\s*(?:class|functional class)?\s*(?:i{1,4}v?|[1-4])",
+        r"(?:ccs|canadian cardiovascular society)\s*(?:class|angina class)?\s*(?:i{1,4}v?|[1-4])",
+        r"(?:ehra|european heart rhythm association)\s*(?:class|score)?\s*(?:i{1,4}v?|[1-4])",
+        r"class\s*(?:i{1,4}v?|[1-4])\s*(?:angina|heart failure|hf|symptoms?)",
+        r"(?:functional class|functional capacity)\s*(?:i{1,4}v?|[1-4])",
+    ]
+    haystacks = []
+    for c in chart.get("comorbidities", []) or []:
+        haystacks.append(str(c))
+    haystacks.append(chart.get("additional_notes", "") or "")
+    for pt in chart.get("prior_treatments", []) or []:
+        haystacks.append(str(pt))
+    for img in chart.get("relevant_imaging", []) or []:
+        haystacks.append(img.get("result_summary", ""))
+
+    findings = []
+    for text in haystacks:
+        if not text:
+            continue
+        text_lower = text.lower()
+        for pat in patterns:
+            m = re.search(pat, text_lower)
+            if m:
+                # Extract context around the match
+                start = max(0, m.start() - 20)
+                end = min(len(text), m.end() + 20)
+                findings.append(text[start:end].strip())
+                break
+    return " | ".join(findings) if findings else ""
 
 
 def _extract_medication_trials(chart: dict) -> list[dict]:
@@ -177,9 +222,11 @@ def bucket_chart_evidence(chart: dict) -> dict[str, Any]:
         # Clinical notes — symptom documentation, NOT diagnoses
         "clinical_note": {
             "symptoms": _extract_symptoms(chart),
+            "functional_class": _extract_functional_class(chart),
             "prior_treatments": chart.get("prior_treatments", []) or [],
             "comorbidities_full": chart.get("comorbidities", []) or [],
             "additional_notes": chart.get("additional_notes", "") or "",
+            "office_notes": chart.get("office_notes", "") or chart.get("consultation_note", "") or "",
         },
 
         # Scores — extracted quantitative measurements
