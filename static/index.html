@@ -964,12 +964,31 @@
                 ${payerOpts}
               </select>
             </div>
+            <!-- Data Mode Toggle (Live AI vs Mock) -->
+            <div class="rounded-2xl p-4" style="background: #fafbff; border: 1.5px solid #e8ecf5;">
+              <div class="flex items-center gap-2 mb-3">
+                <svg class="w-4 h-4" fill="none" stroke="#4f46e5" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                <span class="text-sm font-bold" style="color: #0b1437;">Pipeline Mode</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                <div onclick="selectDemoMode('live', this)" id="demo-mode-live" style="cursor:pointer; border-radius:0.75rem; padding:0.625rem; text-align:center; background:#ffffff; border:2px solid #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1);">
+                  <div style="font-size:0.75rem; font-weight:700; color:#059669; margin-bottom:0.125rem;">Live AI Pipeline</div>
+                  <div style="font-size:0.6rem; line-height:1.3; color:#64748b;">Real Claude reasoning + RAG (~90 sec)</div>
+                </div>
+                <div onclick="selectDemoMode('mock', this)" id="demo-mode-mock" style="cursor:pointer; border-radius:0.75rem; padding:0.625rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+                  <div style="font-size:0.75rem; font-weight:700; color:#d97706; margin-bottom:0.125rem;">Mock Data</div>
+                  <div style="font-size:0.6rem; line-height:1.3; color:#64748b;">Instant demo response, no API calls</div>
+                </div>
+              </div>
+              <input type="hidden" id="f-pipeline-mode" value="live">
+            </div>
+
             <div id="form-error" class="hidden text-sm rounded-xl px-4 py-3" style="color: #b91c1c; background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2);"></div>
             <button type="submit" id="submit-btn" class="btn-primary w-full text-base py-4">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
               Check this request
             </button>
-            <p class="text-center text-xs" style="color: #94a3b8;">Takes about 20 seconds. Nothing is submitted until you approve it.</p>
+            <p class="text-center text-xs" style="color: #94a3b8;">Takes about 20 seconds with Live AI. Instant with Mock Data.</p>
           </form>
         </div>
       </div>
@@ -1277,6 +1296,18 @@
     fileInput.onchange = () => { if (fileInput.files[0]) handleFileUpload(fileInput.files[0]); };
   }
 
+  // Pipeline mode toggle (live vs mock)
+  function selectDemoMode(value, el) {
+    const hidden = document.getElementById('f-pipeline-mode');
+    if (hidden) hidden.value = value;
+    document.querySelectorAll('#demo-mode-live, #demo-mode-mock').forEach(opt => {
+      opt.style.border = '2px solid #e8ecf5';
+      opt.style.boxShadow = 'none';
+    });
+    el.style.border = '2px solid #4f46e5';
+    el.style.boxShadow = '0 0 0 3px rgba(79,70,229,0.1)';
+  }
+
   // Extraction engine toggle
   function selectEngine(value, el) {
     // Update hidden input
@@ -1387,6 +1418,13 @@
     const payerId = payerEl.value;
     const payerName = payerEl.options[payerEl.selectedIndex].text;
 
+    const pipelineMode = document.getElementById('f-pipeline-mode')?.value || 'live';
+    if (pipelineMode === 'mock') {
+      // Skip the API call — go straight to review with demo data
+      state.currentReview = demoReviewData();
+      navigate('#review');
+      return;
+    }
     state._pendingRequest = { patient_id: patientId, procedure_code: procedureCode, payer_id: payerId, payer_name: payerName };
     console.log('Navigating to pipeline with:', state._pendingRequest);
     navigate('#pipeline');
