@@ -137,6 +137,21 @@ async def audit_middleware(request: Request, call_next):
             request.method, path, user_id, response.status_code, elapsed,
         )
 
+        # Write to database audit log (non-blocking, best-effort)
+        try:
+            from cardioauth.db import save_audit_log, is_db_available
+            if is_db_available():
+                save_audit_log(
+                    user_id=user_id,
+                    method=request.method,
+                    path=path,
+                    status_code=response.status_code,
+                    latency_ms=elapsed,
+                    ip_address=request.client.host if request.client else "",
+                )
+        except Exception:
+            pass  # Never block requests for audit failures
+
     return response
 
 # Auth
@@ -500,6 +515,33 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
 
     review.taxonomy_match = taxonomy_match
     _reviews[request_id] = review
+
+    # Persist to database (best-effort — don't block response if DB fails)
+    try:
+        from cardioauth.db import save_pa_submission, is_db_available
+        if is_db_available():
+            tax = taxonomy_match or {}
+            save_pa_submission(
+                user_id=user.id,
+                patient_id=chart_data.patient_id,
+                patient_name=req.patient_name,
+                age=req.age,
+                sex=req.sex,
+                payer=req.payer_name,
+                procedure_code=req.procedure_code,
+                procedure_name=req.procedure_name,
+                icd10_codes=req.diagnosis_codes,
+                extraction_engine=getattr(req, 'extraction_engine', 'claude'),
+                approval_score=reasoning.approval_likelihood_score,
+                approval_label=reasoning.approval_likelihood_label,
+                criteria_met=len(reasoning.criteria_met),
+                criteria_not_met=len(reasoning.criteria_not_met),
+                criteria_total=len(reasoning.criteria_met) + len(reasoning.criteria_not_met),
+                narrative_draft=reasoning.pa_narrative_draft[:2000],
+                status="analyzed",
+            )
+    except Exception as e:
+        logging.warning("DB save failed (non-blocking): %s", e)
 
     return {
         "request_id": request_id,
@@ -1011,6 +1053,56 @@ def export_pdf(req: ApprovalRequest):
 def list_authorizations():
     """Return all tracked authorizations with computed alert fields."""
     return get_all_authorizations()
+
+
+# ---------------------------------------------------------------------------
+# Database-backed endpoints (submission history, real analytics)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/submissions")
+async def list_submissions(
+    payer: str = "",
+    status: str = "",
+    limit: int = 50,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """List PA submission history from the database."""
+    try:
+        from cardioauth.db import get_submission_history, is_db_available
+        if not is_db_available():
+            return {"submissions": [], "source": "unavailable"}
+        # Non-admin users only see their own submissions
+        uid = "" if user.role == "admin" else user.id
+        submissions = get_submission_history(user_id=uid, payer=payer, status=status, limit=limit)
+        return {"submissions": submissions, "total": len(submissions), "source": "database"}
+    except Exception as e:
+        logging.warning("Submissions query failed: %s", e)
+        return {"submissions": [], "source": "error"}
+
+
+@app.get("/api/analytics/live")
+async def get_live_analytics(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Real analytics from the database (vs mock /api/analytics)."""
+    try:
+        from cardioauth.db import get_analytics_from_db, is_db_available
+        if not is_db_available():
+            return {"source": "unavailable"}
+        uid = "" if user.role == "admin" else user.id
+        return get_analytics_from_db(user_id=uid)
+    except Exception as e:
+        logging.warning("Live analytics failed: %s", e)
+        return {"source": "error", "error": str(e)}
+
+
+@app.get("/api/db/status")
+def db_status() -> dict[str, Any]:
+    """Check database connectivity."""
+    try:
+        from cardioauth.db import is_db_available
+        available = is_db_available()
+        return {"available": available, "retention_days": int(os.environ.get("DATA_RETENTION_DAYS", "365"))}
+    except Exception:
+        return {"available": False}
 
 
 @app.get("/api/authorizations/expiring")

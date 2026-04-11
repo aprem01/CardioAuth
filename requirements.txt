@@ -9,3 +9,4 @@ python-multipart==0.0.17
 reportlab==4.2.5
 pypdf==5.1.0
 boto3==1.38.11
+psycopg2-binary==2.9.11
