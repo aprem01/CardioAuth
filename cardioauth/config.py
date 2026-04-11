@@ -29,6 +29,10 @@ class Config:
     pinecone_api_key: str = field(default_factory=lambda: os.environ.get("PINECONE_API_KEY", ""))
     pinecone_index: str = field(default_factory=lambda: os.environ.get("PINECONE_INDEX", "cardioauth-policies"))
 
+    # AWS Comprehend Medical (optional preprocessing)
+    aws_region: str = field(default_factory=lambda: os.environ.get("AWS_REGION", "us-east-1"))
+    use_comprehend_medical: bool = field(default_factory=lambda: os.environ.get("USE_COMPREHEND_MEDICAL", "").lower() in ("1", "true", "yes"))
+
     # Thresholds
     chart_confidence_threshold: float = 0.8
     approval_likelihood_threshold: float = 0.6

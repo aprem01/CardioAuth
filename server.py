@@ -99,6 +99,7 @@ class CustomPARequest(BaseModel):
     ejection_fraction: str = ""
     ecg_findings: str = ""
     additional_notes: str = ""
+    extraction_engine: str = "claude"  # "claude" | "comprehend" | "comprehend+claude"
 
 
 class ApprovalRequest(BaseModel):
@@ -287,6 +288,32 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
         confidence_score=0.95 if labs and imaging else 0.75,
         missing_fields=[],
     )
+
+    # ── Optional: AWS Comprehend Medical preprocessing ──
+    # When extraction_engine includes "comprehend", run Comprehend Medical
+    # as a preprocessing step before Claude reasoning. This produces cleaner
+    # structured entities (meds, LVEF, ECG) that make Claude's job easier.
+    comprehend_stats = None
+    use_comprehend = req.extraction_engine in ("comprehend", "comprehend+claude")
+    if use_comprehend:
+        try:
+            from cardioauth.agents.comprehend_medical import enrich_chart_with_comprehend
+            chart_dict = chart_data.model_dump()
+            chart_dict["additional_notes"] = req.additional_notes
+            enriched = enrich_chart_with_comprehend(chart_dict)
+            comprehend_stats = {
+                "enriched": enriched.get("_comprehend_enriched", False),
+                "entity_count": enriched.get("_comprehend_entity_count", 0),
+            }
+            # Rebuild ChartData from enriched dict
+            chart_data = ChartData(**{
+                k: v for k, v in enriched.items()
+                if k in ChartData.model_fields and not k.startswith("_")
+            })
+            logging.info("Comprehend Medical enrichment: %s", comprehend_stats)
+        except Exception as e:
+            logging.warning("Comprehend Medical enrichment failed (continuing with Claude only): %s", e)
+            comprehend_stats = {"enriched": False, "error": str(e)}
 
     # Get policy — use Claude POLICY_AGENT with real CMS context (no hardcoding)
     policy_data = None
@@ -911,6 +938,63 @@ def list_pre_checks(days: int = 7):
 def list_blocked_procedures():
     """Return procedures that cannot proceed due to unresolved issues."""
     return get_blocked_procedures()
+
+
+# ---------------------------------------------------------------------------
+# AWS Comprehend Medical
+# ---------------------------------------------------------------------------
+
+@app.get("/api/comprehend/status")
+def get_comprehend_status() -> dict[str, Any]:
+    """Check if AWS Comprehend Medical is available and configured."""
+    try:
+        from cardioauth.agents.comprehend_medical import is_comprehend_available
+        available = is_comprehend_available()
+    except Exception:
+        available = False
+    return {
+        "available": available,
+        "enabled_by_default": config.use_comprehend_medical,
+        "region": config.aws_region,
+        "info": {
+            "service": "AWS Comprehend Medical",
+            "hipaa_eligible": True,
+            "free_tier": "25,000 units/month (1 unit = 100 UTF-8 chars)",
+            "use_case": "Clinical NLP preprocessing before Claude reasoning",
+            "benefits": [
+                "Purpose-built for clinical entity extraction (medications, labs, LVEF, ECG)",
+                "HIPAA-eligible with BAA — safe for real PHI",
+                "Catches entities Claude might miss on first pass",
+                "Free tier covers ~50-100 clinical documents/month",
+            ],
+        },
+    }
+
+
+@app.post("/api/comprehend/test")
+def test_comprehend_extraction(body: dict) -> dict[str, Any]:
+    """Test Comprehend Medical extraction on sample text.
+
+    Send {"text": "clinical text..."} to see what entities are extracted.
+    Useful for comparing against the current Claude-only pipeline.
+    """
+    text = body.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
+
+    try:
+        from cardioauth.agents.comprehend_medical import extract_entities
+        result = extract_entities(text)
+        return {
+            "status": "ok",
+            "engine": "aws_comprehend_medical",
+            "result": result.to_dict(),
+            "entity_count": len(result.raw_entities),
+        }
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Comprehend Medical error: {str(e)}")
 
 
 @app.get("/api/analytics")

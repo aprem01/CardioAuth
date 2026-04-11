@@ -1096,6 +1096,39 @@
             <textarea id="c-notes" rows="3" placeholder="Any additional context — e.g., why PET over SPECT, exercise limitations, clinical urgency..." class="${inputCls} text-xs"></textarea>
           </div>
 
+          <!-- Extraction Engine Toggle -->
+          <div class="rounded-2xl p-5" style="background: linear-gradient(135deg, #fafbff, #f0f4ff); border: 1.5px solid #e8ecf5;">
+            <div class="flex items-center gap-2 mb-3">
+              <svg class="w-5 h-5" fill="none" stroke="#4f46e5" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+              <span class="text-sm font-bold" style="color: #0b1437;">Extraction Engine</span>
+              <span id="comprehend-badge" class="hidden pill" style="background: rgba(5,150,105,0.1); color: #047857; font-size: 0.65rem;">HIPAA Eligible</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2" id="engine-toggle">
+              <label class="relative cursor-pointer">
+                <input type="radio" name="extraction_engine" value="claude" checked class="sr-only peer">
+                <div class="rounded-xl p-3 text-center transition-all peer-checked:ring-2 peer-checked:ring-indigo-500 peer-checked:bg-white peer-checked:shadow-md" style="background: #ffffff; border: 1.5px solid #e8ecf5;">
+                  <div class="text-xs font-bold mb-0.5" style="color: #4f46e5;">Claude Only</div>
+                  <div class="text-[0.65rem] leading-tight" style="color: #64748b;">Default. Claude handles all extraction + reasoning.</div>
+                </div>
+              </label>
+              <label class="relative cursor-pointer">
+                <input type="radio" name="extraction_engine" value="comprehend+claude" class="sr-only peer">
+                <div class="rounded-xl p-3 text-center transition-all peer-checked:ring-2 peer-checked:ring-indigo-500 peer-checked:bg-white peer-checked:shadow-md" style="background: #ffffff; border: 1.5px solid #e8ecf5;">
+                  <div class="text-xs font-bold mb-0.5" style="color: #059669;">Comprehend + Claude</div>
+                  <div class="text-[0.65rem] leading-tight" style="color: #64748b;">AWS NLP extracts entities first, Claude reasons over them.</div>
+                </div>
+              </label>
+              <label class="relative cursor-pointer">
+                <input type="radio" name="extraction_engine" value="comprehend" class="sr-only peer">
+                <div class="rounded-xl p-3 text-center transition-all peer-checked:ring-2 peer-checked:ring-indigo-500 peer-checked:bg-white peer-checked:shadow-md" style="background: #ffffff; border: 1.5px solid #e8ecf5;">
+                  <div class="text-xs font-bold mb-0.5" style="color: #d97706;">Comprehend Only</div>
+                  <div class="text-[0.65rem] leading-tight" style="color: #64748b;">AWS extraction only — for comparing NLP quality.</div>
+                </div>
+              </label>
+            </div>
+            <p class="text-[0.65rem] mt-2" style="color: #94a3b8;">AWS Comprehend Medical is HIPAA-eligible with a BAA. Free tier: 25K units/month. Best for LVEF, meds, ECG findings.</p>
+          </div>
+
           <div id="custom-form-error" class="hidden text-sm rounded-xl px-4 py-3" style="color: #b91c1c; background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2);"></div>
           <button type="button" onclick="document.getElementById('custom-pa-form').requestSubmit ? document.getElementById('custom-pa-form').requestSubmit() : submitCustomRequest(new Event('submit'))" id="custom-submit-btn" class="btn-primary w-full text-base py-4">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -1252,6 +1285,18 @@
     fileInput.onchange = () => { if (fileInput.files[0]) handleFileUpload(fileInput.files[0]); };
   }
 
+  // Check Comprehend Medical availability and show badge
+  async function checkComprehendStatus() {
+    try {
+      const res = await fetch('/api/comprehend/status');
+      const data = await res.json();
+      const badge = document.getElementById('comprehend-badge');
+      if (badge && data.available) {
+        badge.classList.remove('hidden');
+      }
+    } catch { /* ignore */ }
+  }
+
   function toggleRequestMode(mode) {
     const demoBtn = document.getElementById('mode-demo');
     const customBtn = document.getElementById('mode-custom');
@@ -1270,6 +1315,7 @@
       demoSection.classList.add('hidden');
       customSection.classList.remove('hidden');
       setTimeout(attachUploadListeners, 50);
+      setTimeout(checkComprehendStatus, 100);
     }
   }
 
@@ -1299,6 +1345,10 @@
     const comorbidities = (document.getElementById('c-comorbidities').value || '').trim().split('\n').filter(l => l.trim());
     const dxCodes = (document.getElementById('c-dx').value || '').split(',').map(s => s.trim()).filter(Boolean);
 
+    // Get selected extraction engine
+    const engineRadio = document.querySelector('input[name="extraction_engine"]:checked');
+    const extractionEngine = engineRadio ? engineRadio.value : 'claude';
+
     state._pendingRequest = {
       _custom: true,
       patient_name: document.getElementById('c-name').value,
@@ -1316,6 +1366,7 @@
       ejection_fraction: document.getElementById('c-ef').value,
       ecg_findings: document.getElementById('c-ecg').value,
       additional_notes: document.getElementById('c-notes').value,
+      extraction_engine: extractionEngine,
     };
     navigate('#pipeline');
   }
