@@ -103,6 +103,53 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"detail": "An internal error occurred. Please try again or contact support."},
     )
 
+
+# Audit middleware — logs every API call with user context
+@app.middleware("http")
+async def audit_middleware(request: Request, call_next):
+    """Log every API request for HIPAA audit trail."""
+    import time
+    start = time.time()
+    response = await call_next(request)
+    elapsed = round((time.time() - start) * 1000)
+
+    # Only audit /api/ routes (skip static files, health checks)
+    path = request.url.path
+    if path.startswith("/api/"):
+        # Try to extract user from auth header (non-blocking)
+        user_id = "anonymous"
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                import jwt as _jwt
+                from cardioauth.auth import SUPABASE_JWT_SECRET
+                if SUPABASE_JWT_SECRET:
+                    payload = _jwt.decode(
+                        auth_header[7:], SUPABASE_JWT_SECRET,
+                        algorithms=["HS256"], audience="authenticated",
+                    )
+                    user_id = payload.get("sub", "unknown")[:8] + "***"
+            except Exception:
+                user_id = "invalid_token"
+
+        logging.info(
+            "AUDIT: %s %s | user=%s | status=%d | %dms",
+            request.method, path, user_id, response.status_code, elapsed,
+        )
+
+    return response
+
+# Auth
+from cardioauth.auth import (
+    AuthUser,
+    get_current_user,
+    require_auth,
+    require_admin,
+    require_provider_or_admin,
+    log_audit,
+    is_auth_configured,
+)
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 
@@ -147,6 +194,30 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/auth/status")
+def auth_status() -> dict[str, Any]:
+    """Return auth configuration status for the frontend."""
+    from cardioauth.auth import SUPABASE_URL, SUPABASE_ANON_KEY, AUTH_DISABLED
+    return {
+        "auth_enabled": not AUTH_DISABLED,
+        "auth_configured": is_auth_configured(),
+        "supabase_url": SUPABASE_URL if SUPABASE_URL else None,
+        "supabase_anon_key": SUPABASE_ANON_KEY if SUPABASE_ANON_KEY else None,
+    }
+
+
+@app.get("/api/auth/me")
+async def get_me(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Return the current authenticated user."""
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "name": user.name,
+        "is_authenticated": user.is_authenticated,
+    }
+
+
 EXTRACT_PROMPT = """\
 You are a clinical data extraction specialist. Extract structured clinical data from this medical document image or PDF.
 
@@ -176,8 +247,9 @@ Be thorough — this data will be used for a prior authorization submission.
 
 
 @app.post("/api/extract-document")
-async def extract_document(file: UploadFile = File(...)) -> dict[str, Any]:
+async def extract_document(file: UploadFile = File(...), user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Extract clinical data from an uploaded document image or PDF using Claude vision."""
+    log_audit(user, "extract_document", file.filename or "unknown")
     api_key = config.anthropic_api_key
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
@@ -275,8 +347,9 @@ def get_reference_data() -> dict[str, Any]:
 
 
 @app.post("/api/pa/custom-request")
-def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
+def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Run PA pipeline with user-provided clinical data."""
+    log_audit(user, "create_custom_pa", f"CPT={req.procedure_code} payer={req.payer_name}")
     import uuid
     from cardioauth.models.chart import ChartData, LabResult, ImagingResult, Medication
     from cardioauth.demo import get_demo_policy, get_demo_reasoning
@@ -452,7 +525,7 @@ def create_custom_pa_request(req: CustomPARequest) -> dict[str, Any]:
 
 
 @app.post("/api/pa/request")
-def create_pa_request(req: PARequest) -> dict[str, Any]:
+def create_pa_request(req: PARequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Step 1-3: Extract chart data, get payer criteria, reason, and draft narrative."""
     try:
         review = orchestrator.process_request(
@@ -494,7 +567,7 @@ def create_pa_request(req: PARequest) -> dict[str, Any]:
 
 
 @app.post("/api/pa/approve")
-def approve_and_submit(req: ApprovalRequest) -> dict[str, Any]:
+def approve_and_submit(req: ApprovalRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Step 4: Cardiologist approves — submit to payer."""
     review = _reviews.get(req.request_id)
     if not review:
