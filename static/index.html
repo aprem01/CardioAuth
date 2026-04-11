@@ -695,7 +695,7 @@
   }
 
   window.addEventListener('hashchange', () => route());
-  window.addEventListener('DOMContentLoaded', () => { route(); checkHealth(); });
+  window.addEventListener('DOMContentLoaded', () => { route(); checkHealth(); checkComprehendStatus(); });
 
   // ──────────────────────────── API ────────────────────────────
   async function apiPost(url, body) {
@@ -984,6 +984,31 @@
               <input type="hidden" id="f-pipeline-mode" value="live">
             </div>
 
+            <!-- Extraction Engine Toggle (Demo) -->
+            <div class="rounded-2xl p-5" style="background: linear-gradient(135deg, #fafbff, #f0f4ff); border: 1.5px solid #e8ecf5;">
+              <div class="flex items-center gap-2 mb-3">
+                <svg class="w-5 h-5" fill="none" stroke="#4f46e5" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                <span class="text-sm font-bold" style="color: #0b1437;">Extraction Engine</span>
+                <span id="comprehend-badge-demo" class="hidden pill" style="background: rgba(5,150,105,0.1); color: #047857; font-size: 0.65rem;">HIPAA Eligible</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem;" id="engine-toggle-demo">
+                <div onclick="selectEngine('claude', this, 'demo')" class="engine-opt-demo" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1), 0 2px 8px -2px rgba(79,70,229,0.15);">
+                  <div style="font-size:0.75rem; font-weight:700; color:#4f46e5; margin-bottom:0.25rem;">Claude Only</div>
+                  <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">Default. Claude handles all extraction + reasoning.</div>
+                </div>
+                <div onclick="selectEngine('comprehend+claude', this, 'demo')" class="engine-opt-demo" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+                  <div style="font-size:0.75rem; font-weight:700; color:#059669; margin-bottom:0.25rem;">Comprehend + Claude</div>
+                  <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">AWS NLP extracts entities first, Claude reasons over them.</div>
+                </div>
+                <div onclick="selectEngine('comprehend', this, 'demo')" class="engine-opt-demo" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+                  <div style="font-size:0.75rem; font-weight:700; color:#d97706; margin-bottom:0.25rem;">Comprehend Only</div>
+                  <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">AWS extraction only — for comparing NLP quality.</div>
+                </div>
+              </div>
+              <input type="hidden" id="f-extraction-engine" value="claude">
+              <p style="font-size:0.65rem; margin-top:0.5rem; color:#94a3b8;">AWS Comprehend Medical is HIPAA-eligible with a BAA. Free tier: 25K units/month. Best for LVEF, meds, ECG findings.</p>
+            </div>
+
             <div id="form-error" class="hidden text-sm rounded-xl px-4 py-3" style="color: #b91c1c; background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2);"></div>
             <button type="submit" id="submit-btn" class="btn-primary w-full text-base py-4">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -1124,15 +1149,15 @@
               <span id="comprehend-badge" class="hidden pill" style="background: rgba(5,150,105,0.1); color: #047857; font-size: 0.65rem;">HIPAA Eligible</span>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem;" id="engine-toggle">
-              <div onclick="selectEngine('claude', this)" id="eng-claude" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1), 0 2px 8px -2px rgba(79,70,229,0.15);">
+              <div onclick="selectEngine('claude', this, 'custom')" id="eng-claude" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1), 0 2px 8px -2px rgba(79,70,229,0.15);">
                 <div style="font-size:0.75rem; font-weight:700; color:#4f46e5; margin-bottom:0.25rem;">Claude Only</div>
                 <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">Default. Claude handles all extraction + reasoning.</div>
               </div>
-              <div onclick="selectEngine('comprehend+claude', this)" id="eng-comprehend-claude" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+              <div onclick="selectEngine('comprehend+claude', this, 'custom')" id="eng-comprehend-claude" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
                 <div style="font-size:0.75rem; font-weight:700; color:#059669; margin-bottom:0.25rem;">Comprehend + Claude</div>
                 <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">AWS NLP extracts entities first, Claude reasons over them.</div>
               </div>
-              <div onclick="selectEngine('comprehend', this)" id="eng-comprehend" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+              <div onclick="selectEngine('comprehend', this, 'custom')" id="eng-comprehend" class="engine-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
                 <div style="font-size:0.75rem; font-weight:700; color:#d97706; margin-bottom:0.25rem;">Comprehend Only</div>
                 <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">AWS extraction only — for comparing NLP quality.</div>
               </div>
@@ -1309,14 +1334,17 @@
     el.style.boxShadow = '0 0 0 3px rgba(79,70,229,0.1)';
   }
 
-  // Extraction engine toggle
-  function selectEngine(value, el) {
-    // Update hidden input
-    const hidden = document.getElementById('c-extraction-engine');
+  // Extraction engine toggle — works for both demo and custom forms
+  function selectEngine(value, el, form) {
+    // Update the correct hidden input
+    const hiddenId = form === 'demo' ? 'f-extraction-engine' : 'c-extraction-engine';
+    const hidden = document.getElementById(hiddenId);
     if (hidden) hidden.value = value;
 
-    // Update visual state
-    document.querySelectorAll('#engine-toggle .engine-opt').forEach(opt => {
+    // Update visual state — scope to the correct toggle group
+    const toggleId = form === 'demo' ? 'engine-toggle-demo' : 'engine-toggle';
+    const className = form === 'demo' ? 'engine-opt-demo' : 'engine-opt';
+    document.querySelectorAll(`#${toggleId} .${className}`).forEach(opt => {
       opt.style.border = '2px solid #e8ecf5';
       opt.style.boxShadow = 'none';
     });
@@ -1329,9 +1357,11 @@
     try {
       const res = await fetch('/api/comprehend/status');
       const data = await res.json();
-      const badge = document.getElementById('comprehend-badge');
-      if (badge && data.available) {
-        badge.classList.remove('hidden');
+      if (data.available) {
+        const badge = document.getElementById('comprehend-badge');
+        if (badge) badge.classList.remove('hidden');
+        const badgeDemo = document.getElementById('comprehend-badge-demo');
+        if (badgeDemo) badgeDemo.classList.remove('hidden');
       }
     } catch { /* ignore */ }
   }
@@ -1426,7 +1456,8 @@
       navigate('#review');
       return;
     }
-    state._pendingRequest = { patient_id: patientId, procedure_code: procedureCode, payer_id: payerId, payer_name: payerName };
+    const demoEngine = document.getElementById('f-extraction-engine')?.value || 'claude';
+    state._pendingRequest = { patient_id: patientId, procedure_code: procedureCode, payer_id: payerId, payer_name: payerName, extraction_engine: demoEngine };
     console.log('Navigating to pipeline with:', state._pendingRequest);
     navigate('#pipeline');
   }
