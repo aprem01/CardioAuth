@@ -102,7 +102,7 @@ class FHIRClient:
                     data = self._get(resource_type, {"patient": patient_id})
                 bundle["resources"][resource_type] = data
             except requests.RequestException as e:
-                logger.warning("FHIR: failed to fetch %s for patient %s: %s", resource_type, patient_id, e)
+                logger.warning("FHIR: failed to fetch %s for patient %s: %s", resource_type, patient_id[:4] + "***", e)
                 bundle["resources"][resource_type] = {"error": str(e)}
 
         return bundle

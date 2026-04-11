@@ -20,7 +20,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # In-memory queue (in production this would be a DB table)
-_QUEUE_FILE = Path(os.environ.get("EMERGING_QUEUE_PATH", "/tmp/cardioauth_emerging.json"))
+_QUEUE_FILE = Path(os.environ.get(
+    "EMERGING_QUEUE_PATH",
+    Path(__file__).parent.parent.parent / "data" / "emerging_criteria.json",
+))
 PROMOTION_THRESHOLD = 3  # appearances before suggesting promotion
 
 

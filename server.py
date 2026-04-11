@@ -57,21 +57,51 @@ logging.basicConfig(
 app = FastAPI(
     title="CardioAuth",
     description="Cardiology prior authorization automation API",
-    version="0.1.0",
+    version="0.2.0",
 )
+
+# CORS — restrict to known origins in production
+_ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else []
+_ALLOWED_ORIGINS = [o.strip() for o in _ALLOWED_ORIGINS if o.strip()]
+if not _ALLOWED_ORIGINS:
+    # Default: allow the Railway domain + localhost for dev
+    _ALLOWED_ORIGINS = [
+        "https://cardioauth-production.up.railway.app",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 config = Config()
+
+# Validate config at startup — fail loud, not silent
+_missing_config = config.validate()
+if _missing_config:
+    logging.warning("CardioAuth starting with missing config: %s (some features will be unavailable)", _missing_config)
+
 orchestrator = Orchestrator(config)
 
 # In-memory store for review packages (use Redis/DB in production)
 _reviews: dict[str, ReviewPackage] = {}
+
+
+# Global exception handler — never leak stack traces to the client
+from fastapi.responses import JSONResponse
+from starlette.requests import Request
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logging.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal error occurred. Please try again or contact support."},
+    )
 
 STATIC_DIR = Path(__file__).parent / "static"
 

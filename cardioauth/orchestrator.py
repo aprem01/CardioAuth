@@ -93,7 +93,7 @@ class Orchestrator:
         """Run the full pipeline up to human review."""
         logger.info("=" * 60)
         logger.info("ORCHESTRATOR: starting PA request — patient=%s procedure=%s payer=%s",
-                     patient_id, procedure_code, payer_name)
+                     patient_id[:4] + "***" if len(patient_id) > 4 else "***", procedure_code, payer_name)
 
         if _is_demo_mode():
             return self._process_demo(patient_id, procedure_code, payer_name)

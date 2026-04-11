@@ -53,7 +53,7 @@ class ChartAgent:
         self.fhir = FHIRClient(config)
 
     def run(self, patient_id: str, procedure_code: str, payer_id: str) -> ChartData:
-        logger.info("CHART_AGENT: extracting data for patient=%s procedure=%s", patient_id, procedure_code)
+        logger.info("CHART_AGENT: extracting data for patient=%s procedure=%s", patient_id[:4] + "***", procedure_code)
 
         fhir_bundle = self.fhir.get_patient_bundle(patient_id, procedure_code)
 
