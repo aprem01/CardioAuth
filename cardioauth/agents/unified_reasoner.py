@@ -231,6 +231,33 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
             if isinstance(crit, dict):
                 policy_text += f"  - {crit.get('criterion', '')}\n"
 
+    # Gold-standard training cases for the same procedure — dynamic few-shot
+    training_examples_text = ""
+    try:
+        from cardioauth.training import get_all_training_cases
+        training_cases = get_all_training_cases()
+        # Filter to same CPT, sorted by most recent, take top 2
+        matching = [
+            tc for tc in training_cases
+            if tc.get("procedure_code") == ctx.procedure_code
+            and tc.get("criterion_labels")
+        ][:2]
+        if matching:
+            training_examples_text = "\n\nGOLD-STANDARD LABELED CASES (same CPT, physician-verified):\n"
+            for tc in matching:
+                training_examples_text += f"\n  Case: {tc.get('title', tc.get('case_id', ''))}\n"
+                training_examples_text += f"  Outcome: {tc.get('actual_outcome', 'unknown')}, "
+                training_examples_text += f"Gold score: {tc.get('gold_approval_score', 0):.2f}\n"
+                training_examples_text += f"  Note excerpt: {tc.get('raw_note', '')[:300]}...\n"
+                training_examples_text += f"  Gold labels:\n"
+                for lbl in (tc.get("criterion_labels", []) or [])[:8]:
+                    training_examples_text += f"    {lbl.get('code')}: {lbl.get('gold_status')}"
+                    if lbl.get('gold_evidence'):
+                        training_examples_text += f" ({lbl['gold_evidence'][:60]})"
+                    training_examples_text += "\n"
+    except Exception:
+        pass
+
     # Past physician corrections on similar cases — "mistakes to avoid"
     corrections_text = ""
     try:
@@ -264,6 +291,7 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
         f"═══════════════════════════════════════════════════════════════\n"
         f"{relationships_text}"
         f"{precedents_text}"
+        f"{training_examples_text}"
         f"{policy_text}"
         f"{corrections_text}\n\n"
         f"CRITERIA TO EVALUATE (evaluate each against the raw note above):\n"

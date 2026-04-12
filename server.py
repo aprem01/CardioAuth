@@ -1372,6 +1372,137 @@ async def submit_correction(req: FeedbackRequest, user: AuthUser = Depends(get_c
     }
 
 
+# ---------------------------------------------------------------------------
+# Training — gold-standard labeled cases for supervised learning
+# ---------------------------------------------------------------------------
+
+class CriterionLabelReq(BaseModel):
+    code: str
+    gold_status: str             # "met" | "not_met" | "not_applicable"
+    gold_evidence: str = ""
+    physician_note: str = ""
+
+
+class TrainingCaseReq(BaseModel):
+    case_id: str = ""
+    title: str
+    procedure_code: str
+    procedure_name: str
+    payer: str
+    raw_note: str
+    actual_outcome: str = "unknown"
+    gold_approval_label: str = ""
+    gold_approval_score: float = 0.0
+    criterion_labels: list[CriterionLabelReq] = []
+    source: str = "manual"
+    notes: str = ""
+
+
+@app.get("/api/training/cases")
+async def list_training_cases(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """List all gold-standard labeled training cases."""
+    from cardioauth.training import get_all_training_cases
+    return {"cases": get_all_training_cases()}
+
+
+@app.get("/api/training/cases/{case_id}")
+async def get_training_case_endpoint(case_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Fetch a single training case."""
+    from cardioauth.training import get_training_case
+    case = get_training_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Training case not found")
+    return case
+
+
+@app.post("/api/training/cases")
+async def save_training_case_endpoint(req: TrainingCaseReq, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Save or update a gold-standard labeled training case."""
+    import uuid as _uuid
+    from cardioauth.training import TrainingCase, CriterionLabel, save_training_case
+
+    case_id = req.case_id or f"TC-{_uuid.uuid4().hex[:8].upper()}"
+    case = TrainingCase(
+        case_id=case_id,
+        title=req.title,
+        procedure_code=req.procedure_code,
+        procedure_name=req.procedure_name,
+        payer=req.payer,
+        raw_note=req.raw_note,
+        actual_outcome=req.actual_outcome,
+        gold_approval_label=req.gold_approval_label,
+        gold_approval_score=req.gold_approval_score,
+        criterion_labels=[
+            CriterionLabel(
+                code=l.code,
+                gold_status=l.gold_status,
+                gold_evidence=l.gold_evidence,
+                physician_note=l.physician_note,
+            )
+            for l in req.criterion_labels
+        ],
+        labeled_by=user.id,
+        source=req.source,
+        notes=req.notes,
+    )
+    log_audit(user, "training_label", f"{case.case_id} {req.procedure_code}")
+    ok = save_training_case(case)
+    return {"status": "ok" if ok else "partial", "case_id": case.case_id}
+
+
+@app.post("/api/training/evaluate/{case_id}")
+async def evaluate_training_case(case_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Run the UnifiedReasoner on a training case and compare to gold labels."""
+    from cardioauth.training import get_training_case, evaluate_case_against_gold
+    from cardioauth.case_context import CaseContext
+    from cardioauth.agents.relationship_extractor import extract_relationships
+    from cardioauth.agents.precedent_retriever import retrieve_precedents
+    from cardioauth.agents.unified_reasoner import reason_with_unified_agent
+
+    case = get_training_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Training case not found")
+
+    ctx = CaseContext(
+        case_id=case_id,
+        procedure_code=case["procedure_code"],
+        procedure_name=case["procedure_name"],
+        payer_name=case["payer"],
+        user_id=user.id,
+        raw_note=case["raw_note"],
+    )
+    extract_relationships(ctx, config)
+    retrieve_precedents(ctx, top_k=5)
+    reason_with_unified_agent(ctx, config)
+
+    reasoner_output = {
+        "criterion_matches": ctx.criterion_matches,
+        "approval_likelihood": {"score": ctx.approval_score, "label": ctx.approval_label},
+        "narrative_draft": ctx.narrative_draft,
+    }
+
+    scorecard = evaluate_case_against_gold(case, reasoner_output)
+    return {
+        "scorecard": scorecard,
+        "reasoner_output": reasoner_output,
+        "relationships": [
+            {"supports": r.supports_criterion, "conclusion": r.conclusion, "quote": r.evidence_quote}
+            for r in ctx.relationships
+        ],
+        "reasoning_trace": [
+            {"agent": t.agent_name, "action": t.action, "summary": t.output_summary}
+            for t in ctx.reasoning_trace
+        ],
+    }
+
+
+@app.get("/api/training/stats")
+async def get_training_stats(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Overall training dataset statistics."""
+    from cardioauth.training import get_training_accuracy_stats
+    return get_training_accuracy_stats()
+
+
 @app.get("/api/feedback/corrections")
 async def list_corrections(limit: int = 50, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """List recent corrections (admin view)."""

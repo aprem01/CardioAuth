@@ -572,6 +572,13 @@
         Modifier Checker
       </a>
 
+      <!-- Training -->
+      <div class="sidebar-group-label mt-4">Learning</div>
+      <a href="#train" class="sidebar-link" data-route="train">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+        Training Room
+      </a>
+
       <!-- Analytics -->
       <div class="sidebar-group-label mt-4">Analytics</div>
       <a href="#analytics" class="sidebar-link" data-route="analytics">
@@ -686,6 +693,7 @@
     else if (hash === '#devices') { app.innerHTML = renderLoading('Device Monitoring'); loadDevices(); }
     else if (hash === '#pre-check') { app.innerHTML = renderLoading('Pre-Procedure Check'); loadPreCheck(); }
     else if (hash === '#modifiers') app.innerHTML = renderModifierChecker();
+    else if (hash === '#train') { app.innerHTML = renderLoading('Training Room'); loadTrainingRoom(); }
     else if (hash === '#analytics') { app.innerHTML = renderLoading('Retrospective Analytics'); loadRetroAnalytics(); }
     else if (hash === '#denials') { app.innerHTML = renderLoading('Denial Analytics'); loadDenials(); }
     else if (hash === '#taxonomy') { app.innerHTML = renderLoading('Criterion Taxonomy'); loadTaxonomy(); }
@@ -4172,6 +4180,438 @@ This procedure is essential for determining whether percutaneous coronary interv
       `;
     } catch(e) {
       app.innerHTML = `<div class="card-elevated p-6 text-sm" style="color: #dc2626;">Failed to load emerging criteria: ${e.message}</div>`;
+    }
+  }
+
+  // ──────────────────────────── Training Room (#train) ────────────────────────────
+  async function loadTrainingRoom() {
+    const app = document.getElementById('app');
+    try {
+      const headers = window._authToken ? { 'Authorization': 'Bearer ' + window._authToken } : {};
+      const [casesRes, statsRes] = await Promise.all([
+        fetch('/api/training/cases', { headers }).then(r => r.json()).catch(() => ({cases: []})),
+        fetch('/api/training/stats', { headers }).then(r => r.json()).catch(() => ({})),
+      ]);
+      app.innerHTML = renderTrainingRoom(casesRes.cases || [], statsRes);
+    } catch(e) {
+      app.innerHTML = renderError('Training Room', e.message);
+    }
+  }
+
+  function renderTrainingRoom(cases, stats) {
+    const total = stats.total_cases || 0;
+    const totalLabels = stats.total_labels || 0;
+    const byProcedure = stats.by_procedure || {};
+    const byOutcome = stats.by_outcome || {};
+
+    const casesList = cases.length ? cases.map(c => `
+      <div class="card-elevated p-4 cursor-pointer hover:shadow-lg transition" onclick="openTrainingCase('${c.case_id}')">
+        <div class="flex items-start justify-between gap-3 mb-2">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-xs font-mono font-bold" style="color: #4f46e5;">${c.case_id}</span>
+              <span class="pill" style="background: rgba(79,70,229,0.08); color: #4338ca; font-size:0.65rem;">${c.procedure_code}</span>
+              ${c.actual_outcome === 'approved' ? '<span class="pill pill-success" style="font-size:0.65rem;">Approved</span>' : c.actual_outcome === 'denied' ? '<span class="pill pill-danger" style="font-size:0.65rem;">Denied</span>' : ''}
+            </div>
+            <div class="text-sm font-semibold" style="color: #0b1437;">${escapeHtml(c.title || c.procedure_name)}</div>
+            <div class="text-xs mt-1" style="color: #64748b;">${c.payer} · ${(c.criterion_labels || []).length} labeled criteria · ${c.source}</div>
+          </div>
+          <div class="text-right flex-shrink-0">
+            ${c.gold_approval_score ? `<div class="text-lg font-extrabold" style="color: #059669;">${Math.round(c.gold_approval_score * 100)}%</div>
+              <div class="text-[0.65rem]" style="color: #94a3b8;">${c.gold_approval_label}</div>` : ''}
+          </div>
+        </div>
+      </div>
+    `).join('') : `
+      <div class="card-elevated p-12 text-center">
+        <div class="text-base font-semibold" style="color: #0b1437;">No training cases yet</div>
+        <p class="text-sm mt-2" style="color: #64748b;">Click <strong>+ New Training Case</strong> above to label your first case.</p>
+      </div>`;
+
+    const criterionStats = Object.entries(stats.by_criterion || {}).sort((a,b) => b[1].total - a[1].total).slice(0, 10).map(([code, s]) => `
+      <tr class="border-b border-surface-border/50">
+        <td class="py-2 px-3 text-sm font-mono font-semibold" style="color: #4f46e5;">${code}</td>
+        <td class="py-2 px-3 text-sm font-mono text-right" style="color: #0b1437;">${s.total}</td>
+        <td class="py-2 px-3 text-sm font-mono text-right" style="color: #059669;">${s.met || 0}</td>
+        <td class="py-2 px-3 text-sm font-mono text-right" style="color: #dc2626;">${s.not_met || 0}</td>
+        <td class="py-2 px-3 text-sm font-mono text-right" style="color: #94a3b8;">${s.not_applicable || 0}</td>
+      </tr>
+    `).join('');
+
+    return `
+    <div class="fade-in space-y-6">
+      <div class="flex items-center justify-between">
+        <button onclick="navigate('#dashboard')" class="btn-ghost -ml-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Dashboard
+        </button>
+        <button onclick="openTrainingCase('new')" class="btn-primary text-sm py-2 px-4">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+          New Training Case
+        </button>
+      </div>
+
+      <!-- Hero -->
+      <div class="relative overflow-hidden rounded-3xl p-8 lg:p-10" style="background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 40%, #581c87 100%);">
+        <div class="absolute -top-20 -right-20 w-96 h-96 rounded-full opacity-20" style="background: radial-gradient(circle, #a78bfa, transparent 70%); filter: blur(80px);"></div>
+        <div class="relative">
+          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold mb-4" style="background: rgba(167,139,250,0.2); color: #c4b5fd; border: 1px solid rgba(167,139,250,0.3);">
+            <span class="w-1.5 h-1.5 rounded-full" style="background: #a78bfa; box-shadow: 0 0 0 3px rgba(167,139,250,0.3);"></span>
+            Supervised Training · RLHF · Active Learning
+          </div>
+          <h1 class="text-4xl lg:text-5xl font-extrabold tracking-tight mb-3" style="color: white !important;">Training Room</h1>
+          <p class="text-base lg:text-lg max-w-2xl" style="color: rgba(203,213,225,0.9) !important;">
+            Label historical PA cases with gold-standard criterion evaluations. Every case you label improves the reasoner on similar future cases through few-shot retrieval and — after 500+ cases — supervised fine-tuning.
+          </p>
+        </div>
+      </div>
+
+      <!-- KPIs -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="card-elevated p-5 text-center">
+          <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #64748b;">Training Cases</div>
+          <div class="text-4xl font-black tracking-tight" style="color: #0b1437;">${total}</div>
+          <div class="text-xs mt-1" style="color: #94a3b8;">${totalLabels} labeled criteria</div>
+        </div>
+        <div class="card-elevated p-5 text-center">
+          <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #64748b;">Approved</div>
+          <div class="text-4xl font-black tracking-tight" style="color: #059669;">${byOutcome.approved || 0}</div>
+        </div>
+        <div class="card-elevated p-5 text-center">
+          <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #64748b;">Denied</div>
+          <div class="text-4xl font-black tracking-tight" style="color: #dc2626;">${byOutcome.denied || 0}</div>
+        </div>
+        <div class="card-elevated p-5 text-center">
+          <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #64748b;">Procedures</div>
+          <div class="text-4xl font-black tracking-tight" style="color: #4f46e5;">${Object.keys(byProcedure).length}</div>
+        </div>
+      </div>
+
+      <!-- Training roadmap -->
+      <div class="card-elevated p-6 lg:p-8">
+        <h3 class="text-lg font-bold mb-3" style="color: #0b1437;">Learning Roadmap</h3>
+        <div class="space-y-2 text-sm" style="color: #475569;">
+          <div class="flex items-center gap-3">
+            <span class="pill ${total >= 5 ? 'pill-success' : ''}" style="${total >= 5 ? '' : 'background: #f1f5f9; color: #94a3b8;'}">${total >= 5 ? '✓' : '○'}</span>
+            <span><strong>5+ cases:</strong> regression tests run on every deploy</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="pill ${total >= 50 ? 'pill-success' : ''}" style="${total >= 50 ? '' : 'background: #f1f5f9; color: #94a3b8;'}">${total >= 50 ? '✓' : '○'}</span>
+            <span><strong>50+ cases:</strong> retrieval-augmented correction activates — similar gold cases injected into prompts</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="pill ${total >= 500 ? 'pill-success' : ''}" style="${total >= 500 ? '' : 'background: #f1f5f9; color: #94a3b8;'}">${total >= 500 ? '✓' : '○'}</span>
+            <span><strong>500+ cases:</strong> fine-tune a domain classifier (Claude Haiku / Llama 3.1 8B) — 10× cheaper inference</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="pill ${total >= 5000 ? 'pill-success' : ''}" style="${total >= 5000 ? '' : 'background: #f1f5f9; color: #94a3b8;'}">${total >= 5000 ? '✓' : '○'}</span>
+            <span><strong>5000+ cases:</strong> DPO on payer-approval outcomes — preference learning from real denials</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cases list + criterion stats -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 space-y-3">
+          <h3 class="text-lg font-bold" style="color: #0b1437;">Training Cases</h3>
+          ${casesList}
+        </div>
+        <div class="space-y-3">
+          <h3 class="text-lg font-bold" style="color: #0b1437;">Coverage by Criterion</h3>
+          <div class="card-elevated p-4">
+            ${criterionStats ? `
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="border-b border-surface-border">
+                    <th class="py-2 px-3 text-left font-bold" style="color: #64748b;">Code</th>
+                    <th class="py-2 px-3 text-right font-bold" style="color: #64748b;">N</th>
+                    <th class="py-2 px-3 text-right font-bold" style="color: #059669;">Met</th>
+                    <th class="py-2 px-3 text-right font-bold" style="color: #dc2626;">Not</th>
+                    <th class="py-2 px-3 text-right font-bold" style="color: #94a3b8;">N/A</th>
+                  </tr>
+                </thead>
+                <tbody>${criterionStats}</tbody>
+              </table>
+            ` : '<p class="text-sm text-center py-8" style="color: #94a3b8;">Label cases to see criterion coverage.</p>'}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  async function openTrainingCase(caseId) {
+    const app = document.getElementById('app');
+    const headers = window._authToken ? { 'Authorization': 'Bearer ' + window._authToken } : {};
+    let caseData = null;
+    let taxonomy = null;
+    try {
+      [taxonomy] = await Promise.all([
+        fetch('/api/taxonomy').then(r => r.json()).catch(() => ({criteria: []})),
+      ]);
+      if (caseId !== 'new') {
+        const res = await fetch(`/api/training/cases/${caseId}`, {headers});
+        if (res.ok) caseData = await res.json();
+      }
+    } catch(e) { /* ignore */ }
+
+    app.innerHTML = renderTrainingCaseEditor(caseData, taxonomy);
+  }
+
+  function renderTrainingCaseEditor(c, taxonomy) {
+    const isNew = !c;
+    c = c || {};
+    const allCriteria = (taxonomy?.criteria || []);
+    const existingLabels = {};
+    (c.criterion_labels || []).forEach(l => existingLabels[l.code] = l);
+
+    const procedures = [
+      {code: '78492', name: 'Cardiac Stress PET'},
+      {code: '78452', name: 'Lexiscan SPECT'},
+      {code: '93458', name: 'Left Heart Catheterization'},
+      {code: '33361', name: 'TAVR'},
+      {code: '93656', name: 'AF Catheter Ablation'},
+    ];
+
+    const procOpts = procedures.map(p => `<option value="${p.code}" data-name="${p.name}" ${c.procedure_code === p.code ? 'selected' : ''}>${p.name} (${p.code})</option>`).join('');
+    const payers = ['UnitedHealthcare', 'Aetna', 'Blue Cross Blue Shield', 'Cigna', 'Humana', 'Medicare'];
+    const payerOpts = payers.map(p => `<option value="${p}" ${c.payer === p ? 'selected' : ''}>${p}</option>`).join('');
+
+    return `
+    <div class="fade-in space-y-6 max-w-5xl">
+      <div class="flex items-center justify-between">
+        <button onclick="navigate('#train')" class="btn-ghost -ml-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Training Room
+        </button>
+        ${!isNew ? `
+          <button onclick="runEvaluation('${c.case_id}')" id="eval-btn" class="btn-secondary text-sm py-2 px-4">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+            Evaluate vs Gold
+          </button>` : ''}
+      </div>
+
+      <div class="card-elevated p-6 lg:p-8">
+        <h2 class="text-2xl font-extrabold mb-1" style="color: #0b1437;">${isNew ? 'New' : 'Edit'} Training Case</h2>
+        <p class="text-sm mb-6" style="color: #64748b;">Label the gold-standard evaluation for each criterion. The reasoner will learn from this.</p>
+
+        <div class="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Title</label>
+            <input id="tc-title" type="text" placeholder="e.g. C1 — 68M CAD + obesity" value="${escapeHtml(c.title || '')}" class="input-friendly">
+          </div>
+          <div>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Case ID</label>
+            <input id="tc-case-id" type="text" placeholder="auto" value="${escapeHtml(c.case_id || '')}" ${isNew ? '' : 'readonly'} class="input-friendly">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Procedure</label>
+            <select id="tc-procedure" onchange="document.getElementById('tc-proc-name').value = this.options[this.selectedIndex].dataset.name" class="input-friendly">
+              <option value="">Select...</option>${procOpts}
+            </select>
+            <input id="tc-proc-name" type="hidden" value="${escapeHtml(c.procedure_name || '')}">
+          </div>
+          <div>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Payer</label>
+            <select id="tc-payer" class="input-friendly">
+              <option value="">Select...</option>${payerOpts}
+            </select>
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Clinical Note (full text)</label>
+          <textarea id="tc-note" rows="12" placeholder="Paste the full clinical note here..." class="input-friendly text-xs font-mono">${escapeHtml(c.raw_note || '')}</textarea>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4 mb-4">
+          <div>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Actual Outcome</label>
+            <select id="tc-outcome" class="input-friendly">
+              <option value="unknown" ${c.actual_outcome === 'unknown' ? 'selected' : ''}>Unknown</option>
+              <option value="approved" ${c.actual_outcome === 'approved' ? 'selected' : ''}>Approved</option>
+              <option value="denied" ${c.actual_outcome === 'denied' ? 'selected' : ''}>Denied</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Gold Approval Label</label>
+            <select id="tc-approval-label" class="input-friendly">
+              <option value="">—</option>
+              <option value="HIGH" ${c.gold_approval_label === 'HIGH' ? 'selected' : ''}>HIGH</option>
+              <option value="MEDIUM" ${c.gold_approval_label === 'MEDIUM' ? 'selected' : ''}>MEDIUM</option>
+              <option value="LOW" ${c.gold_approval_label === 'LOW' ? 'selected' : ''}>LOW</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Gold Approval Score (0-1)</label>
+            <input id="tc-approval-score" type="number" min="0" max="1" step="0.01" placeholder="0.85" value="${c.gold_approval_score || ''}" class="input-friendly">
+          </div>
+        </div>
+
+        <div class="mb-6">
+          <label class="block text-sm font-semibold mb-1.5" style="color: #475569;">Physician Notes <span class="text-xs font-normal" style="color:#94a3b8;">(optional)</span></label>
+          <textarea id="tc-notes" rows="2" placeholder="Any special considerations..." class="input-friendly text-xs">${escapeHtml(c.notes || '')}</textarea>
+        </div>
+
+        <!-- Criterion labeler -->
+        <div>
+          <h3 class="text-base font-bold mb-3" style="color: #0b1437;">Gold-Standard Criterion Labels</h3>
+          <p class="text-xs mb-4" style="color: #64748b;">For each criterion, select the correct status and paste a verbatim quote from the note. Leave blank for n/a.</p>
+          <div class="space-y-2" id="tc-criteria">
+            ${allCriteria.map(crit => {
+              const existing = existingLabels[crit.code] || {};
+              return `
+                <div class="rounded-lg px-3 py-2" style="background: #fafbff; border: 1px solid #e8ecf5;" data-code="${crit.code}">
+                  <div class="flex items-center gap-3 mb-1.5">
+                    <span class="text-xs font-mono font-bold" style="color: #4f46e5; min-width: 70px;">${crit.code}</span>
+                    <span class="text-xs flex-1" style="color: #0b1437;">${escapeHtml(crit.short_name || crit.definition?.substring(0, 80) || '')}</span>
+                    <select class="tc-crit-status input-friendly" style="width: 130px; font-size: 0.75rem; padding: 0.25rem 0.5rem;">
+                      <option value="" ${!existing.gold_status ? 'selected' : ''}>— skip —</option>
+                      <option value="met" ${existing.gold_status === 'met' ? 'selected' : ''}>Met</option>
+                      <option value="not_met" ${existing.gold_status === 'not_met' ? 'selected' : ''}>Not Met</option>
+                      <option value="not_applicable" ${existing.gold_status === 'not_applicable' ? 'selected' : ''}>N/A</option>
+                    </select>
+                  </div>
+                  <input class="tc-crit-evidence" type="text" placeholder="Verbatim evidence quote (for met/not_met)..."
+                    value="${escapeHtml(existing.gold_evidence || '')}"
+                    style="width:100%; font-size:0.7rem; padding:0.25rem 0.5rem; border-radius:0.375rem; border:1px solid #e8ecf5; background:#ffffff;">
+                </div>`;
+            }).join('')}
+          </div>
+        </div>
+
+        <div class="mt-6 flex gap-3">
+          <button onclick="saveTrainingCase()" id="tc-save-btn" class="btn-primary">Save Training Case</button>
+          ${!isNew ? `<button onclick="runEvaluation('${c.case_id}')" class="btn-secondary">Evaluate vs Gold</button>` : ''}
+        </div>
+
+        <div id="tc-save-status" class="mt-4 hidden"></div>
+        <div id="tc-eval-results" class="mt-6 hidden"></div>
+      </div>
+    </div>`;
+  }
+
+  async function saveTrainingCase() {
+    const btn = document.getElementById('tc-save-btn');
+    const status = document.getElementById('tc-save-status');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    const criterion_labels = [];
+    document.querySelectorAll('#tc-criteria [data-code]').forEach(el => {
+      const code = el.dataset.code;
+      const statusVal = el.querySelector('.tc-crit-status').value;
+      const evidence = el.querySelector('.tc-crit-evidence').value;
+      if (statusVal) {
+        criterion_labels.push({ code, gold_status: statusVal, gold_evidence: evidence });
+      }
+    });
+
+    const procEl = document.getElementById('tc-procedure');
+    const procName = procEl.options[procEl.selectedIndex]?.dataset.name || '';
+
+    const body = {
+      case_id: document.getElementById('tc-case-id').value || '',
+      title: document.getElementById('tc-title').value,
+      procedure_code: procEl.value,
+      procedure_name: procName,
+      payer: document.getElementById('tc-payer').value,
+      raw_note: document.getElementById('tc-note').value,
+      actual_outcome: document.getElementById('tc-outcome').value,
+      gold_approval_label: document.getElementById('tc-approval-label').value,
+      gold_approval_score: parseFloat(document.getElementById('tc-approval-score').value) || 0,
+      criterion_labels,
+      notes: document.getElementById('tc-notes').value,
+      source: 'manual',
+    };
+
+    try {
+      const res = await fetch('/api/training/cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(window._authToken ? {'Authorization': 'Bearer ' + window._authToken} : {}) },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      status.className = 'mt-4 rounded-xl px-4 py-3';
+      status.setAttribute('style', 'background: rgba(5,150,105,0.06); border: 1px solid rgba(5,150,105,0.2); color: #047857;');
+      status.innerHTML = `✓ Saved as <strong>${data.case_id}</strong>`;
+      btn.disabled = false;
+      btn.textContent = 'Save Training Case';
+      if (!document.getElementById('tc-case-id').value) {
+        document.getElementById('tc-case-id').value = data.case_id;
+      }
+    } catch(e) {
+      status.className = 'mt-4 rounded-xl px-4 py-3';
+      status.setAttribute('style', 'background: rgba(220,38,38,0.06); border: 1px solid rgba(220,38,38,0.2); color: #b91c1c;');
+      status.innerHTML = `✗ Save failed: ${e.message}`;
+      btn.disabled = false;
+      btn.textContent = 'Save Training Case';
+    }
+  }
+
+  async function runEvaluation(caseId) {
+    const results = document.getElementById('tc-eval-results');
+    results.className = 'mt-6 card-elevated p-6';
+    results.innerHTML = `<div class="flex items-center gap-3">${spinnerSVG(5)}<div><p class="text-sm font-medium" style="color:#0b1437;">Running UnifiedReasoner on this case...</p><p class="text-xs" style="color:#64748b;">Takes ~90 sec</p></div></div>`;
+    results.classList.remove('hidden');
+
+    try {
+      const res = await fetch(`/api/training/evaluate/${caseId}`, {
+        method: 'POST',
+        headers: window._authToken ? { 'Authorization': 'Bearer ' + window._authToken } : {},
+      });
+      if (!res.ok) throw new Error('Evaluation failed');
+      const data = await res.json();
+
+      const sc = data.scorecard;
+      const accent = sc.accuracy >= 0.9 ? '#059669' : sc.accuracy >= 0.7 ? '#d97706' : '#dc2626';
+
+      const detailRows = (sc.details || []).map(d => {
+        const color = d.verdict === 'match' ? '#059669' : d.verdict === 'mismatch' ? '#dc2626' : '#94a3b8';
+        const icon = d.verdict === 'match' ? '✓' : d.verdict === 'mismatch' ? '✗' : '?';
+        return `
+          <tr class="border-b border-surface-border/50">
+            <td class="py-1.5 px-2 text-xs font-mono font-bold" style="color:${color};">${icon} ${d.code}</td>
+            <td class="py-1.5 px-2 text-xs" style="color:#64748b;">Gold: <strong style="color:#0b1437;">${d.gold}</strong></td>
+            <td class="py-1.5 px-2 text-xs" style="color:#64748b;">Reasoner: <strong style="color:#0b1437;">${d.reasoner || '—'}</strong></td>
+          </tr>`;
+      }).join('');
+
+      results.innerHTML = `
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <h3 class="text-lg font-bold" style="color: #0b1437;">Evaluation Scorecard</h3>
+            <p class="text-xs" style="color: #64748b;">Gold labels vs UnifiedReasoner output</p>
+          </div>
+          <div class="text-right">
+            <div class="text-3xl font-extrabold" style="color: ${accent};">${Math.round(sc.accuracy * 100)}%</div>
+            <div class="text-xs" style="color: #94a3b8;">criterion agreement</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-4 gap-3 mb-4">
+          <div class="rounded-xl p-3 text-center" style="background: rgba(5,150,105,0.06);">
+            <div class="text-2xl font-bold" style="color: #059669;">${sc.agreement}</div>
+            <div class="text-xs" style="color: #64748b;">Matches</div>
+          </div>
+          <div class="rounded-xl p-3 text-center" style="background: rgba(220,38,38,0.06);">
+            <div class="text-2xl font-bold" style="color: #dc2626;">${sc.disagreement}</div>
+            <div class="text-xs" style="color: #64748b;">Mismatches</div>
+          </div>
+          <div class="rounded-xl p-3 text-center" style="background: #f1f5f9;">
+            <div class="text-2xl font-bold" style="color: #94a3b8;">${sc.missing}</div>
+            <div class="text-xs" style="color: #64748b;">Missing</div>
+          </div>
+          <div class="rounded-xl p-3 text-center" style="background: rgba(79,70,229,0.06);">
+            <div class="text-2xl font-bold" style="color: #4f46e5;">${Math.round((sc.reasoner_approval_score || 0) * 100)}%</div>
+            <div class="text-xs" style="color: #64748b;">Reasoner score (Δ ${(sc.score_delta || 0).toFixed(2)})</div>
+          </div>
+        </div>
+        <table class="w-full text-xs">${detailRows}</table>
+      `;
+    } catch(e) {
+      results.innerHTML = `<div class="text-sm" style="color: #dc2626;">Evaluation failed: ${e.message}</div>`;
     }
   }
 
