@@ -1167,6 +1167,27 @@
             <p style="font-size:0.65rem; margin-top:0.5rem; color:#94a3b8;">AWS Comprehend Medical is HIPAA-eligible with a BAA. Free tier: 25K units/month. Best for LVEF, meds, ECG findings.</p>
           </div>
 
+          <!-- Reasoning Mode Toggle -->
+          <div class="rounded-2xl p-5" style="background: linear-gradient(135deg, #fafbff, #f5f0ff); border: 1.5px solid #e8ecf5;">
+            <div class="flex items-center gap-2 mb-3">
+              <svg class="w-5 h-5" fill="none" stroke="#7c3aed" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+              <span class="text-sm font-bold" style="color: #0b1437;">Reasoning Mode</span>
+              <span class="pill" style="background: rgba(124,58,237,0.1); color: #5b21b6; font-size: 0.65rem;">NEW</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;" id="reasoning-toggle">
+              <div onclick="selectReasoning('unified', this)" class="reasoning-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #7c3aed; box-shadow: 0 0 0 3px rgba(124,58,237,0.1);">
+                <div style="font-size:0.75rem; font-weight:700; color:#7c3aed; margin-bottom:0.25rem;">Unified Reasoner (Recommended)</div>
+                <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">Full clinical context + relationships + precedents in one call. Preserves clinical chains.</div>
+              </div>
+              <div onclick="selectReasoning('multi-agent', this)" class="reasoning-opt" style="cursor:pointer; border-radius:0.75rem; padding:0.75rem; text-align:center; background:#ffffff; border:2px solid #e8ecf5;">
+                <div style="font-size:0.75rem; font-weight:700; color:#64748b; margin-bottom:0.25rem;">Multi-Agent (Legacy)</div>
+                <div style="font-size:0.65rem; line-height:1.3; color:#64748b;">Original bucketed pipeline. For comparison only.</div>
+              </div>
+            </div>
+            <input type="hidden" id="c-reasoning-mode" value="unified">
+            <p style="font-size:0.65rem; margin-top:0.5rem; color:#94a3b8;">Unified mode addresses Peter's validation findings by preserving clinical relationships (dyspnea+obesity→can't exercise→pharmacologic imaging) through the reasoning step.</p>
+          </div>
+
           <div id="custom-form-error" class="hidden text-sm rounded-xl px-4 py-3" style="color: #b91c1c; background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2);"></div>
           <button type="button" onclick="document.getElementById('custom-pa-form').requestSubmit ? document.getElementById('custom-pa-form').requestSubmit() : submitCustomRequest(new Event('submit'))" id="custom-submit-btn" class="btn-primary w-full text-base py-4">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -1353,6 +1374,18 @@
     el.style.boxShadow = '0 0 0 3px rgba(79,70,229,0.1), 0 2px 8px -2px rgba(79,70,229,0.15)';
   }
 
+  // Reasoning mode toggle
+  function selectReasoning(value, el) {
+    const hidden = document.getElementById('c-reasoning-mode');
+    if (hidden) hidden.value = value;
+    document.querySelectorAll('#reasoning-toggle .reasoning-opt').forEach(opt => {
+      opt.style.border = '2px solid #e8ecf5';
+      opt.style.boxShadow = 'none';
+    });
+    el.style.border = '2px solid #7c3aed';
+    el.style.boxShadow = '0 0 0 3px rgba(124,58,237,0.1)';
+  }
+
   // Check Comprehend Medical availability and show badge
   async function checkComprehendStatus() {
     try {
@@ -1418,6 +1451,7 @@
     // Get selected extraction engine
     const engineInput = document.getElementById('c-extraction-engine');
     const extractionEngine = engineInput ? engineInput.value : 'claude';
+    const reasoningMode = document.getElementById('c-reasoning-mode')?.value || 'unified';
 
     state._pendingRequest = {
       _custom: true,
@@ -1437,6 +1471,7 @@
       ecg_findings: document.getElementById('c-ecg').value,
       additional_notes: document.getElementById('c-notes').value,
       extraction_engine: extractionEngine,
+      reasoning_mode: reasoningMode,
     };
     navigate('#pipeline');
   }
@@ -1590,6 +1625,9 @@
       system_warnings: api.system_warnings || [],
       retrieved_chunks: api.retrieved_chunks || [],
       criterion_citations: api.criterion_citations || [],
+      reasoning_mode: api.reasoning_mode || 'multi-agent',
+      reasoning_trace: api.reasoning_trace || [],
+      clinical_relationships: api.clinical_relationships || [],
       audit_trail: [
         { action: 'Pipeline completed', timestamp: new Date().toISOString(), actor: 'CardioAuth' }
       ]
@@ -1892,6 +1930,8 @@ This procedure is essential for determining whether percutaneous coronary interv
 
       ${systemWarnings.length ? renderSystemWarnings(systemWarnings) : ''}
 
+      ${data.reasoning_mode === 'unified' ? renderReasoningTrace(data.reasoning_trace, data.clinical_relationships) : ''}
+
       <!-- Confidence Header -->
       ${card(`
         <div class="flex flex-col sm:flex-row sm:items-center gap-6">
@@ -2061,6 +2101,57 @@ This procedure is essential for determining whether percutaneous coronary interv
         </button>
       </div>
     </div>`;
+  }
+
+  function renderReasoningTrace(trace, relationships) {
+    if (!trace || !trace.length) return '';
+    const relsHtml = (relationships || []).length
+      ? `
+        <div class="mt-4 pt-4" style="border-top: 1px solid #e8ecf5;">
+          <p class="text-xs font-bold uppercase tracking-wider mb-2" style="color: #5b21b6;">Clinical Relationships Detected</p>
+          <div class="space-y-2">
+            ${relationships.map(r => `
+              <div class="rounded-lg px-3 py-2" style="background: rgba(124,58,237,0.04); border: 1px solid rgba(124,58,237,0.15);">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="text-[0.7rem] font-mono font-bold" style="color: #7c3aed;">${r.supports}</span>
+                  <span class="text-xs" style="color: #94a3b8;">${Math.round((r.confidence || 0) * 100)}% confidence</span>
+                </div>
+                <div class="text-sm" style="color: #0b1437;">${escapeHtml(r.conclusion)}</div>
+                ${r.quote ? `<div class="text-xs mt-1 italic" style="color: #64748b;">"${escapeHtml(r.quote)}"</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </div>` : '';
+
+    return `
+      <div class="card-elevated p-6 lg:p-8">
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <div class="flex items-center gap-2 mb-1">
+              <h3 class="text-xl font-bold" style="color: #0b1437;">Reasoning Audit Trail</h3>
+              <span class="pill" style="background: rgba(124,58,237,0.1); color: #5b21b6;">Unified Reasoner</span>
+            </div>
+            <p class="text-sm" style="color: #64748b;">Every agent's contribution and decision path. HIPAA-ready audit log.</p>
+          </div>
+        </div>
+        <div class="space-y-2">
+          ${trace.map((t, i) => `
+            <div class="flex items-start gap-3 px-3 py-2 rounded-lg" style="background: #fafbff; border: 1px solid #e8ecf5;">
+              <div class="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); color: white;">${i + 1}</div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-0.5">
+                  <span class="text-sm font-bold" style="color: #0b1437;">${escapeHtml(t.agent)}</span>
+                  ${t.ms ? `<span class="text-xs" style="color: #94a3b8;">${t.ms}ms</span>` : ''}
+                </div>
+                <div class="text-xs" style="color: #475569;">${escapeHtml(t.action)}</div>
+                ${t.summary ? `<div class="text-xs mt-0.5 italic" style="color: #94a3b8;">${escapeHtml(t.summary)}</div>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        ${relsHtml}
+      </div>
+    `;
   }
 
   function renderSystemWarnings(warnings) {

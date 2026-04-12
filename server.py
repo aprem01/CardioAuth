@@ -192,6 +192,7 @@ class CustomPARequest(BaseModel):
     ecg_findings: str = ""
     additional_notes: str = ""
     extraction_engine: str = "claude"  # "claude" | "comprehend" | "comprehend+claude"
+    reasoning_mode: str = "unified"    # "unified" (new, default) | "multi-agent" (legacy)
 
 
 class ApprovalRequest(BaseModel):
@@ -462,17 +463,93 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
                 typical_turnaround_days=5,
             )
 
-    # Run reasoning — use Claude if API key available
-    if config.anthropic_api_key:
-        from cardioauth.agents.reasoning_agent import ReasoningAgent
+    # ── NEW: Unified reasoning path (default) ──
+    # Combines raw clinical narrative + extracted relationships + precedents
+    # into a single Claude call that reasons + scores taxonomy at once.
+    # Preserves clinical relationships that multi-agent bucketing destroyed.
+    reasoning_mode = getattr(req, 'reasoning_mode', 'unified')
+    unified_ctx = None
+
+    if reasoning_mode == "unified" and config.anthropic_api_key:
         try:
-            reasoning_agent = ReasoningAgent(config)
-            reasoning = reasoning_agent.run(chart_data, policy_data)
+            from cardioauth.case_context import CaseContext
+            from cardioauth.agents.relationship_extractor import extract_relationships
+            from cardioauth.agents.precedent_retriever import retrieve_precedents, store_case_as_precedent
+            from cardioauth.agents.unified_reasoner import reason_with_unified_agent
+
+            unified_ctx = CaseContext(
+                case_id=f"{chart_data.patient_id}-{req.procedure_code}",
+                procedure_code=req.procedure_code,
+                procedure_name=req.procedure_name,
+                payer_name=req.payer_name,
+                user_id=user.id,
+                chart_data={**chart_data.model_dump(), "additional_notes": req.additional_notes, "patient_name": req.patient_name},
+                policy_data=policy_data.model_dump() if policy_data else {},
+            )
+            # Build full clinical narrative (raw note) from all fields
+            unified_ctx.build_clinical_narrative()
+
+            # Step: extract clinical relationships (rule-based, fast)
+            extract_relationships(unified_ctx, config)
+
+            # Step: retrieve similar past cases from Pinecone (if configured)
+            retrieve_precedents(unified_ctx, top_k=5)
+
+            # Step: unified reasoning — one Claude call with full context
+            reason_with_unified_agent(unified_ctx, config)
+
+            # Translate UnifiedReasoner output into ReasoningResult shape so
+            # the rest of the response building code works unchanged.
+            from cardioauth.models.reasoning import ReasoningResult, CriterionCheck
+            criteria_met_objs = []
+            criteria_not_met_objs = []
+            for m in unified_ctx.criterion_matches:
+                if m.get("status") == "met":
+                    criteria_met_objs.append(CriterionCheck(
+                        criterion=m.get("code", "") + ": " + m.get("reasoning", "")[:100],
+                        met=True,
+                        evidence=m.get("evidence_quote", "") or m.get("reasoning", "")[:200],
+                        confidence=float(m.get("confidence", 0.8)),
+                    ))
+                elif m.get("status") == "not_met":
+                    criteria_not_met_objs.append(CriterionCheck(
+                        criterion=m.get("code", "") + ": " + m.get("reasoning", "")[:100],
+                        met=False,
+                        gap=m.get("gap", "") or m.get("reasoning", "")[:200],
+                        recommendation=m.get("recommendation", ""),
+                        confidence=float(m.get("confidence", 0.8)),
+                    ))
+
+            reasoning = ReasoningResult(
+                criteria_met=criteria_met_objs,
+                criteria_not_met=criteria_not_met_objs,
+                approval_likelihood_score=unified_ctx.approval_score,
+                approval_likelihood_label=unified_ctx.approval_label,
+                pa_narrative_draft=unified_ctx.narrative_draft,
+                missing_documentation=[],
+                guideline_citations=[],
+                cardiologist_review_flags=[],
+            )
+            logging.info("Unified reasoning complete: %s (%.2f), %d matches",
+                         unified_ctx.approval_label, unified_ctx.approval_score,
+                         len(unified_ctx.criterion_matches))
         except Exception as e:
-            logging.warning("Claude reasoning failed for custom request: %s", e)
+            logging.warning("Unified reasoning failed, falling back to multi-agent: %s", e)
+            reasoning_mode = "multi-agent"
+            unified_ctx = None
+
+    if reasoning_mode != "unified" or unified_ctx is None:
+        # Legacy multi-agent path
+        if config.anthropic_api_key:
+            from cardioauth.agents.reasoning_agent import ReasoningAgent
+            try:
+                reasoning_agent = ReasoningAgent(config)
+                reasoning = reasoning_agent.run(chart_data, policy_data)
+            except Exception as e:
+                logging.warning("Claude reasoning failed for custom request: %s", e)
+                reasoning = get_demo_reasoning(chart_data, policy_data)
+        else:
             reasoning = get_demo_reasoning(chart_data, policy_data)
-    else:
-        reasoning = get_demo_reasoning(chart_data, policy_data)
 
     # Store for approval
     from cardioauth.orchestrator import ReviewPackage
@@ -484,9 +561,43 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
     )
     request_id = chart_data.patient_id + "-" + chart_data.procedure_code
 
-    # Run taxonomy matcher on custom case (if Claude available)
+    # Taxonomy match:
+    #   - If we ran unified reasoning, build the matrix from its output.
+    #   - Otherwise, run the legacy TAXONOMY_MATCHER.
     taxonomy_match = None
-    if config.anthropic_api_key:
+    if unified_ctx is not None:
+        try:
+            # Build taxonomy_match dict directly from unified_ctx
+            from cardioauth.taxonomy.taxonomy import TAXONOMY_VERSION
+            taxonomy_match = {
+                "case_id": request_id,
+                "procedure_code": req.procedure_code,
+                "payer": req.payer_name,
+                "taxonomy_version": TAXONOMY_VERSION,
+                "matches": unified_ctx.criterion_matches,
+                "emerging_criteria": [],
+                "overall_score": unified_ctx.approval_score,
+                "label": unified_ctx.approval_label,
+                "score_required": unified_ctx.approval_score,
+                "score_supporting": unified_ctx.approval_score,
+                "validation_warnings": [],
+                "reasoning_trace": [
+                    {"agent": t.agent_name, "action": t.action, "summary": t.output_summary}
+                    for t in unified_ctx.reasoning_trace
+                ],
+                "relationships": [
+                    {"conclusion": r.conclusion, "supports": r.supports_criterion, "quote": r.evidence_quote}
+                    for r in unified_ctx.relationships
+                ],
+                "precedents": [
+                    {"case_id": p.case_id, "outcome": p.outcome, "similarity": p.similarity, "summary": p.summary[:200]}
+                    for p in unified_ctx.precedents
+                ],
+            }
+        except Exception as e:
+            logging.warning("Failed to build taxonomy_match from unified ctx: %s", e)
+
+    if taxonomy_match is None and config.anthropic_api_key:
         try:
             from cardioauth.taxonomy import match_case_to_taxonomy, record_emerging_criterion
             tax_result = match_case_to_taxonomy(
@@ -512,6 +623,14 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
             taxonomy_match = tax_result.to_dict()
         except Exception as e:
             logging.warning("Taxonomy matcher failed for custom case: %s", e)
+
+    # Store completed case as precedent for future retrievals
+    if unified_ctx is not None:
+        try:
+            from cardioauth.agents.precedent_retriever import store_case_as_precedent
+            store_case_as_precedent(unified_ctx, outcome="analyzed")
+        except Exception:
+            pass
 
     review.taxonomy_match = taxonomy_match
     _reviews[request_id] = review
@@ -560,9 +679,20 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         "chart_data": chart_data.model_dump(),
         "policy_data": policy_data.model_dump(),
         "taxonomy_match": taxonomy_match,
-        "system_warnings": review.system_warnings if hasattr(review, 'system_warnings') else [],
+        "system_warnings": (review.system_warnings if hasattr(review, 'system_warnings') else []) + (unified_ctx.system_warnings if unified_ctx else []),
         "retrieved_chunks": getattr(policy_data, "__dict__", {}).get("_retrieved_chunks", []),
         "criterion_citations": getattr(policy_data, "__dict__", {}).get("_criterion_citations", []),
+        "reasoning_mode": reasoning_mode,
+        "reasoning_trace": (
+            [{"agent": t.agent_name, "action": t.action, "summary": t.output_summary, "ms": t.duration_ms}
+             for t in unified_ctx.reasoning_trace]
+            if unified_ctx else []
+        ),
+        "clinical_relationships": (
+            [{"conclusion": r.conclusion, "supports": r.supports_criterion, "quote": r.evidence_quote, "confidence": r.confidence}
+             for r in unified_ctx.relationships]
+            if unified_ctx else []
+        ),
     }
 
 
