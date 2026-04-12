@@ -43,7 +43,64 @@ from cardioauth.agents.json_recovery import parse_llm_json
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """\
+FEW_SHOT_EXAMPLES = """\
+═════════════════════════ FEW-SHOT EXAMPLES ═════════════════════════
+
+These are CORRECT evaluations from validated cases. Match this reasoning style.
+
+─── EXAMPLE 1 ───
+Note excerpt: "67M with CAD. Unable to do TST due to dyspnea and obesity (BMI 38).
+Prior exercise treadmill test non-diagnostic at 68% MPHR. CCS Class III exertional
+angina despite 6 weeks optimal medical therapy. Cardiology office note attached."
+
+Correct evaluations:
+  EX-001 = met — "Unable to do TST due to dyspnea and obesity"
+  BMI-001 = met — "BMI 38" (≥35 threshold)
+  NDX-002 = met — "68% MPHR" (submaximal, <85%)
+  SX-003 = met — "CCS Class III exertional angina"
+  SX-004 = met — "CCS Class III" (validated functional class)
+  DOC-001 = met — "Cardiology office note attached"
+  MED-001 = met — "6 weeks optimal medical therapy" (documented trial)
+  ECG-001 = not_applicable — no LBBB mentioned
+  LVEF-002 = not_applicable — LVEF not reduced
+
+Approval score: 0.91 (HIGH) — all required criteria met, 4 supporting met.
+
+─── EXAMPLE 2 ───
+Note excerpt: "72F with CAD s/p PCI. Prior SPECT showed attenuation artifact,
+likely false positive. CCS Class II angina. BMI 36. Office visit note included."
+
+Correct evaluations:
+  NDX-001 = met — "Prior SPECT showed attenuation artifact, likely false positive"
+  BMI-001 = met — "BMI 36" (≥35)
+  DOC-001 = met — "Office visit note included"
+  SX-003 = met — "CCS Class II angina"
+  SX-004 = met — "CCS Class II" (validated functional class)
+  EX-001 = not_applicable — no exercise limitation noted
+  ECG-001 = not_applicable — no LBBB
+
+Approval score: 0.85 (HIGH).
+
+─── EXAMPLE 3 ───
+Note excerpt: "62M ischemic cardiomyopathy, LVEF 35%, LBBB on baseline ECG.
+NYHA Class III despite maximal GDMT x 6 months. Cardiac stress PET for viability."
+
+Correct evaluations:
+  LVEF-002 = met — "LVEF 35%" (≤40 threshold)
+  ECG-001 = met — "LBBB on baseline ECG"
+  SX-004 = met — "NYHA Class III"
+  MED-001 = met — "maximal GDMT x 6 months" (documented maximal therapy)
+  DOC-001 = met — clinical narrative with H&P provided
+  BMI-001 = not_applicable — BMI not specified or not ≥35
+
+Approval score: 0.89 (HIGH).
+
+═══════════════════════════════════════════════════════════════════
+
+"""
+
+
+SYSTEM_PROMPT = FEW_SHOT_EXAMPLES + """\
 You are UnifiedReasoner, a cardiologist-level clinical reasoning engine for CardioAuth.
 
 Your job is to evaluate a prior authorization request using the full clinical
@@ -174,6 +231,28 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
             if isinstance(crit, dict):
                 policy_text += f"  - {crit.get('criterion', '')}\n"
 
+    # Past physician corrections on similar cases — "mistakes to avoid"
+    corrections_text = ""
+    try:
+        from cardioauth.feedback import retrieve_relevant_corrections
+        corrections = retrieve_relevant_corrections(
+            case_summary=ctx.raw_note[:1500],
+            procedure_code=ctx.procedure_code,
+            payer=ctx.payer_name,
+            top_k=3,
+        )
+        if corrections:
+            corrections_text = "\n\nPAST PHYSICIAN CORRECTIONS (similar cases — avoid these mistakes):\n"
+            for c in corrections:
+                corrections_text += (
+                    f"  - Criterion {c.get('criterion_code', '')}: "
+                    f"system previously said '{c.get('system_said', '')}' "
+                    f"but physician corrected to '{c.get('physician_said', '')}'. "
+                    f"Reason: {c.get('reason', '')[:150]}\n"
+                )
+    except Exception:
+        pass
+
     # Build message
     return (
         f"PRIOR AUTHORIZATION REQUEST\n"
@@ -185,7 +264,8 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
         f"═══════════════════════════════════════════════════════════════\n"
         f"{relationships_text}"
         f"{precedents_text}"
-        f"{policy_text}\n\n"
+        f"{policy_text}"
+        f"{corrections_text}\n\n"
         f"CRITERIA TO EVALUATE (evaluate each against the raw note above):\n"
         f"{criteria_json}\n\n"
         f"Produce the JSON output per the system prompt. Only include "
@@ -249,11 +329,24 @@ class UnifiedReasoner:
             # Use returned score, or compute from matches
             returned_score = data.get("approval_score")
             if isinstance(returned_score, (int, float)):
-                ctx.approval_score = float(returned_score)
+                reasoner_score = float(returned_score)
             else:
-                ctx.approval_score = _compute_approval_score(
+                reasoner_score = _compute_approval_score(
                     ctx.criterion_matches, applicable
                 )
+
+            # Precedent-weighted blend: 70% reasoner + 30% precedent median
+            # Only apply when we have precedents of the same procedure type
+            precedent_score = _precedent_median_score(ctx.precedents, ctx.procedure_code)
+            if precedent_score is not None:
+                ctx.approval_score = round(0.7 * reasoner_score + 0.3 * precedent_score, 2)
+                ctx.trace(
+                    "ApprovalScoring",
+                    f"blended: reasoner={reasoner_score:.2f} × 0.7 + precedent_median={precedent_score:.2f} × 0.3",
+                    f"final={ctx.approval_score:.2f}",
+                )
+            else:
+                ctx.approval_score = round(reasoner_score, 2)
 
             ctx.approval_label = data.get("approval_label") or _label_from_score(ctx.approval_score)
 
@@ -325,6 +418,39 @@ def _compute_approval_score(matches: list[dict], applicable: list) -> float:
     boost = 0.20 * (sup_met / sup_evaluated) if sup_evaluated > 0 else 0.0
 
     return round(min(1.0, base + boost), 2)
+
+
+def _precedent_median_score(precedents, cpt_code: str) -> float | None:
+    """Return the median approval_score of precedents that share the same CPT
+    AND were approved. Only consider top-3 by similarity.
+
+    Returns None if no usable precedents.
+    """
+    if not precedents:
+        return None
+    # Filter: same CPT + approved outcome
+    matching = [p for p in precedents
+                if p.cpt_code == cpt_code and (p.outcome or "").lower() == "approved"]
+    if not matching:
+        return None
+    # Use top 3 by similarity
+    top = sorted(matching, key=lambda p: p.similarity, reverse=True)[:3]
+    # Extract scores from metadata if available; otherwise default to 0.85 for approved cases
+    scores = []
+    for p in top:
+        # Precedent may have approval_score stored; fall back to 0.85 for approved
+        if hasattr(p, "approval_score") and p.approval_score:
+            scores.append(p.approval_score)
+        else:
+            scores.append(0.85)  # approved-case default
+    if not scores:
+        return None
+    # Median
+    scores.sort()
+    n = len(scores)
+    if n % 2 == 1:
+        return scores[n // 2]
+    return (scores[n // 2 - 1] + scores[n // 2]) / 2
 
 
 def _label_from_score(score: float) -> str:

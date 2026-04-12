@@ -211,6 +211,7 @@ def retrieve_precedents(ctx: CaseContext, top_k: int = 5) -> None:
                 outcome=meta.get("outcome", "unknown"),
                 similarity=float(match.get("score", 0.0)),
                 narrative_excerpt=meta.get("narrative_excerpt", ""),
+                approval_score=float(meta.get("approval_score", 0.0)),
             ))
 
         ctx.precedents = precedents

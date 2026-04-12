@@ -273,29 +273,151 @@ def extract_relationships_rule_based(raw_note: str) -> list[ClinicalRelationship
     return found
 
 
+LLM_EXTRACTION_PROMPT = """\
+You are a clinical relationship extractor for cardiology prior authorization.
+
+Given a clinical note and a list of clinical relationships that have already
+been detected by regex rules, find ADDITIONAL relationships that the rules
+missed. Focus on:
+
+  - Failed/maximally tolerated medical therapy (MED-001) — any phrasing
+    like "on GDMT for X weeks", "maximized medications", "optimized therapy",
+    "exhausted pharmacological options"
+  - Symptom severity changes (SX-001) — new/worsening/progressive
+  - Functional class (SX-004) — NYHA, CCS, EHRA variants
+  - Anatomic/procedural contraindications
+  - Inability to exercise (EX-001) — any medical/physical barrier
+
+Rules:
+  - ONLY extract relationships clearly supported by verbatim text in the note
+  - Never invent findings not present
+  - If the note doesn't contain support, output an empty list
+  - Do NOT repeat relationships already found (shown in already_found)
+
+Return JSON:
+{
+  "new_relationships": [
+    {
+      "supports_criterion": "MED-001",
+      "conclusion": "Patient on GDMT for 8 weeks, satisfying MED-001.",
+      "evidence_quote": "On GDMT for 8 weeks with persistent symptoms",
+      "confidence": 0.9
+    }
+  ]
+}
+"""
+
+
+def extract_relationships_llm(
+    ctx: CaseContext,
+    already_found: list[ClinicalRelationship],
+    config=None,
+) -> list[ClinicalRelationship]:
+    """Use Claude to find novel clinical relationships the regex missed.
+
+    Only runs if ANTHROPIC_API_KEY is set. Cheap call (~500 tokens).
+    Returns additional ClinicalRelationship objects; never duplicates
+    what's in `already_found`.
+    """
+    if config is None or not getattr(config, "anthropic_api_key", ""):
+        return []
+
+    try:
+        import anthropic
+        import json
+
+        client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+
+        # Get applicable criteria for this procedure (don't bother with n/a ones)
+        from cardioauth.taxonomy.taxonomy import get_criteria_for_procedure
+        applicable = get_criteria_for_procedure(ctx.procedure_code, ctx.payer_name)
+        applicable_codes = [c.code for c in applicable]
+
+        already_codes = [r.supports_criterion for r in already_found]
+        already_summary = [
+            {"supports": r.supports_criterion, "conclusion": r.conclusion[:60]}
+            for r in already_found
+        ]
+
+        user_msg = (
+            f"Clinical note:\n\n{ctx.raw_note}\n\n"
+            f"─────────\n\n"
+            f"Procedure: CPT {ctx.procedure_code} ({ctx.procedure_name})\n"
+            f"Applicable criteria: {', '.join(applicable_codes)}\n\n"
+            f"Already detected by regex:\n{json.dumps(already_summary, indent=2)}\n\n"
+            f"Find ADDITIONAL relationships the regex missed. Focus on criteria "
+            f"not yet in 'already_found'. Return empty list if nothing more."
+        )
+
+        response = client.messages.create(
+            model=config.model,
+            max_tokens=1500,
+            system=LLM_EXTRACTION_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = response.content[0].text
+
+        # Parse JSON
+        from cardioauth.agents.json_recovery import parse_llm_json
+        data = parse_llm_json(raw, fallback={"new_relationships": []})
+        new_rels_raw = data.get("new_relationships", [])
+
+        novel = []
+        for r in new_rels_raw:
+            code = r.get("supports_criterion", "")
+            if not code or code in already_codes:
+                continue
+            # Only accept for applicable criteria
+            if code not in applicable_codes:
+                continue
+            novel.append(ClinicalRelationship(
+                premises=[r.get("evidence_quote", "")],
+                conclusion=r.get("conclusion", ""),
+                supports_criterion=code,
+                evidence_quote=r.get("evidence_quote", ""),
+                confidence=float(r.get("confidence", 0.75)),
+            ))
+
+        logger.info("LLM relationship extraction: found %d novel relationships", len(novel))
+        return novel
+    except Exception as e:
+        logger.warning("LLM relationship extraction failed (non-blocking): %s", e)
+        return []
+
+
 class RelationshipExtractor:
-    """Populates CaseContext.relationships from the raw clinical note."""
+    """Populates CaseContext.relationships from the raw clinical note.
+
+    Two-pass strategy:
+      1. Rule-based regex — fast, deterministic, free. Catches canonical chains.
+      2. LLM augmentation — catches novel phrasings the regex missed.
+         Only runs if config has anthropic_api_key set.
+    """
 
     def __init__(self, config=None) -> None:
         self.config = config
 
     def extract(self, ctx: CaseContext) -> None:
-        """Extract clinical relationships and write to ctx.relationships.
-
-        Currently uses rule-based extraction only — cheap, fast, and
-        catches the canonical chains. Can be extended with Claude-powered
-        extraction for novel patterns if needed.
-        """
+        """Extract clinical relationships in two passes."""
         start = time.time()
         note = ctx.build_clinical_narrative()
-        rels = extract_relationships_rule_based(note)
-        ctx.relationships = rels
+
+        # Pass 1: rule-based
+        rule_rels = extract_relationships_rule_based(note)
+
+        # Pass 2: LLM augmentation (if API key available)
+        llm_rels = []
+        if self.config is not None and getattr(self.config, "anthropic_api_key", ""):
+            ctx.relationships = rule_rels  # temp set so LLM sees the rule-based ones
+            llm_rels = extract_relationships_llm(ctx, rule_rels, self.config)
+
+        ctx.relationships = rule_rels + llm_rels
 
         elapsed = int((time.time() - start) * 1000)
         ctx.trace(
             agent_name="RelationshipExtractor",
-            action=f"extracted {len(rels)} clinical relationships",
-            summary="; ".join(r.conclusion[:60] for r in rels[:3]),
+            action=f"extracted {len(rule_rels)} rule-based + {len(llm_rels)} LLM-novel relationships",
+            summary="; ".join(r.conclusion[:60] for r in ctx.relationships[:3]),
             ms=elapsed,
         )
 

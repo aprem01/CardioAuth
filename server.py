@@ -1326,6 +1326,59 @@ def test_comprehend_extraction(body: dict) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Comprehend Medical error: {str(e)}")
 
 
+# ---------------------------------------------------------------------------
+# Physician feedback / RLHF-lite
+# ---------------------------------------------------------------------------
+
+class FeedbackRequest(BaseModel):
+    case_id: str
+    criterion_code: str
+    system_said: str            # "met" | "not_met" | "not_applicable"
+    physician_said: str         # corrected value
+    system_evidence: str = ""
+    correct_evidence: str = ""
+    reason: str = ""
+    note_context: str = ""
+    procedure_code: str = ""
+    payer: str = ""
+
+
+@app.post("/api/feedback/correction")
+async def submit_correction(req: FeedbackRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Physician submits a correction on a criterion evaluation."""
+    import uuid
+    from cardioauth.feedback import CriterionCorrection, record_correction
+
+    correction = CriterionCorrection(
+        correction_id=str(uuid.uuid4()),
+        case_id=req.case_id,
+        user_id=user.id,
+        procedure_code=req.procedure_code,
+        payer=req.payer,
+        criterion_code=req.criterion_code,
+        system_said=req.system_said,
+        physician_said=req.physician_said,
+        system_evidence=req.system_evidence,
+        correct_evidence=req.correct_evidence,
+        reason=req.reason,
+        note_context=req.note_context,
+    )
+    log_audit(user, "correction", f"{req.criterion_code}: {req.system_said}→{req.physician_said}")
+    ok = record_correction(correction)
+    return {
+        "status": "ok" if ok else "partial",
+        "correction_id": correction.correction_id,
+        "message": "Thanks — this correction will be used to improve future evaluations on similar cases.",
+    }
+
+
+@app.get("/api/feedback/corrections")
+async def list_corrections(limit: int = 50, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """List recent corrections (admin view)."""
+    from cardioauth.feedback import get_all_corrections
+    return {"corrections": get_all_corrections(limit=limit)}
+
+
 @app.get("/api/analytics")
 def get_analytics():
     """Return mock analytics data for the dashboard."""

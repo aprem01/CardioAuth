@@ -58,6 +58,7 @@ class PrecedentCase:
     outcome: str                   # approved / denied / pending
     similarity: float              # 0-1, cosine similarity
     narrative_excerpt: str = ""    # Part of the winning narrative
+    approval_score: float = 0.0    # Score assigned to this past case
 
 
 @dataclass
