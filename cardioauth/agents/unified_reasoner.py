@@ -160,6 +160,14 @@ CORE PRINCIPLES
    - If unsure, mark NOT_MET and explain.
    - Never invent labs, dates, medications, or findings that aren't in the note.
 
+COMPLETENESS — EVALUATE EVERY CRITERION IN THE LIST
+
+You MUST return a criterion_matches entry for EVERY single criterion in the
+provided CRITERIA TO EVALUATE list. Do not omit any. If a criterion doesn't
+apply to this patient, return it with status="not_applicable". Never skip
+a criterion silently — if you can't evaluate it, explicitly mark it
+not_applicable with reasoning="Not clinically relevant to this case".
+
 OUTPUT FORMAT — JSON ONLY, no markdown fences:
 
 {
@@ -307,9 +315,12 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
         f"{corrections_text}\n\n"
         f"CRITERIA TO EVALUATE (evaluate each against the raw note above):\n"
         f"{criteria_json}\n\n"
-        f"Produce the JSON output per the system prompt. Only include "
-        f"criterion_matches for criteria in the list above. For each MET "
-        f"criterion, include a verbatim evidence_quote from the raw note."
+        f"Produce the JSON output per the system prompt. You MUST include "
+        f"a criterion_matches entry for EVERY criterion listed above "
+        f"(that's {len(applicable)} criteria total — return exactly "
+        f"{len(applicable)} entries). Mark irrelevant ones as not_applicable. "
+        f"For each MET criterion, include a verbatim evidence_quote from the "
+        f"raw note."
     )
 
 
