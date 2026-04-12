@@ -4240,16 +4240,32 @@ This procedure is essential for determining whether percutaneous coronary interv
 
     return `
     <div class="fade-in space-y-6">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between flex-wrap gap-2">
         <button onclick="navigate('#dashboard')" class="btn-ghost -ml-3">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
           Dashboard
         </button>
-        <button onclick="openTrainingCase('new')" class="btn-primary text-sm py-2 px-4">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-          New Training Case
-        </button>
+        <div class="flex items-center gap-2 flex-wrap">
+          <button onclick="seedPeterCases()" id="seed-peter-btn" class="btn-ghost text-sm py-2 px-3" title="Load Peter's 5 validation cases as gold standard">
+            Seed Peter's 5
+          </button>
+          <button onclick="openBulkImport()" class="btn-secondary text-sm py-2 px-3">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            Bulk Import
+          </button>
+          <button onclick="runAllRegressions()" id="regression-btn" class="btn-secondary text-sm py-2 px-3">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+            Run All Regressions
+          </button>
+          <button onclick="openTrainingCase('new')" class="btn-primary text-sm py-2 px-4">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            New Case
+          </button>
+        </div>
       </div>
+
+      <div id="regression-results" class="hidden"></div>
+      <div id="bulk-import-panel" class="hidden"></div>
 
       <!-- Hero -->
       <div class="relative overflow-hidden rounded-3xl p-8 lg:p-10" style="background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 40%, #581c87 100%);">
@@ -4337,6 +4353,285 @@ This procedure is essential for determining whether percutaneous coronary interv
         </div>
       </div>
     </div>`;
+  }
+
+  async function seedPeterCases() {
+    const btn = document.getElementById('seed-peter-btn');
+    if (!confirm("Load Peter's 5 validation cases as gold-standard training cases?")) return;
+    btn.disabled = true; btn.textContent = 'Loading...';
+    try {
+      const res = await fetch('/api/training/seed-peter', {
+        method: 'POST',
+        headers: window._authToken ? { 'Authorization': 'Bearer ' + window._authToken } : {},
+      });
+      const data = await res.json();
+      alert(`Seeded ${data.saved}/${data.total} of Peter's cases. Reloading...`);
+      loadTrainingRoom();
+    } catch(e) {
+      alert('Seed failed: ' + e.message);
+      btn.disabled = false; btn.textContent = "Seed Peter's 5";
+    }
+  }
+
+  function openBulkImport() {
+    const panel = document.getElementById('bulk-import-panel');
+    panel.classList.remove('hidden');
+    panel.className = 'card-elevated p-6 lg:p-8';
+    panel.innerHTML = `
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <h3 class="text-lg font-bold" style="color: #0b1437;">Bulk Import Training Cases</h3>
+          <p class="text-sm mt-0.5" style="color: #64748b;">Load historical cases fast. 3 options:</p>
+        </div>
+        <button onclick="document.getElementById('bulk-import-panel').classList.add('hidden')" class="btn-ghost text-sm">✕ Close</button>
+      </div>
+
+      <div class="flex gap-2 mb-4 flex-wrap">
+        <button onclick="showBulkTab('paste', this)" class="tab-btn active">Paste Notes + Auto-Label</button>
+        <button onclick="showBulkTab('jsonl', this)" class="tab-btn">JSONL Upload</button>
+        <button onclick="showBulkTab('csv', this)" class="tab-btn">CSV Upload</button>
+      </div>
+
+      <div id="bulk-tab-paste">
+        <p class="text-xs mb-2" style="color: #64748b;">Paste one or more clinical notes separated by <code>---</code>. Set defaults below, then Claude will pre-label each one. You review and save in bulk.</p>
+        <div class="grid grid-cols-3 gap-3 mb-3">
+          <div>
+            <label class="text-xs font-semibold" style="color:#475569;">Default CPT</label>
+            <select id="bulk-cpt" class="input-friendly text-sm">
+              <option value="78492">78492 — Cardiac Stress PET</option>
+              <option value="78452">78452 — Lexiscan SPECT</option>
+              <option value="93458">93458 — Left Heart Cath</option>
+              <option value="33361">33361 — TAVR</option>
+              <option value="93656">93656 — AF Ablation</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs font-semibold" style="color:#475569;">Default Payer</label>
+            <select id="bulk-payer" class="input-friendly text-sm">
+              <option>UnitedHealthcare</option><option>Aetna</option><option>Blue Cross Blue Shield</option><option>Cigna</option><option>Humana</option><option>Medicare</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs font-semibold" style="color:#475569;">Default Outcome</label>
+            <select id="bulk-outcome" class="input-friendly text-sm">
+              <option value="approved">Approved</option>
+              <option value="denied">Denied</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </div>
+        </div>
+        <textarea id="bulk-paste-text" rows="10" placeholder="Paste clinical notes separated by '---' on its own line. Example:\n\n67M with CAD, BMI 38, CCS Class III angina...\n---\n72F s/p PCI with attenuation on prior SPECT..." class="input-friendly text-xs font-mono"></textarea>
+        <div class="flex gap-2 mt-3">
+          <button onclick="runAutoLabel()" id="auto-label-btn" class="btn-primary text-sm">Auto-Label with Claude</button>
+          <span class="text-xs" style="color:#94a3b8; align-self:center;">~20 sec per case</span>
+        </div>
+        <div id="bulk-auto-results" class="mt-4 hidden"></div>
+      </div>
+
+      <div id="bulk-tab-jsonl" class="hidden">
+        <p class="text-xs mb-2" style="color: #64748b;">One JSON object per line. Each must have: <code>case_id, title, procedure_code, procedure_name, payer, raw_note, actual_outcome, criterion_labels</code>.</p>
+        <textarea id="bulk-jsonl-text" rows="10" placeholder='{"case_id":"H-001","title":"...","procedure_code":"78492","payer":"UHC","raw_note":"...","actual_outcome":"approved","criterion_labels":[{"code":"EX-001","gold_status":"met","gold_evidence":"..."}]}' class="input-friendly text-xs font-mono"></textarea>
+        <button onclick="submitBulk('jsonl')" id="bulk-jsonl-btn" class="btn-primary text-sm mt-3">Import JSONL</button>
+      </div>
+
+      <div id="bulk-tab-csv" class="hidden">
+        <p class="text-xs mb-2" style="color: #64748b;">CSV with headers: <code>case_id, title, procedure_code, payer, raw_note, outcome, gold_approval_score, criterion_labels</code> (last is JSON string, optional).</p>
+        <textarea id="bulk-csv-text" rows="10" placeholder="case_id,procedure_code,payer,raw_note,outcome&#10;H-001,78492,UHC,Clinical note text here,approved" class="input-friendly text-xs font-mono"></textarea>
+        <button onclick="submitBulk('csv')" id="bulk-csv-btn" class="btn-primary text-sm mt-3">Import CSV</button>
+      </div>
+    `;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function showBulkTab(name, btnEl) {
+    ['paste', 'jsonl', 'csv'].forEach(t => {
+      const el = document.getElementById('bulk-tab-' + t);
+      if (el) el.className = (t === name) ? '' : 'hidden';
+    });
+    btnEl.parentElement.querySelectorAll('.tab-btn').forEach(b => {
+      b.className = (b === btnEl) ? 'tab-btn active' : 'tab-btn';
+    });
+  }
+
+  async function runAutoLabel() {
+    const btn = document.getElementById('auto-label-btn');
+    const results = document.getElementById('bulk-auto-results');
+    const text = document.getElementById('bulk-paste-text').value.trim();
+    if (!text) { alert('Paste at least one clinical note.'); return; }
+
+    const notes = text.split(/^---+$/m).map(s => s.trim()).filter(Boolean);
+    const cpt = document.getElementById('bulk-cpt').value;
+    const cptName = document.getElementById('bulk-cpt').options[document.getElementById('bulk-cpt').selectedIndex].text.split(' — ')[1] || '';
+    const payer = document.getElementById('bulk-payer').value;
+    const outcome = document.getElementById('bulk-outcome').value;
+
+    btn.disabled = true; btn.textContent = `Labeling (0/${notes.length})...`;
+    results.classList.remove('hidden');
+    results.className = 'mt-4 rounded-xl p-4';
+    results.setAttribute('style', 'background: #fafbff; border: 1px solid #e8ecf5;');
+    results.innerHTML = `<p class="text-sm" style="color:#64748b;">Calling Claude on ${notes.length} cases...</p>`;
+
+    const labeled = [];
+    for (let i = 0; i < notes.length; i++) {
+      btn.textContent = `Labeling (${i+1}/${notes.length})...`;
+      try {
+        const res = await fetch('/api/training/auto-label', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(window._authToken ? {'Authorization': 'Bearer ' + window._authToken} : {}) },
+          body: JSON.stringify({ raw_note: notes[i], procedure_code: cpt, payer, actual_outcome: outcome }),
+        });
+        if (res.ok) {
+          const d = await res.json();
+          labeled.push({
+            case_id: `AUTO-${Date.now()}-${i}`,
+            title: d.auto_label?.title || `Auto-labeled #${i+1}`,
+            procedure_code: cpt,
+            procedure_name: cptName,
+            payer,
+            raw_note: notes[i],
+            actual_outcome: outcome,
+            gold_approval_score: d.auto_label?.gold_approval_score || 0,
+            gold_approval_label: d.auto_label?.gold_approval_label || '',
+            criterion_labels: d.auto_label?.criterion_labels || [],
+            source: 'auto-label',
+          });
+        }
+      } catch(e) { /* continue */ }
+    }
+
+    results.innerHTML = `
+      <p class="text-sm font-semibold mb-3" style="color:#0b1437;">Auto-labeled ${labeled.length}/${notes.length} cases. Review & save all:</p>
+      <div class="space-y-2 max-h-96 overflow-y-auto mb-3">
+        ${labeled.map((c, i) => `
+          <div class="rounded-lg p-3" style="background:#ffffff; border:1px solid #e8ecf5;">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-xs font-bold" style="color:#0b1437;">${escapeHtml(c.title)}</span>
+              <span class="pill pill-info" style="font-size:0.6rem;">${c.gold_approval_label} ${(c.gold_approval_score*100).toFixed(0)}%</span>
+              <span class="text-xs" style="color:#94a3b8;">${c.criterion_labels.length} labels</span>
+            </div>
+            <div class="text-xs italic" style="color:#64748b;">${escapeHtml(c.raw_note.substring(0, 140))}...</div>
+          </div>
+        `).join('')}
+      </div>
+      <button onclick='importAutoLabeled(${JSON.stringify(labeled).replace(/'/g, "&apos;")})' class="btn-primary text-sm">Save All ${labeled.length} Cases to Training Room</button>
+    `;
+    btn.disabled = false; btn.textContent = 'Auto-Label with Claude';
+  }
+
+  async function importAutoLabeled(labeled) {
+    try {
+      const res = await fetch('/api/training/bulk-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(window._authToken ? {'Authorization': 'Bearer ' + window._authToken} : {}) },
+        body: JSON.stringify({ format: 'cases', data: labeled }),
+      });
+      const data = await res.json();
+      alert(`Saved ${data.saved}/${data.parsed} cases. Reloading training room...`);
+      loadTrainingRoom();
+    } catch(e) { alert('Save failed: ' + e.message); }
+  }
+
+  async function submitBulk(format) {
+    const btnId = format === 'jsonl' ? 'bulk-jsonl-btn' : 'bulk-csv-btn';
+    const textId = format === 'jsonl' ? 'bulk-jsonl-text' : 'bulk-csv-text';
+    const btn = document.getElementById(btnId);
+    const data = document.getElementById(textId).value;
+    if (!data.trim()) return;
+    btn.disabled = true; btn.textContent = 'Importing...';
+    try {
+      const res = await fetch('/api/training/bulk-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(window._authToken ? {'Authorization': 'Bearer ' + window._authToken} : {}) },
+        body: JSON.stringify({ format, data }),
+      });
+      const r = await res.json();
+      alert(`Imported ${r.saved}/${r.parsed}. Errors: ${(r.errors || []).length}.`);
+      if (r.saved > 0) loadTrainingRoom();
+    } catch(e) { alert('Import failed: ' + e.message); }
+    btn.disabled = false; btn.textContent = 'Import ' + format.toUpperCase();
+  }
+
+  async function runAllRegressions() {
+    const btn = document.getElementById('regression-btn');
+    const panel = document.getElementById('regression-results');
+    panel.classList.remove('hidden');
+    panel.className = 'card-elevated p-6 lg:p-8';
+    btn.disabled = true; btn.textContent = 'Running...';
+    panel.innerHTML = `<div class="flex items-center gap-3">${spinnerSVG(5)}<div><p class="text-sm font-semibold" style="color:#0b1437;">Running UnifiedReasoner on all training cases...</p><p class="text-xs" style="color:#64748b;">~90s per case</p></div></div>`;
+
+    try {
+      const res = await fetch('/api/training/evaluate-all', {
+        method: 'POST',
+        headers: window._authToken ? { 'Authorization': 'Bearer ' + window._authToken } : {},
+      });
+      const r = await res.json();
+      const acc = Math.round((r.overall_accuracy || 0) * 100);
+      const color = acc >= 90 ? '#059669' : acc >= 75 ? '#d97706' : '#dc2626';
+      const perCase = (r.per_case || []).map(p => {
+        if (p.error) return `<tr><td class="py-1.5 px-2 text-xs" style="color:#dc2626;">${p.case_id}: ERROR — ${p.error}</td></tr>`;
+        const caseAcc = Math.round((p.accuracy || 0) * 100);
+        const caseColor = caseAcc >= 90 ? '#059669' : caseAcc >= 75 ? '#d97706' : '#dc2626';
+        return `
+          <tr class="border-b border-surface-border/50 hover:bg-surface-hover cursor-pointer" onclick="openTrainingCase('${p.case_id}')">
+            <td class="py-2 px-2 text-xs font-mono" style="color:#4f46e5;">${p.case_id}</td>
+            <td class="py-2 px-2 text-xs" style="color:#0b1437;">${escapeHtml(p.title || '')}</td>
+            <td class="py-2 px-2 text-xs text-center" style="color:${caseColor}; font-weight:700;">${caseAcc}%</td>
+            <td class="py-2 px-2 text-xs text-center" style="color:#059669;">${p.agreement}</td>
+            <td class="py-2 px-2 text-xs text-center" style="color:#dc2626;">${p.disagreement}</td>
+            <td class="py-2 px-2 text-xs text-center" style="color:#94a3b8;">${p.missing}</td>
+            <td class="py-2 px-2 text-xs text-center" style="color:#475569;">Δ ${(p.score_delta || 0).toFixed(2)}</td>
+          </tr>`;
+      }).join('');
+
+      panel.innerHTML = `
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <h3 class="text-lg font-bold" style="color:#0b1437;">Regression Results</h3>
+            <p class="text-sm" style="color:#64748b;">UnifiedReasoner run on ${r.cases_evaluated}/${r.total_cases} training cases</p>
+          </div>
+          <div class="text-right">
+            <div class="text-4xl font-extrabold" style="color:${color};">${acc}%</div>
+            <div class="text-xs" style="color:#94a3b8;">overall criterion agreement</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-4 gap-3 mb-4">
+          <div class="rounded-xl p-3 text-center" style="background:rgba(5,150,105,0.06);">
+            <div class="text-xl font-bold" style="color:#059669;">${r.total_agreement}</div>
+            <div class="text-xs" style="color:#64748b;">Matches</div>
+          </div>
+          <div class="rounded-xl p-3 text-center" style="background:rgba(220,38,38,0.06);">
+            <div class="text-xl font-bold" style="color:#dc2626;">${r.total_mismatch}</div>
+            <div class="text-xs" style="color:#64748b;">Mismatches</div>
+          </div>
+          <div class="rounded-xl p-3 text-center" style="background:#f1f5f9;">
+            <div class="text-xl font-bold" style="color:#94a3b8;">${r.total_missing}</div>
+            <div class="text-xs" style="color:#64748b;">Missing</div>
+          </div>
+          <div class="rounded-xl p-3 text-center" style="background:rgba(79,70,229,0.06);">
+            <div class="text-xl font-bold" style="color:#4f46e5;">${(r.avg_score_delta || 0).toFixed(2)}</div>
+            <div class="text-xs" style="color:#64748b;">Avg score Δ</div>
+          </div>
+        </div>
+        <table class="w-full">
+          <thead>
+            <tr style="border-bottom:2px solid #e8ecf5;">
+              <th class="py-2 px-2 text-left text-xs uppercase" style="color:#64748b;">Case</th>
+              <th class="py-2 px-2 text-left text-xs uppercase" style="color:#64748b;">Title</th>
+              <th class="py-2 px-2 text-center text-xs uppercase" style="color:#64748b;">Accuracy</th>
+              <th class="py-2 px-2 text-center text-xs uppercase" style="color:#059669;">✓</th>
+              <th class="py-2 px-2 text-center text-xs uppercase" style="color:#dc2626;">✗</th>
+              <th class="py-2 px-2 text-center text-xs uppercase" style="color:#94a3b8;">?</th>
+              <th class="py-2 px-2 text-center text-xs uppercase" style="color:#64748b;">Score Δ</th>
+            </tr>
+          </thead>
+          <tbody>${perCase}</tbody>
+        </table>
+      `;
+    } catch(e) {
+      panel.innerHTML = `<div class="text-sm" style="color:#dc2626;">Regression run failed: ${e.message}</div>`;
+    }
+    btn.disabled = false; btn.textContent = 'Run All Regressions';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   async function openTrainingCase(caseId) {

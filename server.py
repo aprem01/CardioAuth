@@ -1503,6 +1503,495 @@ async def get_training_stats(user: AuthUser = Depends(get_current_user)) -> dict
     return get_training_accuracy_stats()
 
 
+@app.post("/api/training/evaluate-all")
+async def evaluate_all_training_cases(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Run the UnifiedReasoner on every training case and return aggregate scorecard.
+
+    This is the core regression test — proves the system's accuracy against
+    the physician-verified gold standard dataset.
+    """
+    from cardioauth.training import (
+        get_all_training_cases, evaluate_case_against_gold,
+    )
+    from cardioauth.case_context import CaseContext
+    from cardioauth.agents.relationship_extractor import extract_relationships
+    from cardioauth.agents.precedent_retriever import retrieve_precedents
+    from cardioauth.agents.unified_reasoner import reason_with_unified_agent
+
+    cases = get_all_training_cases()
+    if not cases:
+        return {"status": "no_cases", "total": 0}
+
+    log_audit(user, "regression_run", f"{len(cases)} cases")
+
+    per_case = []
+    total_agreement = 0
+    total_labels = 0
+    total_mismatch = 0
+    total_missing = 0
+    score_deltas = []
+
+    for case in cases:
+        try:
+            ctx = CaseContext(
+                case_id=case["case_id"],
+                procedure_code=case["procedure_code"],
+                procedure_name=case.get("procedure_name", ""),
+                payer_name=case["payer"],
+                user_id=user.id,
+                raw_note=case["raw_note"],
+            )
+            extract_relationships(ctx, config)
+            retrieve_precedents(ctx, top_k=5)
+            reason_with_unified_agent(ctx, config)
+
+            reasoner_output = {
+                "criterion_matches": ctx.criterion_matches,
+                "approval_likelihood": {"score": ctx.approval_score, "label": ctx.approval_label},
+            }
+            scorecard = evaluate_case_against_gold(case, reasoner_output)
+            per_case.append({
+                "case_id": case["case_id"],
+                "title": case.get("title", ""),
+                "accuracy": scorecard["accuracy"],
+                "agreement": scorecard["agreement"],
+                "disagreement": scorecard["disagreement"],
+                "missing": scorecard["missing"],
+                "gold_score": scorecard["gold_approval_score"],
+                "reasoner_score": scorecard["reasoner_approval_score"],
+                "score_delta": scorecard["score_delta"],
+                "details": scorecard["details"],
+            })
+            total_agreement += scorecard["agreement"]
+            total_labels += scorecard["total_criteria"]
+            total_mismatch += scorecard["disagreement"]
+            total_missing += scorecard["missing"]
+            score_deltas.append(scorecard["score_delta"])
+        except Exception as e:
+            logging.warning("Failed to evaluate case %s: %s", case.get("case_id"), e)
+            per_case.append({
+                "case_id": case.get("case_id"),
+                "title": case.get("title", ""),
+                "error": str(e)[:200],
+            })
+
+    overall_accuracy = total_agreement / total_labels if total_labels > 0 else 0.0
+    avg_score_delta = sum(score_deltas) / len(score_deltas) if score_deltas else 0.0
+
+    return {
+        "status": "ok",
+        "total_cases": len(cases),
+        "cases_evaluated": len([p for p in per_case if "error" not in p]),
+        "overall_accuracy": round(overall_accuracy, 3),
+        "total_labels": total_labels,
+        "total_agreement": total_agreement,
+        "total_mismatch": total_mismatch,
+        "total_missing": total_missing,
+        "avg_score_delta": round(avg_score_delta, 3),
+        "per_case": per_case,
+    }
+
+
+@app.post("/api/training/bulk-import")
+async def bulk_import_training_cases(
+    body: dict,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Bulk import training cases from JSONL / CSV / structured list."""
+    from cardioauth.training import TrainingCase, CriterionLabel, save_training_case
+    import csv as _csv
+    import io as _io
+    import uuid as _uuid
+
+    fmt = (body.get("format") or "jsonl").lower()
+    raw = body.get("data", "")
+
+    cases_in = []
+    errors = []
+
+    if fmt == "jsonl":
+        for i, line in enumerate((raw or "").splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                cases_in.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                errors.append(f"Line {i}: {e}")
+    elif fmt == "csv":
+        try:
+            reader = _csv.DictReader(_io.StringIO(raw or ""))
+            for row in reader:
+                c = {
+                    "case_id": row.get("case_id") or "",
+                    "title": row.get("title") or row.get("case_id", ""),
+                    "procedure_code": row.get("procedure_code") or row.get("cpt", ""),
+                    "procedure_name": row.get("procedure_name", ""),
+                    "payer": row.get("payer", ""),
+                    "raw_note": row.get("raw_note") or row.get("note", ""),
+                    "actual_outcome": row.get("actual_outcome") or row.get("outcome", "unknown"),
+                    "gold_approval_label": row.get("gold_approval_label", ""),
+                    "gold_approval_score": float(row.get("gold_approval_score") or 0),
+                    "source": row.get("source", "bulk-csv"),
+                    "criterion_labels": [],
+                }
+                if row.get("criterion_labels"):
+                    try:
+                        c["criterion_labels"] = json.loads(row["criterion_labels"])
+                    except Exception:
+                        pass
+                cases_in.append(c)
+        except Exception as e:
+            errors.append(f"CSV parse: {e}")
+    elif fmt == "cases":
+        cases_in = raw if isinstance(raw, list) else []
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown format: {fmt}")
+
+    saved = 0
+    for c in cases_in:
+        try:
+            labels = []
+            for l in (c.get("criterion_labels") or []):
+                labels.append(CriterionLabel(
+                    code=l.get("code", ""),
+                    gold_status=l.get("gold_status", ""),
+                    gold_evidence=l.get("gold_evidence", ""),
+                    physician_note=l.get("physician_note", ""),
+                ))
+            case = TrainingCase(
+                case_id=c.get("case_id") or f"BULK-{_uuid.uuid4().hex[:8].upper()}",
+                title=c.get("title") or c.get("case_id") or "Imported case",
+                procedure_code=c.get("procedure_code", ""),
+                procedure_name=c.get("procedure_name", ""),
+                payer=c.get("payer", ""),
+                raw_note=c.get("raw_note", ""),
+                actual_outcome=c.get("actual_outcome", "unknown"),
+                gold_approval_label=c.get("gold_approval_label", ""),
+                gold_approval_score=float(c.get("gold_approval_score") or 0),
+                criterion_labels=labels,
+                labeled_by=user.id,
+                source=c.get("source", "bulk"),
+                notes=c.get("notes", ""),
+            )
+            if save_training_case(case):
+                saved += 1
+        except Exception as e:
+            errors.append(f"{c.get('case_id', '?')}: {str(e)[:100]}")
+
+    log_audit(user, "bulk_import", f"{saved}/{len(cases_in)} saved, format={fmt}")
+    return {"status": "ok", "parsed": len(cases_in), "saved": saved, "errors": errors[:20]}
+
+
+class AutoLabelRequest(BaseModel):
+    raw_note: str
+    procedure_code: str
+    payer: str
+    actual_outcome: str = "unknown"
+
+
+@app.post("/api/training/auto-label")
+async def auto_label_case(req: AutoLabelRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Use Claude to pre-populate gold criterion labels from a raw note.
+
+    Peter pastes a historical note + outcome → Claude drafts all criterion
+    labels with evidence quotes → Peter reviews/adjusts and saves.
+    """
+    from cardioauth.taxonomy.taxonomy import get_criteria_for_procedure
+
+    if not config.anthropic_api_key:
+        raise HTTPException(status_code=503, detail="Claude unavailable")
+
+    applicable = get_criteria_for_procedure(req.procedure_code, req.payer)
+    if not applicable:
+        raise HTTPException(status_code=400, detail=f"No taxonomy criteria for CPT {req.procedure_code}")
+
+    criteria_summary = json.dumps([
+        {"code": c.code, "short_name": c.short_name, "definition": c.definition}
+        for c in applicable
+    ], indent=2)
+
+    prompt = (
+        "You are a cardiologist pre-labeling a training case for CardioAuth.\n\n"
+        f"Clinical note:\n{req.raw_note}\n\n"
+        "─────────\n"
+        f"Procedure: CPT {req.procedure_code}\nPayer: {req.payer}\n"
+        f"Actual outcome: {req.actual_outcome}\n\n"
+        f"Applicable criteria:\n{criteria_summary}\n\n"
+        "For each criterion, produce a label:\n"
+        "  - gold_status: \"met\" | \"not_met\" | \"not_applicable\"\n"
+        "  - gold_evidence: verbatim quote from the note (for met criteria)\n"
+        "  - physician_note: brief clinical reasoning\n\n"
+        "Also estimate gold_approval_score (0.0-1.0) and gold_approval_label "
+        "(HIGH/MEDIUM/LOW). If case was approved, calibrate score ≥0.75.\n\n"
+        "Return ONLY JSON:\n"
+        "{\n"
+        '  "criterion_labels": [{"code": "EX-001", "gold_status": "met", "gold_evidence": "...", "physician_note": "..."}, ...],\n'
+        '  "gold_approval_score": 0.85,\n'
+        '  "gold_approval_label": "HIGH",\n'
+        '  "title": "Short descriptive title"\n'
+        "}"
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        response = client.messages.create(
+            model=config.model,
+            max_tokens=6000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text
+        from cardioauth.agents.json_recovery import parse_llm_json
+        data = parse_llm_json(raw, fallback={"criterion_labels": []})
+        log_audit(user, "auto_label", f"CPT={req.procedure_code} labels={len(data.get('criterion_labels', []))}")
+        return {"status": "ok", "auto_label": data}
+    except Exception as e:
+        logging.warning("Auto-label failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)[:200])
+
+
+@app.post("/api/training/seed-peter")
+async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Seed Peter's 5 validation cases as gold-labeled training cases."""
+    from cardioauth.training import TrainingCase, CriterionLabel, save_training_case
+
+    PETER_CASES = [
+        # C1 — 68M CAD obesity, cardiac stress PET (approved)
+        TrainingCase(
+            case_id="PETER-C1",
+            title="C1 — 68M CAD + obesity + failed TST (PET)",
+            procedure_code="78492",
+            procedure_name="Cardiac Stress PET",
+            payer="UnitedHealthcare",
+            actual_outcome="approved",
+            gold_approval_label="HIGH",
+            gold_approval_score=0.88,
+            labeled_by=user.id,
+            source="peter-v2",
+            raw_note=(
+                "CARDIOLOGY OFFICE NOTE\n"
+                "67-year-old male with known CAD presents for PA evaluation. Patient reports "
+                "CCS Class III exertional angina, worsening over 3 months despite optimal "
+                "medical therapy (aspirin, metoprolol 50 BID, atorvastatin 80 daily, lisinopril). "
+                "Unable to do TST due to dyspnea and obesity (BMI 38). Prior exercise treadmill "
+                "test was non-diagnostic, achieving only 68% of maximum predicted heart rate. "
+                "Active diagnoses: I25.10, R07.89, E11.65, I10. HbA1c 7.8%, BNP 245. "
+                "Normal sinus rhythm. LVEF 55%. "
+                "Clinical indication for pharmacologic stress PET to evaluate ischemic burden "
+                "and guide revascularization strategy."
+            ),
+            criterion_labels=[
+                CriterionLabel(code="EX-001", gold_status="met",
+                               gold_evidence="Unable to do TST due to dyspnea and obesity"),
+                CriterionLabel(code="BMI-001", gold_status="met",
+                               gold_evidence="BMI 38"),
+                CriterionLabel(code="NDX-002", gold_status="met",
+                               gold_evidence="only 68% of maximum predicted heart rate"),
+                CriterionLabel(code="SX-003", gold_status="met",
+                               gold_evidence="CCS Class III exertional angina"),
+                CriterionLabel(code="SX-004", gold_status="met",
+                               gold_evidence="CCS Class III"),
+                CriterionLabel(code="DOC-001", gold_status="met",
+                               gold_evidence="CARDIOLOGY OFFICE NOTE"),
+                CriterionLabel(code="MED-001", gold_status="met",
+                               gold_evidence="worsening over 3 months despite optimal medical therapy"),
+                CriterionLabel(code="SX-001", gold_status="met",
+                               gold_evidence="worsening over 3 months"),
+                CriterionLabel(code="RISK-002", gold_status="met",
+                               gold_evidence="I25.10, E11.65, I10, HbA1c 7.8%"),
+                CriterionLabel(code="NDX-001", gold_status="met",
+                               gold_evidence="Prior exercise treadmill test was non-diagnostic"),
+                CriterionLabel(code="LVEF-001", gold_status="met",
+                               gold_evidence="LVEF 55%"),
+                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
+            ],
+        ),
+        # C2 — 72F CAD, attenuation artifact SPECT (approved)
+        TrainingCase(
+            case_id="PETER-C2",
+            title="C2 — 72F CAD + attenuation artifact (PET)",
+            procedure_code="78492",
+            procedure_name="Cardiac Stress PET",
+            payer="Blue Cross Blue Shield",
+            actual_outcome="approved",
+            gold_approval_label="HIGH",
+            gold_approval_score=0.85,
+            labeled_by=user.id,
+            source="peter-v2",
+            raw_note=(
+                "CONSULTATION NOTE\n"
+                "72F with CAD s/p PCI (LAD 2022). Referred for cardiac stress PET. Prior SPECT "
+                "stress test (2025-10-15) showed attenuation artifact in inferior wall, likely "
+                "false positive, rendering it non-diagnostic. Recurrent atypical chest pain, "
+                "CCS Class II angina. BMI 36. On metoprolol 100 daily, clopidogrel, rosuvastatin. "
+                "HbA1c 7.4. LVEF 50-55% by echo. Normal sinus rhythm. "
+                "BMI 36 favors PET over SPECT given prior attenuation issues. "
+                "Office note and H&P documented with full history, exam, and plan."
+            ),
+            criterion_labels=[
+                CriterionLabel(code="NDX-001", gold_status="met",
+                               gold_evidence="attenuation artifact in inferior wall, likely false positive, rendering it non-diagnostic"),
+                CriterionLabel(code="BMI-001", gold_status="met",
+                               gold_evidence="BMI 36"),
+                CriterionLabel(code="DOC-001", gold_status="met",
+                               gold_evidence="Office note and H&P documented"),
+                CriterionLabel(code="SX-003", gold_status="met",
+                               gold_evidence="Recurrent atypical chest pain, CCS Class II angina"),
+                CriterionLabel(code="SX-004", gold_status="met",
+                               gold_evidence="CCS Class II"),
+                CriterionLabel(code="LVEF-001", gold_status="met",
+                               gold_evidence="LVEF 50-55% by echo"),
+                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
+                CriterionLabel(code="EX-001", gold_status="not_applicable"),
+            ],
+        ),
+        # C3 — 65M OA, paced rhythm, Lexiscan SPECT (approved)
+        TrainingCase(
+            case_id="PETER-C3",
+            title="C3 — 65M OA + paced rhythm (Lexiscan SPECT)",
+            procedure_code="78452",
+            procedure_name="Lexiscan SPECT",
+            payer="Blue Cross Blue Shield",
+            actual_outcome="approved",
+            gold_approval_label="HIGH",
+            gold_approval_score=0.86,
+            labeled_by=user.id,
+            source="peter-v2",
+            raw_note=(
+                "OFFICE VISIT NOTE\n"
+                "65M with CAD and severe osteoarthritis of bilateral knees preventing ambulation. "
+                "Unable to exercise adequately. Also has baseline paced rhythm on ECG "
+                "(ventricular pacing). Referred for pharmacologic stress imaging. "
+                "Active dx: I25.10, I48.91. Paroxysmal AFib on Eliquis 5mg BID, metoprolol. "
+                "CCS Class II angina. On GDMT (optimal medical therapy) for 8 weeks with "
+                "persistent symptoms. Troponin negative. LVEF 55%."
+            ),
+            criterion_labels=[
+                CriterionLabel(code="EX-001", gold_status="met",
+                               gold_evidence="severe osteoarthritis of bilateral knees preventing ambulation. Unable to exercise"),
+                CriterionLabel(code="ECG-002", gold_status="met",
+                               gold_evidence="baseline paced rhythm on ECG (ventricular pacing)"),
+                CriterionLabel(code="DOC-001", gold_status="met",
+                               gold_evidence="OFFICE VISIT NOTE"),
+                CriterionLabel(code="MED-001", gold_status="met",
+                               gold_evidence="On GDMT (optimal medical therapy) for 8 weeks"),
+                CriterionLabel(code="SX-003", gold_status="met",
+                               gold_evidence="CCS Class II angina"),
+                CriterionLabel(code="SX-004", gold_status="met",
+                               gold_evidence="CCS Class II"),
+                CriterionLabel(code="BMI-001", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
+                CriterionLabel(code="NDX-001", gold_status="not_applicable"),
+                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
+            ],
+        ),
+        # C4 — 70F HFpEF, BMI 42, attenuation (approved)
+        TrainingCase(
+            case_id="PETER-C4",
+            title="C4 — 70F HFpEF + BMI 42 + attenuation (PET)",
+            procedure_code="78492",
+            procedure_name="Cardiac Stress PET",
+            payer="Blue Cross Blue Shield",
+            actual_outcome="approved",
+            gold_approval_label="HIGH",
+            gold_approval_score=0.86,
+            labeled_by=user.id,
+            source="peter-v2",
+            raw_note=(
+                "CARDIOLOGY CONSULTATION NOTE\n"
+                "70F morbidly obese (BMI 42) with CAD and HFpEF. Prior SPECT (2025-09-10) "
+                "limited by breast attenuation artifact and non-diagnostic for ischemia. "
+                "PET strongly favored given BMI. NYHA Class II functional capacity. "
+                "Continuing CCS Class II angina despite maximal medical therapy x 12 weeks "
+                "(carvedilol 12.5 BID, lisinopril, furosemide, metformin). BNP 450. HbA1c 8.2. "
+                "LVEF 55% by TTE (technically limited study due to body habitus). "
+                "Normal sinus rhythm with LVH voltage criteria. Cardiac rehab completed."
+            ),
+            criterion_labels=[
+                CriterionLabel(code="BMI-001", gold_status="met",
+                               gold_evidence="morbidly obese (BMI 42)"),
+                CriterionLabel(code="NDX-001", gold_status="met",
+                               gold_evidence="Prior SPECT limited by breast attenuation artifact and non-diagnostic"),
+                CriterionLabel(code="NDX-004", gold_status="met",
+                               gold_evidence="TTE technically limited study due to body habitus"),
+                CriterionLabel(code="DOC-001", gold_status="met",
+                               gold_evidence="CARDIOLOGY CONSULTATION NOTE"),
+                CriterionLabel(code="SX-004", gold_status="met",
+                               gold_evidence="NYHA Class II"),
+                CriterionLabel(code="SX-003", gold_status="met",
+                               gold_evidence="CCS Class II angina"),
+                CriterionLabel(code="MED-001", gold_status="met",
+                               gold_evidence="maximal medical therapy x 12 weeks"),
+                CriterionLabel(code="MED-002", gold_status="met",
+                               gold_evidence="maximal medical therapy x 12 weeks"),
+                CriterionLabel(code="LVEF-001", gold_status="met",
+                               gold_evidence="LVEF 55% by TTE"),
+                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
+                CriterionLabel(code="EX-001", gold_status="not_applicable"),
+            ],
+        ),
+        # C5 — 62M ischemic CM, LBBB, LVEF 35% (approved)
+        TrainingCase(
+            case_id="PETER-C5",
+            title="C5 — 62M ischemic CM + LBBB + HFrEF (PET)",
+            procedure_code="78492",
+            procedure_name="Cardiac Stress PET",
+            payer="UnitedHealthcare",
+            actual_outcome="approved",
+            gold_approval_label="HIGH",
+            gold_approval_score=0.90,
+            labeled_by=user.id,
+            source="peter-v2",
+            raw_note=(
+                "CARDIOLOGY OFFICE NOTE — H&P\n"
+                "62M with ischemic cardiomyopathy (LVEF 35% by TTE, global hypokinesis), "
+                "LBBB on baseline ECG. NYHA Class III symptoms despite maximal GDMT x 6 months "
+                "(Entresto 49/51 BID, metoprolol succinate 100, empagliflozin 10, spironolactone 25). "
+                "LBBB precludes standard stress ECG interpretation. BNP 680, troponin 0.04. "
+                "Active dx: I25.10, I50.22. Prior PCI to RCA (2020). "
+                "Cardiac stress PET requested to evaluate viable myocardium and ischemic burden."
+            ),
+            criterion_labels=[
+                CriterionLabel(code="LVEF-002", gold_status="met",
+                               gold_evidence="LVEF 35% by TTE"),
+                CriterionLabel(code="LVEF-001", gold_status="met",
+                               gold_evidence="LVEF 35% by TTE"),
+                CriterionLabel(code="ECG-001", gold_status="met",
+                               gold_evidence="LBBB on baseline ECG. LBBB precludes standard stress ECG interpretation"),
+                CriterionLabel(code="SX-004", gold_status="met",
+                               gold_evidence="NYHA Class III"),
+                CriterionLabel(code="MED-001", gold_status="met",
+                               gold_evidence="maximal GDMT x 6 months"),
+                CriterionLabel(code="MED-002", gold_status="met",
+                               gold_evidence="maximal GDMT x 6 months"),
+                CriterionLabel(code="DOC-001", gold_status="met",
+                               gold_evidence="CARDIOLOGY OFFICE NOTE — H&P"),
+                CriterionLabel(code="SX-001", gold_status="met",
+                               gold_evidence="despite maximal GDMT x 6 months"),
+                CriterionLabel(code="BMI-001", gold_status="not_applicable"),
+                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
+                CriterionLabel(code="EX-001", gold_status="not_applicable"),
+                CriterionLabel(code="NDX-001", gold_status="not_applicable"),
+            ],
+        ),
+    ]
+
+    saved = 0
+    for case in PETER_CASES:
+        if save_training_case(case):
+            saved += 1
+
+    log_audit(user, "seed_peter", f"saved {saved}/5 cases")
+    return {"status": "ok", "saved": saved, "total": len(PETER_CASES)}
+
+
 @app.get("/api/feedback/corrections")
 async def list_corrections(limit: int = 50, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """List recent corrections (admin view)."""

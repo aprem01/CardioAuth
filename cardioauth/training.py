@@ -109,6 +109,112 @@ def _ensure_table():
         logger.warning("Failed to ensure training_cases table: %s", e)
 
 
+TRAINING_GOLD_NAMESPACE = "training-gold"
+
+
+def _build_case_embedding_text(case: TrainingCase) -> str:
+    """Text representation used for embedding into Pinecone for similarity search."""
+    parts = [
+        f"Procedure: {case.procedure_name} (CPT {case.procedure_code})",
+        f"Payer: {case.payer}",
+        f"Outcome: {case.actual_outcome}",
+        f"Clinical note: {case.raw_note[:1500]}",
+    ]
+    if case.criterion_labels:
+        met = [l.code for l in case.criterion_labels if l.gold_status == "met"]
+        not_met = [l.code for l in case.criterion_labels if l.gold_status == "not_met"]
+        parts.append(f"Gold met: {', '.join(met)}")
+        parts.append(f"Gold not_met: {', '.join(not_met)}")
+    return "\n".join(parts)
+
+
+def _upsert_training_to_pinecone(case: TrainingCase) -> bool:
+    """Embed and upsert training case to Pinecone training-gold namespace."""
+    try:
+        from cardioauth.agents.precedent_retriever import _get_pinecone, _embed
+        index = _get_pinecone()
+        if index is None:
+            return False
+
+        text = _build_case_embedding_text(case)
+        vec = _embed(text, input_type="passage")
+        if vec is None:
+            return False
+
+        # Serialize criterion labels for metadata (Pinecone requires flat values)
+        crit_summary = "; ".join(
+            f"{l.code}={l.gold_status}" for l in case.criterion_labels
+        )
+        metadata = {
+            "type": "training_gold",
+            "case_id": case.case_id,
+            "title": case.title,
+            "procedure_code": case.procedure_code,
+            "procedure_name": case.procedure_name,
+            "payer": case.payer,
+            "actual_outcome": case.actual_outcome,
+            "gold_approval_label": case.gold_approval_label,
+            "gold_approval_score": case.gold_approval_score,
+            "raw_note_excerpt": case.raw_note[:1000],
+            "criterion_labels_summary": crit_summary[:1500],
+            "labeled_by": case.labeled_by,
+            "labeled_at": case.labeled_at,
+            "source": case.source,
+        }
+
+        index.upsert(
+            vectors=[(case.case_id, vec, metadata)],
+            namespace=TRAINING_GOLD_NAMESPACE,
+        )
+        logger.info("Upserted training case %s to Pinecone training-gold", case.case_id)
+        return True
+    except Exception as e:
+        logger.warning("Failed to upsert training case to Pinecone: %s", e)
+        return False
+
+
+def retrieve_similar_gold_cases(
+    case_summary: str,
+    procedure_code: str,
+    top_k: int = 3,
+) -> list[dict]:
+    """Find gold-labeled training cases most similar to the current case.
+
+    Used by UnifiedReasoner as dynamic few-shot examples. Returns list of
+    dicts with full case details including criterion labels.
+    """
+    try:
+        from cardioauth.agents.precedent_retriever import _get_pinecone, _embed
+        index = _get_pinecone()
+        if index is None:
+            return []
+
+        vec = _embed(case_summary, input_type="query")
+        if vec is None:
+            return []
+
+        result = index.query(
+            vector=vec,
+            top_k=top_k,
+            namespace=TRAINING_GOLD_NAMESPACE,
+            filter={"type": "training_gold", "procedure_code": procedure_code},
+            include_metadata=True,
+        )
+
+        # Load full case data for each match from JSONL (Pinecone metadata is truncated)
+        matches = []
+        for m in result.get("matches", []):
+            case_id = (m.get("metadata") or {}).get("case_id") or m.get("id", "")
+            full_case = get_training_case(case_id)
+            if full_case:
+                full_case["_similarity"] = float(m.get("score", 0.0))
+                matches.append(full_case)
+        return matches
+    except Exception as e:
+        logger.warning("Training gold retrieval failed: %s", e)
+        return []
+
+
 def save_training_case(case: TrainingCase) -> bool:
     """Persist a training case across backends. Returns True if any succeeded."""
     success = False
@@ -162,6 +268,10 @@ def save_training_case(case: TrainingCase) -> bool:
                 conn.close()
     except Exception as e:
         logger.warning("Failed to write training case to DB: %s", e)
+
+    # Pinecone — for similarity-based retrieval (Pathway 3)
+    if _upsert_training_to_pinecone(case):
+        success = True
 
     return success
 
