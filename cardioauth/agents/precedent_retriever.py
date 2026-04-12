@@ -54,17 +54,31 @@ def _get_pinecone():
         return None
 
 
-def _embed(text: str) -> list[float] | None:
-    """Embed text using the simplest available method.
+def _embed(text: str, input_type: str = "passage") -> list[float] | None:
+    """Embed text for Pinecone storage/search.
 
-    Tries in order:
-      1. Voyage AI (if VOYAGE_API_KEY set)
-      2. Anthropic via ~voyage client (recommended, high quality)
-      3. Deterministic hash-based pseudo-embedding (fallback, for dev only)
+    Uses Pinecone's integrated inference with llama-text-embed-v2 when
+    PINECONE_API_KEY is available (no separate embedding API needed).
+    Falls back to Voyage AI, then to deterministic pseudo-embedding.
 
-    Returns a 1536-dim or 1024-dim vector, or None if no embedder available.
+    input_type: "passage" for stored documents, "query" for searches.
+    Returns a 1024-dim vector or None.
     """
-    # Try Voyage AI (Anthropic-recommended)
+    # Try Pinecone integrated inference (llama-text-embed-v2, 1024 dim)
+    if PINECONE_API_KEY:
+        try:
+            from pinecone import Pinecone
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            result = pc.inference.embed(
+                model="llama-text-embed-v2",
+                inputs=[text],
+                parameters={"input_type": input_type, "truncate": "END"},
+            )
+            return result.data[0]["values"]
+        except Exception as e:
+            logger.warning("Pinecone inference embed failed: %s", e)
+
+    # Try Voyage AI if Pinecone inference unavailable
     voyage_key = os.environ.get("VOYAGE_API_KEY", "")
     if voyage_key:
         try:
@@ -75,9 +89,7 @@ def _embed(text: str) -> list[float] | None:
         except Exception as e:
             logger.warning("Voyage embed failed: %s", e)
 
-    # Fallback: deterministic pseudo-embedding (for testing only)
-    # Produces stable but NOT semantically meaningful vectors.
-    # Good enough to verify the pipeline plumbing; not for production.
+    # Last-resort fallback: deterministic pseudo-embedding (plumbing test only)
     import numpy as np
     seed = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
     rng = np.random.default_rng(seed)
@@ -173,7 +185,7 @@ def retrieve_precedents(ctx: CaseContext, top_k: int = 5) -> None:
 
     try:
         query_text = _summarize_case_for_embedding(ctx)
-        vector = _embed(query_text)
+        vector = _embed(query_text, input_type="query")
         if vector is None:
             return
 
