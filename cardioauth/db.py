@@ -368,6 +368,7 @@ def purge_old_data() -> dict:
 def is_db_available() -> bool:
     """Check if the database is reachable."""
     if not DATABASE_URL:
+        logger.warning("DB: DATABASE_URL not set")
         return False
     try:
         conn = _get_conn()
@@ -375,5 +376,6 @@ def is_db_available() -> bool:
         cur.execute("SELECT 1")
         conn.close()
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning("DB connection failed: %s: %s", type(e).__name__, str(e)[:200])
         return False
