@@ -500,32 +500,36 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
 
             # Translate UnifiedReasoner output into ReasoningResult shape so
             # the rest of the response building code works unchanged.
-            from cardioauth.models.reasoning import ReasoningResult, CriterionCheck
+            from cardioauth.models.reasoning import ReasoningResult, CriterionEvaluation, CriterionGap
             criteria_met_objs = []
             criteria_not_met_objs = []
             for m in unified_ctx.criterion_matches:
                 if m.get("status") == "met":
-                    criteria_met_objs.append(CriterionCheck(
+                    criteria_met_objs.append(CriterionEvaluation(
                         criterion=m.get("code", "") + ": " + m.get("reasoning", "")[:100],
                         met=True,
                         evidence=m.get("evidence_quote", "") or m.get("reasoning", "")[:200],
                         confidence=float(m.get("confidence", 0.8)),
                     ))
                 elif m.get("status") == "not_met":
-                    criteria_not_met_objs.append(CriterionCheck(
+                    criteria_not_met_objs.append(CriterionGap(
                         criterion=m.get("code", "") + ": " + m.get("reasoning", "")[:100],
-                        met=False,
                         gap=m.get("gap", "") or m.get("reasoning", "")[:200],
                         recommendation=m.get("recommendation", ""),
-                        confidence=float(m.get("confidence", 0.8)),
                     ))
+
+            # Clamp label — ReasoningResult uses a Literal
+            label = unified_ctx.approval_label if unified_ctx.approval_label in ("HIGH", "MEDIUM", "LOW", "DO NOT SUBMIT") else "LOW"
+            # INSUFFICIENT from UnifiedReasoner → DO NOT SUBMIT in legacy shape
+            if unified_ctx.approval_label == "INSUFFICIENT":
+                label = "DO NOT SUBMIT"
 
             reasoning = ReasoningResult(
                 criteria_met=criteria_met_objs,
                 criteria_not_met=criteria_not_met_objs,
                 approval_likelihood_score=unified_ctx.approval_score,
-                approval_likelihood_label=unified_ctx.approval_label,
-                pa_narrative_draft=unified_ctx.narrative_draft,
+                approval_likelihood_label=label,
+                pa_narrative_draft=unified_ctx.narrative_draft or "Narrative not generated.",
                 missing_documentation=[],
                 guideline_citations=[],
                 cardiologist_review_flags=[],
