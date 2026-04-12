@@ -13,7 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-ARG CACHEBUST=1
+ARG CACHEBUST=2026-04-12-unified-reasoner
 COPY . .
 
 # Create data directory with proper permissions
