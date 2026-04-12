@@ -1751,6 +1751,105 @@ async def auto_label_case(req: AutoLabelRequest, user: AuthUser = Depends(get_cu
         raise HTTPException(status_code=500, detail=str(e)[:200])
 
 
+@app.get("/api/training/export-for-finetuning")
+async def export_for_finetuning(
+    format: str = "messages",
+    user: AuthUser = Depends(get_current_user),
+) -> StreamingResponse:
+    """Export labeled training cases as JSONL for fine-tuning.
+
+    Supported formats:
+      - "messages" (default) — Anthropic / OpenAI chat-completion format
+      - "prompt_completion" — Claude SFT format with raw prompt + completion
+
+    Returns a downloadable JSONL file ready to upload to:
+      - Anthropic console.anthropic.com (Claude Haiku fine-tuning)
+      - OpenAI platform.openai.com (GPT-4o-mini fine-tuning)
+      - Hugging Face / Unsloth for Llama 3.1 8B
+    """
+    from cardioauth.training import get_all_training_cases
+    from cardioauth.taxonomy.taxonomy import get_criteria_for_procedure
+    import io as _io
+
+    cases = [c for c in get_all_training_cases() if c.get("criterion_labels")]
+    if not cases:
+        raise HTTPException(status_code=404, detail="No labeled cases to export")
+
+    log_audit(user, "export_finetuning", f"{len(cases)} cases, format={format}")
+
+    buf = _io.StringIO()
+
+    for case in cases:
+        applicable = get_criteria_for_procedure(case["procedure_code"], case["payer"])
+        criteria_spec = json.dumps([
+            {"code": c.code, "short_name": c.short_name}
+            for c in applicable
+        ])
+
+        # Build the prompt (what the model sees at inference time)
+        user_prompt = (
+            f"Evaluate this prior authorization case.\n\n"
+            f"Procedure: CPT {case['procedure_code']} ({case.get('procedure_name', '')})\n"
+            f"Payer: {case['payer']}\n\n"
+            f"Clinical note:\n{case['raw_note']}\n\n"
+            f"Applicable criteria: {criteria_spec}\n\n"
+            f"For each criterion, assign status (met/not_met/not_applicable) "
+            f"with evidence quote from the note."
+        )
+
+        # Build the completion (physician-verified gold answer)
+        gold = {
+            "criterion_matches": [
+                {
+                    "code": l["code"],
+                    "status": l["gold_status"],
+                    "evidence_quote": l.get("gold_evidence", ""),
+                    "reasoning": l.get("physician_note", ""),
+                }
+                for l in case["criterion_labels"]
+            ],
+            "approval_score": case.get("gold_approval_score", 0.0),
+            "approval_label": case.get("gold_approval_label", ""),
+        }
+        completion = json.dumps(gold, indent=None)
+
+        if format == "messages":
+            # Anthropic / OpenAI chat format
+            record = {
+                "messages": [
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": completion},
+                ],
+                "metadata": {
+                    "case_id": case["case_id"],
+                    "cpt_code": case["procedure_code"],
+                    "payer": case["payer"],
+                    "outcome": case.get("actual_outcome", "unknown"),
+                    "source": case.get("source", "manual"),
+                },
+            }
+        else:
+            # Prompt/completion format (legacy, some SFT APIs)
+            record = {
+                "prompt": user_prompt,
+                "completion": completion,
+                "metadata": {
+                    "case_id": case["case_id"],
+                    "cpt_code": case["procedure_code"],
+                    "outcome": case.get("actual_outcome", "unknown"),
+                },
+            }
+
+        buf.write(json.dumps(record) + "\n")
+
+    buf.seek(0)
+    return StreamingResponse(
+        _io.BytesIO(buf.getvalue().encode("utf-8")),
+        media_type="application/jsonl",
+        headers={"Content-Disposition": f'attachment; filename="cardioauth_finetuning_{format}_{len(cases)}cases.jsonl"'},
+    )
+
+
 @app.post("/api/training/seed-peter")
 async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Seed Peter's 5 validation cases as gold-labeled training cases."""
