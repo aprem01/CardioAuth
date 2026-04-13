@@ -165,6 +165,52 @@ def _extract_medication_trials(chart: dict) -> list[dict]:
 
 
 # ────────────────────────────────────────────────────────────────────────
+# Extraction-status wrapper
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _wrap_extraction(
+    value: dict | None,
+    metric: str,
+    searched_in: str,
+) -> dict:
+    """Wrap a quantitative extraction result with explicit found/not_found status.
+
+    Previously the extract functions returned None on miss, and the reasoner
+    couldn't tell "evidence absent" from "I forgot to look" — so criteria
+    requiring that evidence got silently marked not_met with no flag.
+
+    This wrapper makes the absence visible in the buckets passed to the LLM:
+      found:     {"status":"found", "value":..., "raw":..., "source_type":...}
+      not_found: {"status":"not_found", "metric":"lvef", "searched_in":"..."}
+    """
+    if value is None:
+        return {
+            "status": "not_found",
+            "metric": metric,
+            "value": None,
+            "searched_in": searched_in,
+            "note": f"No {metric} value located in chart; criteria that require it should be flagged not_met with evidence_unavailable",
+        }
+    wrapped = dict(value)
+    wrapped["status"] = "found"
+    wrapped["metric"] = metric
+    return wrapped
+
+
+def _wrap_text_extraction(text: str, metric: str, searched_in: str) -> dict:
+    """Same shape as _wrap_extraction but for free-text extractions."""
+    if not text:
+        return {
+            "status": "not_found",
+            "metric": metric,
+            "value": "",
+            "searched_in": searched_in,
+        }
+    return {"status": "found", "metric": metric, "value": text}
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Main bucketing function
 # ────────────────────────────────────────────────────────────────────────
 
@@ -208,6 +254,10 @@ def bucket_chart_evidence(chart: dict) -> dict[str, Any]:
 
         # ECG — only documented ECG findings (ECG modality, not echo or stress)
         "ecg": _extract_ecg_findings(chart),
+        "ecg_extraction": _wrap_text_extraction(
+            _extract_ecg_findings(chart), "ecg_findings",
+            "relevant_imaging entries with type containing 'ECG' or 'EKG'",
+        ),
 
         # Demographic — age, sex, BMI, body habitus
         "demographic": {
@@ -231,11 +281,23 @@ def bucket_chart_evidence(chart: dict) -> dict[str, Any]:
             "office_notes": chart.get("office_notes", "") or chart.get("consultation_note", "") or "",
         },
 
-        # Scores — extracted quantitative measurements
+        # Scores — extracted quantitative measurements. Each value is wrapped
+        # with an explicit status so "not_found" is visible to the LLM, rather
+        # than silently absent (which used to cause criteria to be marked
+        # not_met without any evidence_unavailable flag).
         "score": {
-            "lvef": lvef,
-            "bmi": bmi,
-            "max_hr_percent": hr_pct,
+            "lvef": _wrap_extraction(
+                lvef, "lvef",
+                "result_summary of relevant_imaging entries (patterns: 'LVEF X%', 'ejection fraction')",
+            ),
+            "bmi": _wrap_extraction(
+                bmi, "bmi",
+                "comorbidities list and relevant_imaging summaries (pattern: 'BMI X')",
+            ),
+            "max_hr_percent": _wrap_extraction(
+                hr_pct, "max_hr_percent",
+                "relevant_imaging summaries containing 'stress', 'ETT', or 'treadmill' (pattern: 'X% MPHR')",
+            ),
         },
 
         # Diagnoses — separate so we don't conflate ICD-10 with symptom notes
@@ -253,57 +315,77 @@ def chart_section_for_evidence_type(buckets: dict, evidence_type: str) -> Any:
 # ────────────────────────────────────────────────────────────────────────
 
 
+def _is_found(wrapped: dict | None) -> bool:
+    """A score-bucket entry counts as found only if it exists AND status=='found'.
+
+    Handles both new wrapped format ({"status": ..., "value": ...}) and legacy
+    bare-dict format during the transition.
+    """
+    if not wrapped:
+        return False
+    if "status" in wrapped:
+        return wrapped.get("status") == "found"
+    return True  # legacy format — assume found if dict exists
+
+
 def validate_threshold(criterion_code: str, buckets: dict) -> dict | None:
     """For criteria with hard quantitative thresholds, validate
     deterministically before trusting the LLM's judgment.
 
     Returns:
       None if no threshold rule exists for this criterion
-      {"met": True/False, "value": ..., "rule": "..."} if validated
+      {"met": True/False, "value": ..., "rule": "...", "evidence_status": "found|not_found"}
     """
     scores = buckets.get("score", {})
 
     # LVEF-002: LVEF ≤ 40% (reduced)
     if criterion_code == "LVEF-002":
         lvef = scores.get("lvef")
-        if not lvef:
+        if not _is_found(lvef):
             return {"met": False, "rule": "LVEF ≤ 40", "value": None,
+                    "evidence_status": "not_found",
                     "explanation": "No LVEF documented in imaging"}
         v = lvef.get("value") or lvef.get("value_avg") or lvef.get("value_high")
         if v is None:
             return None
         return {"met": v <= 40, "rule": "LVEF ≤ 40", "value": v,
+                "evidence_status": "found",
                 "explanation": f"Documented LVEF {v}%, threshold ≤40%"}
 
     # LVEF-001: LVEF documented at all
     if criterion_code == "LVEF-001":
         lvef = scores.get("lvef")
-        if not lvef:
+        if not _is_found(lvef):
             return {"met": False, "rule": "LVEF documented", "value": None,
+                    "evidence_status": "not_found",
                     "explanation": "No LVEF found in imaging"}
         v = lvef.get("value") or lvef.get("value_avg") or lvef.get("value_high")
         return {"met": v is not None, "rule": "LVEF documented", "value": v,
+                "evidence_status": "found",
                 "explanation": f"Documented LVEF {v}% from {lvef.get('source_type', 'imaging')} on {lvef.get('source_date', 'unknown date')}"}
 
     # BMI-001: BMI ≥ 35
     if criterion_code == "BMI-001":
         bmi = scores.get("bmi")
-        if not bmi:
+        if not _is_found(bmi):
             return {"met": False, "rule": "BMI ≥ 35 documented", "value": None,
+                    "evidence_status": "not_found",
                     "explanation": "No BMI value found in chart"}
         v = bmi.get("value")
         return {"met": v is not None and v >= 35, "rule": "BMI ≥ 35", "value": v,
+                "evidence_status": "found",
                 "explanation": f"Documented BMI {v}, threshold ≥35"}
 
     # NDX-002: Submaximal HR <85% MPHR
     if criterion_code == "NDX-002":
         hr = scores.get("max_hr_percent")
-        if not hr:
+        if not _is_found(hr):
             return None  # not necessarily missing, may not have had stress test
         v = hr.get("value")
         if v is None:
             return None
         return {"met": v < 85, "rule": "HR <85% MPHR", "value": v,
+                "evidence_status": "found",
                 "explanation": f"Achieved {v}% MPHR, threshold <85%"}
 
     # ECG-001: LBBB on ECG

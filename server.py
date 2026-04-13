@@ -637,6 +637,59 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
             pass
 
     review.taxonomy_match = taxonomy_match
+
+    # ── Validation + audit trail ──────────────────────────────────────
+    # Compare whatever the reasoner produced against the taxonomy's
+    # expected applicable set for this CPT. Missing codes = silent drop
+    # (the EX-001 class of bug). Unknown codes = hallucination.
+    try:
+        from cardioauth.taxonomy.validation import (
+            build_audit_trail,
+            trail_to_dict,
+            validate_criteria_for_cpt,
+        )
+        # Prefer the raw taxonomy matches when UnifiedReasoner ran —
+        # they are keyed by taxonomy code. Otherwise extract from the
+        # ReasoningResult shape.
+        reasoner_matches = []
+        if unified_ctx is not None:
+            reasoner_matches = list(unified_ctx.criterion_matches)
+        elif taxonomy_match and taxonomy_match.get("matches"):
+            reasoner_matches = list(taxonomy_match["matches"])
+
+        reasoner_codes = [m.get("code", "") for m in reasoner_matches if m.get("code")]
+        validation_reports = []
+        if reasoner_codes:
+            vr = validate_criteria_for_cpt(
+                reasoner_codes, req.procedure_code, req.payer_name, stage="reasoner_output",
+            )
+            validation_reports.append(vr.to_dict())
+            # Propagate missing/unknown warnings into system_warnings so UI flags them
+            if unified_ctx is not None:
+                for w in vr.warnings:
+                    unified_ctx.system_warnings.append({**w, "agent": "VALIDATOR"})
+
+        audit_trail = build_audit_trail(
+            cpt_code=req.procedure_code,
+            payer=req.payer_name,
+            policy_codes=None,  # POLICY_AGENT returns natural-language, not codes
+            reasoner_matches=reasoner_matches,
+        )
+        criterion_audit_trail = trail_to_dict(audit_trail)
+
+        silently_dropped = [e.code for e in audit_trail if "reasoner_skipped" in e.flags]
+        if silently_dropped:
+            logging.warning(
+                "custom-request: %d criteria silently skipped by reasoner for CPT %s: %s",
+                len(silently_dropped), req.procedure_code, silently_dropped,
+            )
+        review.criterion_audit_trail = criterion_audit_trail
+        review.validation_reports = validation_reports
+    except Exception as e:
+        logging.warning("Audit trail build failed (non-blocking): %s", e)
+        criterion_audit_trail = []
+        validation_reports = []
+
     _reviews[request_id] = review
 
     # Persist to database (best-effort — don't block response if DB fails)
@@ -697,6 +750,8 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
              for r in unified_ctx.relationships]
             if unified_ctx else []
         ),
+        "criterion_audit_trail": criterion_audit_trail,
+        "validation_reports": validation_reports,
     }
 
 

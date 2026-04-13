@@ -13,6 +13,12 @@ from cardioauth.models.chart import ChartData
 from cardioauth.models.policy import PolicyData
 from cardioauth.models.reasoning import ReasoningResult
 from cardioauth.models.submission import OutcomeResult, SubmissionResult
+from cardioauth.taxonomy.validation import (
+    build_audit_trail,
+    extract_reasoner_codes,
+    trail_to_dict,
+    validate_criteria_for_cpt,
+)
 from cardioauth.vector_store.client import VectorStoreClient
 
 logger = logging.getLogger(__name__)
@@ -20,6 +26,16 @@ logger = logging.getLogger(__name__)
 
 def _is_demo_mode() -> bool:
     return os.environ.get("DEMO_MODE", "true").lower() == "true"
+
+
+def _use_unified_reasoner() -> bool:
+    """When true, Orchestrator._process_demo uses UnifiedReasoner instead of legacy ReasoningAgent.
+
+    The /api/pa/custom-request endpoint already uses UnifiedReasoner directly;
+    this flag aligns the orchestrator path for parity. Default OFF so we can
+    validate the change on one endpoint before flipping the other.
+    """
+    return os.environ.get("USE_UNIFIED_REASONER", "false").lower() in ("1", "true", "yes")
 
 
 def _classify_anthropic_error(exc: Exception) -> dict:
@@ -63,6 +79,12 @@ class ReviewPackage:
     system_warnings: list[dict] = field(default_factory=list)  # Agent failures, fallbacks
     retrieved_chunks: list[dict] = field(default_factory=list)  # Stage 1 RAG chunks
     criterion_citations: list[dict] = field(default_factory=list)  # criterion → chunk_ids
+    # Per-criterion journey through the pipeline: stages passed, final status,
+    # drop reasons, flags. Populated by the validation layer.
+    criterion_audit_trail: list[dict] = field(default_factory=list)
+    # Validation reports from each agent boundary (policy_agent_output, reasoner_output, ...).
+    # Each entry shows expected vs received codes and any missing/unknown flags.
+    validation_reports: list[dict] = field(default_factory=list)
 
 
 class Orchestrator:
@@ -107,101 +129,83 @@ class Orchestrator:
         payer_name: str,
     ) -> ReviewPackage:
         """Run pipeline with demo/mock data + real Claude reasoning."""
-        from cardioauth.demo import get_demo_chart, get_demo_policy
+        from cardioauth.demo import get_demo_chart
 
         logger.info("ORCHESTRATOR: DEMO MODE")
 
-        # Step 1: Get demo chart data
         logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT (demo data)")
         chart_data = get_demo_chart(patient_id, procedure_code)
+        return self._run_pipeline(
+            chart_data=chart_data,
+            procedure_code=procedure_code,
+            payer_name=payer_name,
+            case_id=f"{patient_id}-{procedure_code}",
+            run_taxonomy_matcher=True,
+        )
 
+    def _process_live(
+        self,
+        patient_id: str,
+        procedure_code: str,
+        payer_id: str,
+        payer_name: str,
+    ) -> ReviewPackage:
+        """Run the full live pipeline with real FHIR + vector store."""
+        logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT")
+        chart_data = self.chart_agent.run(patient_id, procedure_code, payer_id)
+        return self._run_pipeline(
+            chart_data=chart_data,
+            procedure_code=procedure_code,
+            payer_name=payer_name,
+            case_id=f"{patient_id}-{procedure_code}",
+            run_taxonomy_matcher=False,
+        )
+
+    # ──────────────────────────────────────────────────────────────────
+    # Shared pipeline — the single path demo + live both flow through.
+    # This is what replaces the previously divergent _process_demo / _process_live
+    # implementations so bugs can't hide in one path while the other looks fine.
+    # ──────────────────────────────────────────────────────────────────
+
+    def _run_pipeline(
+        self,
+        chart_data: ChartData,
+        procedure_code: str,
+        payer_name: str,
+        case_id: str,
+        run_taxonomy_matcher: bool,
+    ) -> ReviewPackage:
         system_warnings: list[dict] = []
-        retrieved_chunks: list[dict] = []
-        criterion_citations: list[dict] = []
+        validation_reports: list[dict] = []
 
-        # Step 2: Get policy — RAG-grounded via POLICY_AGENT (Stage 1)
-        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT (RAG)")
-        if self.config.anthropic_api_key:
-            from cardioauth.agents.policy_agent import PolicyAgent
-            from cardioauth.integrations.cms_coverage import get_cms_coverage_context
-            policy_agent = PolicyAgent(self.config)
-            try:
-                cms_context = get_cms_coverage_context(procedure_code)
-                policy_data = policy_agent.run(
-                    procedure_code, payer_name,
-                    cms_context=cms_context,
-                )
-                # Extract RAG metadata stashed by POLICY_AGENT
-                retrieved_chunks = policy_data.__dict__.get("_retrieved_chunks", [])
-                criterion_citations = policy_data.__dict__.get("_criterion_citations", [])
-                logger.info(
-                    "ORCHESTRATOR: POLICY_AGENT succeeded — %d chunks retrieved, %d citations",
-                    len(retrieved_chunks), sum(len(c.get("citations", [])) for c in criterion_citations),
-                )
-            except Exception as e:
-                w = _classify_anthropic_error(e)
-                w["agent"] = "POLICY_AGENT"
-                system_warnings.append(w)
-                logger.warning("POLICY_AGENT failed (%s), falling back to demo policy", e)
-                policy_data = get_demo_policy(procedure_code, payer_name)
-        else:
-            policy_data = get_demo_policy(procedure_code, payer_name)
+        # Step 2: policy retrieval
+        policy_data, retrieved_chunks, criterion_citations, policy_warnings = self._run_policy_agent(
+            procedure_code, payer_name,
+        )
+        system_warnings.extend(policy_warnings)
 
-        # Steps 3 + 3b: Run REASONING_AGENT and TAXONOMY_MATCHER in parallel.
-        # Both need chart_data and policy_data but not each other, so we can
-        # roughly halve the end-to-end latency by running them concurrently.
-        reasoning = None
+        # Validate POLICY_AGENT output against taxonomy expectations.
+        # This is the first defensive boundary: warn loudly if POLICY_AGENT
+        # returned codes the taxonomy doesn't know about, or missed codes
+        # it should have produced.
+        policy_codes = self._extract_policy_codes(policy_data)
+        if policy_codes:
+            report = validate_criteria_for_cpt(
+                policy_codes, procedure_code, payer_name, stage="policy_agent_output",
+            )
+            validation_reports.append(report.to_dict())
+            system_warnings.extend(report.warnings)
+
+        # Step 3 + 3b: reasoning (+ optional taxonomy matcher in parallel)
+        reasoning, tax_result, reasoning_warnings = self._run_reasoning_and_taxonomy(
+            chart_data, policy_data, procedure_code, payer_name, case_id,
+            run_taxonomy_matcher=run_taxonomy_matcher,
+        )
+        system_warnings.extend(reasoning_warnings)
+
         taxonomy_match = None
-
-        def _run_reasoning():
-            if not self.config.anthropic_api_key:
-                from cardioauth.demo import get_demo_reasoning
-                return get_demo_reasoning(chart_data, policy_data), None
-            from cardioauth.agents.reasoning_agent import ReasoningAgent
-            try:
-                return ReasoningAgent(self.config).run(chart_data, policy_data), None
-            except Exception as e:
-                logger.warning("REASONING_AGENT failed (%s), using demo reasoning", e)
-                from cardioauth.demo import get_demo_reasoning
-                w = _classify_anthropic_error(e)
-                w["agent"] = "REASONING_AGENT"
-                return get_demo_reasoning(chart_data, policy_data), w
-
-        def _run_taxonomy():
-            if not self.config.anthropic_api_key:
-                return None, None
-            try:
-                from cardioauth.taxonomy import match_case_to_taxonomy
-                tax_result = match_case_to_taxonomy(
-                    chart_data.model_dump(),
-                    procedure_code,
-                    payer_name,
-                    self.config,
-                    case_id=f"{patient_id}-{procedure_code}",
-                )
-                return tax_result, None
-            except Exception as e:
-                logger.warning("TAXONOMY_MATCHER failed: %s", e)
-                w = _classify_anthropic_error(e)
-                w["agent"] = "TAXONOMY_MATCHER"
-                return None, w
-
-        logger.info("ORCHESTRATOR: Step 3 + 3b — REASONING_AGENT and TAXONOMY_MATCHER in parallel")
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_reason = pool.submit(_run_reasoning)
-            fut_tax = pool.submit(_run_taxonomy)
-            reasoning, reason_warn = fut_reason.result()
-            tax_result, tax_warn = fut_tax.result()
-
-        if reason_warn:
-            system_warnings.append(reason_warn)
-        if tax_warn:
-            system_warnings.append(tax_warn)
-
         if tax_result is not None:
             from cardioauth.taxonomy import record_emerging_criterion
-            case_id = f"{patient_id}-{procedure_code}"
             for ec in tax_result.emerging_criteria:
                 try:
                     record_emerging_criterion(
@@ -222,30 +226,47 @@ class Orchestrator:
                 tax_result.label, len(tax_result.emerging_criteria),
             )
 
-        requires_human_action: list[str] = []
+        # Validate reasoner output against taxonomy expectations.
+        reasoner_matches = self._extract_reasoner_matches(reasoning, taxonomy_match)
+        reasoner_codes = [m.get("code", "") for m in reasoner_matches if m.get("code")]
+        if reasoner_codes:
+            report = validate_criteria_for_cpt(
+                reasoner_codes, procedure_code, payer_name, stage="reasoner_output",
+            )
+            validation_reports.append(report.to_dict())
+            system_warnings.extend(report.warnings)
 
-        if chart_data.confidence_score < self.config.chart_confidence_threshold:
-            requires_human_action.append(
-                f"Chart data confidence is {chart_data.confidence_score:.0%} "
-                f"(threshold: {self.config.chart_confidence_threshold:.0%}). "
-                f"Missing: {', '.join(chart_data.missing_fields)}"
+        # Build the per-criterion audit trail — the single artifact that
+        # shows whether every applicable criterion made it through every
+        # stage. Peter can point at this list to answer "did EX-001 get
+        # evaluated?" without tracing logs.
+        audit_trail = build_audit_trail(
+            cpt_code=procedure_code,
+            payer=payer_name,
+            policy_codes=policy_codes,
+            reasoner_matches=reasoner_matches,
+        )
+        audit_trail_dict = trail_to_dict(audit_trail)
+
+        silently_dropped = [e.code for e in audit_trail if "reasoner_skipped" in e.flags]
+        if silently_dropped:
+            logger.warning(
+                "ORCHESTRATOR: %d criteria silently skipped by reasoner for CPT %s: %s",
+                len(silently_dropped), procedure_code, silently_dropped,
             )
 
-        if reasoning.approval_likelihood_score < self.config.approval_likelihood_threshold:
-            requires_human_action.append(
-                f"Approval likelihood is {reasoning.approval_likelihood_label} "
-                f"({reasoning.approval_likelihood_score:.0%}). "
-                "Consider strengthening the chart before submission."
-            )
-
-        if reasoning.cardiologist_review_flags:
-            requires_human_action.extend(reasoning.cardiologist_review_flags)
+        # Assemble human-review flags
+        requires_human_action = self._collect_review_flags(
+            chart_data, policy_data, reasoning, audit_trail,
+        )
 
         logger.info(
-            "ORCHESTRATOR: review package ready — approval_likelihood=%s (%s), flags=%d",
+            "ORCHESTRATOR: review package ready — approval=%s (%s), flags=%d, audit=%d codes, warnings=%d",
             reasoning.approval_likelihood_score,
             reasoning.approval_likelihood_label,
             len(requires_human_action),
+            len(audit_trail_dict),
+            len(system_warnings),
         )
 
         return ReviewPackage(
@@ -257,66 +278,309 @@ class Orchestrator:
             system_warnings=system_warnings,
             retrieved_chunks=retrieved_chunks,
             criterion_citations=criterion_citations,
+            criterion_audit_trail=audit_trail_dict,
+            validation_reports=validation_reports,
         )
 
-    def _process_live(
+    def _run_policy_agent(
         self,
-        patient_id: str,
         procedure_code: str,
-        payer_id: str,
         payer_name: str,
-    ) -> ReviewPackage:
-        """Run the full live pipeline with real FHIR + vector store."""
-        # Step 1: Extract chart data
-        logger.info("ORCHESTRATOR: Step 1 — CHART_AGENT")
-        chart_data = self.chart_agent.run(patient_id, procedure_code, payer_id)
+    ) -> tuple[PolicyData, list[dict], list[dict], list[dict]]:
+        """Run POLICY_AGENT (or demo fallback) and return policy + RAG metadata + warnings."""
+        from cardioauth.demo import get_demo_policy
 
-        requires_human_action: list[str] = []
+        warnings: list[dict] = []
+        retrieved_chunks: list[dict] = []
+        criterion_citations: list[dict] = []
+
+        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT")
+
+        if self.config.anthropic_api_key:
+            try:
+                from cardioauth.agents.policy_agent import PolicyAgent
+                from cardioauth.integrations.cms_coverage import get_cms_coverage_context
+                cms_context = get_cms_coverage_context(procedure_code)
+                policy_data = PolicyAgent(self.config).run(
+                    procedure_code, payer_name, cms_context=cms_context,
+                )
+                retrieved_chunks = policy_data.__dict__.get("_retrieved_chunks", [])
+                criterion_citations = policy_data.__dict__.get("_criterion_citations", [])
+                logger.info(
+                    "ORCHESTRATOR: POLICY_AGENT succeeded — %d chunks, %d citations",
+                    len(retrieved_chunks),
+                    sum(len(c.get("citations", [])) for c in criterion_citations),
+                )
+                return policy_data, retrieved_chunks, criterion_citations, warnings
+            except Exception as e:
+                w = _classify_anthropic_error(e)
+                w["agent"] = "POLICY_AGENT"
+                warnings.append(w)
+                logger.warning("POLICY_AGENT failed (%s), falling back to demo policy", e)
+
+        try:
+            policy_data = get_demo_policy(procedure_code, payer_name)
+        except Exception as e:
+            logger.warning("Demo policy fallback failed: %s", e)
+            policy_data = PolicyData(
+                payer=payer_name,
+                procedure="",
+                cpt_code=procedure_code,
+                auth_required=None,
+                clinical_criteria=[],
+            )
+        return policy_data, retrieved_chunks, criterion_citations, warnings
+
+    def _run_reasoning_and_taxonomy(
+        self,
+        chart_data: ChartData,
+        policy_data: PolicyData,
+        procedure_code: str,
+        payer_name: str,
+        case_id: str,
+        run_taxonomy_matcher: bool,
+    ) -> tuple[ReasoningResult, Any, list[dict]]:
+        """Run REASONING + optional TAXONOMY_MATCHER in parallel. Returns (reasoning, tax_result, warnings)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        warnings: list[dict] = []
+
+        def _run_reasoning() -> tuple[ReasoningResult, dict | None]:
+            if not self.config.anthropic_api_key:
+                from cardioauth.demo import get_demo_reasoning
+                return get_demo_reasoning(chart_data, policy_data), None
+
+            if _use_unified_reasoner():
+                try:
+                    return self._run_unified_reasoner(
+                        chart_data, policy_data, procedure_code, payer_name, case_id,
+                    ), None
+                except Exception as e:
+                    logger.warning("UnifiedReasoner failed (%s), falling back to legacy ReasoningAgent", e)
+                    w = _classify_anthropic_error(e)
+                    w["agent"] = "UNIFIED_REASONER"
+                    # fall through to legacy path with warning recorded below
+                    legacy_warn = w
+                    try:
+                        from cardioauth.agents.reasoning_agent import ReasoningAgent
+                        return ReasoningAgent(self.config).run(chart_data, policy_data), legacy_warn
+                    except Exception as e2:
+                        logger.warning("Legacy ReasoningAgent also failed: %s", e2)
+                        from cardioauth.demo import get_demo_reasoning
+                        return get_demo_reasoning(chart_data, policy_data), legacy_warn
+
+            try:
+                from cardioauth.agents.reasoning_agent import ReasoningAgent
+                return ReasoningAgent(self.config).run(chart_data, policy_data), None
+            except Exception as e:
+                w = _classify_anthropic_error(e)
+                w["agent"] = "REASONING_AGENT"
+                logger.warning("REASONING_AGENT failed (%s), using demo reasoning", e)
+                from cardioauth.demo import get_demo_reasoning
+                return get_demo_reasoning(chart_data, policy_data), w
+
+        def _run_taxonomy() -> tuple[Any, dict | None]:
+            if not run_taxonomy_matcher or not self.config.anthropic_api_key:
+                return None, None
+            try:
+                from cardioauth.taxonomy import match_case_to_taxonomy
+                return match_case_to_taxonomy(
+                    chart_data.model_dump(),
+                    procedure_code, payer_name, self.config,
+                    case_id=case_id,
+                ), None
+            except Exception as e:
+                w = _classify_anthropic_error(e)
+                w["agent"] = "TAXONOMY_MATCHER"
+                logger.warning("TAXONOMY_MATCHER failed: %s", e)
+                return None, w
+
+        logger.info("ORCHESTRATOR: Step 3 — reasoning (taxonomy_matcher=%s)", run_taxonomy_matcher)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_reason = pool.submit(_run_reasoning)
+            fut_tax = pool.submit(_run_taxonomy)
+            reasoning, reason_warn = fut_reason.result()
+            tax_result, tax_warn = fut_tax.result()
+
+        if reason_warn:
+            warnings.append(reason_warn)
+        if tax_warn:
+            warnings.append(tax_warn)
+
+        return reasoning, tax_result, warnings
+
+    def _run_unified_reasoner(
+        self,
+        chart_data: ChartData,
+        policy_data: PolicyData,
+        procedure_code: str,
+        payer_name: str,
+        case_id: str,
+    ) -> ReasoningResult:
+        """Run UnifiedReasoner and translate CaseContext output into ReasoningResult shape."""
+        from cardioauth.agents.relationship_extractor import extract_relationships
+        from cardioauth.agents.unified_reasoner import reason_with_unified_agent
+        from cardioauth.case_context import CaseContext
+        from cardioauth.models.reasoning import CriterionEvaluation, CriterionGap
+
+        ctx = CaseContext(
+            case_id=case_id,
+            procedure_code=procedure_code,
+            procedure_name=chart_data.procedure_requested or procedure_code,
+            payer_name=payer_name,
+            chart_data=chart_data.model_dump(),
+            policy_data=policy_data.model_dump() if policy_data else {},
+        )
+        ctx.build_clinical_narrative()
+        try:
+            extract_relationships(ctx, self.config)
+        except Exception as e:
+            logger.warning("Relationship extraction failed: %s", e)
+
+        reason_with_unified_agent(ctx, self.config)
+
+        criteria_met = []
+        criteria_not_met = []
+        for m in ctx.criterion_matches:
+            code = m.get("code", "")
+            if m.get("status") == "met":
+                criteria_met.append(CriterionEvaluation(
+                    criterion=f"{code}: {m.get('reasoning', '')[:100]}",
+                    met=True,
+                    evidence=m.get("evidence_quote", "") or m.get("reasoning", "")[:200],
+                    confidence=float(m.get("confidence", 0.8)),
+                ))
+            elif m.get("status") == "not_met":
+                criteria_not_met.append(CriterionGap(
+                    criterion=f"{code}: {m.get('reasoning', '')[:100]}",
+                    gap=m.get("gap", "") or m.get("reasoning", "")[:200],
+                    recommendation=m.get("recommendation", ""),
+                ))
+
+        label = ctx.approval_label if ctx.approval_label in ("HIGH", "MEDIUM", "LOW", "DO NOT SUBMIT") else "LOW"
+        if ctx.approval_label == "INSUFFICIENT":
+            label = "DO NOT SUBMIT"
+
+        result = ReasoningResult(
+            criteria_met=criteria_met,
+            criteria_not_met=criteria_not_met,
+            approval_likelihood_score=ctx.approval_score,
+            approval_likelihood_label=label,
+            pa_narrative_draft=ctx.narrative_draft or "Narrative not generated.",
+            cardiologist_review_flags=[],
+        )
+        # Stash the raw matches and ctx warnings so the audit builder can see them
+        result.__dict__["_unified_matches"] = ctx.criterion_matches
+        if ctx.system_warnings:
+            result.__dict__["_unified_warnings"] = list(ctx.system_warnings)
+        return result
+
+    # ── extraction helpers ────────────────────────────────────────────
+
+    def _extract_policy_codes(self, policy_data: PolicyData | None) -> list[str]:
+        """Pull criterion codes out of policy_data.clinical_criteria.
+
+        POLICY_AGENT returns natural-language criterion strings, not taxonomy
+        codes, so we reverse-map via short_name. Returns empty if nothing maps.
+        """
+        if policy_data is None:
+            return []
+        from cardioauth.taxonomy.taxonomy import CRITERION_TAXONOMY
+        by_short = {c.short_name.lower(): c.code for c in CRITERION_TAXONOMY.values()}
+        codes: list[str] = []
+        for c in policy_data.clinical_criteria or []:
+            label = getattr(c, "criterion", "") or (c.get("criterion") if isinstance(c, dict) else "")
+            if not label:
+                continue
+            lower = label.lower().strip()
+            if lower in CRITERION_TAXONOMY:
+                codes.append(lower)
+                continue
+            for k, v in by_short.items():
+                if k and (k in lower or lower in k):
+                    codes.append(v)
+                    break
+        return codes
+
+    def _extract_reasoner_matches(
+        self,
+        reasoning: ReasoningResult,
+        taxonomy_match: dict | None,
+    ) -> list[dict]:
+        """Normalize reasoner output to [{code, status, _enforced?, ...}]."""
+        unified = reasoning.__dict__.get("_unified_matches") if reasoning else None
+        if unified:
+            return list(unified)
+
+        if taxonomy_match and taxonomy_match.get("matches"):
+            return list(taxonomy_match["matches"])
+
+        matches: list[dict] = []
+        if reasoning is None:
+            return matches
+        codes_from_result = extract_reasoner_codes(reasoning)
+        seen: set[str] = set()
+        for c in reasoning.criteria_met or []:
+            label = getattr(c, "criterion", "")
+            code = next((cc for cc in codes_from_result if cc and cc in label), None)
+            if code and code not in seen:
+                matches.append({"code": code, "status": "met", "evidence_quote": getattr(c, "evidence", "")})
+                seen.add(code)
+        for c in reasoning.criteria_not_met or []:
+            label = getattr(c, "criterion", "")
+            code = next((cc for cc in codes_from_result if cc and cc in label), None)
+            if code and code not in seen:
+                matches.append({"code": code, "status": "not_met", "gap": getattr(c, "gap", "")})
+                seen.add(code)
+        return matches
+
+    def _collect_review_flags(
+        self,
+        chart_data: ChartData,
+        policy_data: PolicyData,
+        reasoning: ReasoningResult,
+        audit_trail: list,
+    ) -> list[str]:
+        flags: list[str] = []
 
         if chart_data.confidence_score < self.config.chart_confidence_threshold:
-            requires_human_action.append(
+            flags.append(
                 f"Chart data confidence is {chart_data.confidence_score:.0%} "
                 f"(threshold: {self.config.chart_confidence_threshold:.0%}). "
                 f"Missing: {', '.join(chart_data.missing_fields)}"
             )
 
-        # Step 2: Retrieve payer criteria
-        logger.info("ORCHESTRATOR: Step 2 — POLICY_AGENT")
-        policy_data = self.policy_agent.run(procedure_code, payer_name)
-
-        if policy_data.auth_required is None:
-            requires_human_action.append(
+        if policy_data and policy_data.auth_required is None:
+            flags.append(
                 "Could not determine if prior auth is required for this payer/procedure. "
                 "Manual verification needed."
             )
 
-        # Step 3: Reason over chart vs criteria
-        logger.info("ORCHESTRATOR: Step 3 — REASONING_AGENT")
-        reasoning = self.reasoning_agent.run(chart_data, policy_data)
-
         if reasoning.approval_likelihood_score < self.config.approval_likelihood_threshold:
-            requires_human_action.append(
+            flags.append(
                 f"Approval likelihood is {reasoning.approval_likelihood_label} "
                 f"({reasoning.approval_likelihood_score:.0%}). "
                 "Consider strengthening the chart before submission."
             )
 
         if reasoning.cardiologist_review_flags:
-            requires_human_action.extend(reasoning.cardiologist_review_flags)
+            flags.extend(reasoning.cardiologist_review_flags)
 
-        logger.info(
-            "ORCHESTRATOR: review package ready — approval_likelihood=%s (%s), flags=%d",
-            reasoning.approval_likelihood_score,
-            reasoning.approval_likelihood_label,
-            len(requires_human_action),
-        )
+        skipped = [e.code for e in audit_trail if "reasoner_skipped" in e.flags]
+        if skipped:
+            flags.append(
+                f"{len(skipped)} applicable criteria were skipped by the reasoner "
+                f"and filled in as not_met: {', '.join(skipped)}. Review the audit trail."
+            )
 
-        return ReviewPackage(
-            chart_data=chart_data,
-            policy_data=policy_data,
-            reasoning=reasoning,
-            requires_human_action=requires_human_action,
-        )
+        unexpected = [e.code for e in audit_trail if "unexpected_code" in e.flags]
+        if unexpected:
+            flags.append(
+                f"Reasoner returned codes not applicable to this CPT: {', '.join(unexpected)}. "
+                "Possible hallucination — verify against taxonomy."
+            )
+
+        return flags
 
     def submit_after_approval(
         self,
