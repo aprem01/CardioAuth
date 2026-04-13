@@ -160,13 +160,35 @@ CORE PRINCIPLES
    - If unsure, mark NOT_MET and explain.
    - Never invent labs, dates, medications, or findings that aren't in the note.
 
-COMPLETENESS — EVALUATE EVERY CRITERION IN THE LIST
+COMPLETENESS + CPT GATING — CRITICAL RULES
 
-You MUST return a criterion_matches entry for EVERY single criterion in the
-provided CRITERIA TO EVALUATE list. Do not omit any. If a criterion doesn't
-apply to this patient, return it with status="not_applicable". Never skip
-a criterion silently — if you can't evaluate it, explicitly mark it
-not_applicable with reasoning="Not clinically relevant to this case".
+The list of criteria you receive has ALREADY BEEN FILTERED to those that
+apply to the requested CPT code. You are NOT allowed to mark any of them
+"not_applicable" — by definition, every criterion in your list IS applicable
+to this procedure.
+
+Rules for the final classification of each criterion in the list:
+
+  - "met" — clearly supported by verbatim evidence in the note
+  - "not_met" — applicable but the note lacks sufficient documentation
+                (this is the DEFAULT when evidence is absent or ambiguous)
+
+You MUST return exactly one criterion_matches entry for each criterion in
+the provided CRITERIA TO EVALUATE list. Do not skip any. Do not use
+"not_applicable" — the CPT filter already handled applicability upstream.
+
+If you're not sure whether a criterion is met, default to "not_met" and
+state what additional documentation would be required.
+
+Examples of WRONG behavior (do not do this):
+
+  ✗ Skipping ECG-003 because the note doesn't mention WPW. Correct: return
+    ECG-003 with status="not_met", gap="No WPW pattern documented on ECG"
+  ✗ Skipping NDX-004 because there's no echo. Correct: return NDX-004 with
+    status="not_met", gap="No prior technically limited echo documented"
+  ✗ Marking DOC-001 "not_applicable" because the office note is short.
+    Correct: evaluate the note content; if clinical narrative is present,
+    mark it "met"; if not, "not_met"
 
 OUTPUT FORMAT — JSON ONLY, no markdown fences:
 
@@ -372,8 +394,10 @@ class UnifiedReasoner:
                 "approval_label": "INSUFFICIENT",
             })
 
-            # Populate context
-            ctx.criterion_matches = data.get("criterion_matches", [])
+            # Populate context — but enforce Peter's rules deterministically
+            # regardless of what the LLM returned (per-case validation feedback)
+            raw_matches = data.get("criterion_matches", [])
+            ctx.criterion_matches = _enforce_cpt_gating(raw_matches, applicable)
             ctx.narrative_draft = data.get("narrative_draft", "")
 
             # Use returned score, or compute from matches
@@ -444,10 +468,14 @@ def _compute_approval_score(matches: list[dict], applicable: list) -> float:
 
     for m in matches:
         code = m.get("code", "")
-        status = m.get("status", "not_applicable")
+        status = m.get("status", "not_met")
         c = crit_by_code.get(code)
-        if not c or status == "not_applicable":
+        if not c:
             continue
+        # After CPT gating, every applicable criterion has status met/not_met.
+        # (not_applicable should not occur here; if it does, treat as not_met.)
+        if status == "not_applicable":
+            status = "not_met"
         if c.severity == "required":
             req_total += 1
             if status == "met":
@@ -468,6 +496,69 @@ def _compute_approval_score(matches: list[dict], applicable: list) -> float:
     boost = 0.20 * (sup_met / sup_evaluated) if sup_evaluated > 0 else 0.0
 
     return round(min(1.0, base + boost), 2)
+
+
+def _enforce_cpt_gating(raw_matches: list[dict], applicable: list) -> list[dict]:
+    """Enforce Peter's rules deterministically:
+
+    1. Every applicable criterion MUST have an entry (no silent skipping)
+    2. Applicable criteria cannot be marked "not_applicable" — coerce to "not_met"
+    3. If the LLM didn't return a criterion, synthesize a "not_met" entry
+    4. Normalize status values (accept "met"/"MET"/"Met" → "met")
+
+    This is the post-processing fix for the "14 missing" / "sometimes n/a"
+    pattern Peter documented.
+    """
+    applicable_codes = {c.code for c in applicable}
+    crit_by_code = {c.code: c for c in applicable}
+
+    # Index what the LLM returned
+    returned_by_code: dict[str, dict] = {}
+    for m in raw_matches:
+        code = m.get("code", "")
+        if not code:
+            continue
+        returned_by_code[code] = m
+
+    enforced: list[dict] = []
+    for code in sorted(applicable_codes):
+        crit = crit_by_code[code]
+        llm_entry = returned_by_code.get(code)
+
+        if llm_entry is None:
+            # LLM skipped this criterion — default to not_met
+            enforced.append({
+                "code": code,
+                "status": "not_met",
+                "confidence": 0.5,
+                "evidence_quote": "",
+                "reasoning": f"Criterion not addressed in reasoner output; defaulted to not_met per CPT gate rule.",
+                "gap": crit.definition if hasattr(crit, "definition") else "Evidence required",
+                "recommendation": f"Document evidence satisfying {code}: {crit.short_name}" if hasattr(crit, "short_name") else "",
+                "_enforced": "missing_filled",
+            })
+            continue
+
+        # Normalize status
+        status = (llm_entry.get("status") or "").strip().lower()
+        if status not in ("met", "not_met"):
+            # Reject "not_applicable" (or empty/unknown) — coerce to not_met
+            # because this criterion IS applicable to the CPT
+            enforced_entry = dict(llm_entry)
+            enforced_entry["status"] = "not_met"
+            enforced_entry["_enforced"] = f"coerced_from_{status or 'empty'}"
+            # Preserve any evidence the LLM provided
+            if not enforced_entry.get("gap"):
+                enforced_entry["gap"] = enforced_entry.get("reasoning", "")[:200] or "Applicable to CPT but no supporting evidence"
+            enforced.append(enforced_entry)
+            continue
+
+        # Accepted status — normalize back
+        enforced_entry = dict(llm_entry)
+        enforced_entry["status"] = status
+        enforced.append(enforced_entry)
+
+    return enforced
 
 
 def _precedent_median_score(precedents, cpt_code: str) -> float | None:
