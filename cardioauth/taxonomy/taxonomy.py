@@ -358,9 +358,9 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         code="EX-001",
         category="EX",
         short_name="Specific functional limitation preventing exercise",
-        definition="Specific diagnosis or condition documented preventing adequate exercise stress testing (orthopedic, neurologic, pulmonary, vascular). Generic 'unable to exercise' insufficient.",
+        definition="Specific diagnosis or condition documented preventing adequate exercise stress testing (orthopedic, neurologic, pulmonary, vascular, dyspnea + obesity, etc.). Generic 'unable to exercise' without a stated reason is insufficient.",
         evidence_type="clinical_note",
-        applies_to=["78452", "78451"],
+        applies_to=["78492", "78491", "78452", "78451"],  # Pharmacologic PET + SPECT both
         guideline_source="Multi-payer pharmacologic stress requirement",
         severity="required",
     ),
