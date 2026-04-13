@@ -1,0 +1,38 @@
+name: Fast unit tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pytest + minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          # Install only the deps needed for pure-logic tests
+          pip install pydantic pyjwt requests
+
+      - name: Run fast pytest (no LLM calls)
+        run: |
+          pytest tests/test_relationship_extractor.py \
+                 tests/test_cpt_gating.py \
+                 tests/test_evidence_buckets.py \
+                 tests/test_taxonomy.py \
+                 tests/test_approval_scoring.py \
+                 -v --tb=short

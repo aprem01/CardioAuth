@@ -155,8 +155,12 @@ def _upsert_training_to_pinecone(case: TrainingCase) -> bool:
             "actual_outcome": case.actual_outcome,
             "gold_approval_label": case.gold_approval_label,
             "gold_approval_score": case.gold_approval_score,
-            "raw_note_excerpt": case.raw_note[:1000],
-            "criterion_labels_summary": crit_summary[:1500],
+            "raw_note_excerpt": case.raw_note[:4000],  # Pinecone metadata supports up to 40KB per vector
+            "criterion_labels_summary": crit_summary[:3000],
+            "criterion_labels_json": json.dumps([
+                {"code": l.code, "gold_status": l.gold_status, "gold_evidence": l.gold_evidence}
+                for l in case.criterion_labels
+            ])[:20000],
             "labeled_by": case.labeled_by,
             "labeled_at": case.labeled_at,
             "source": case.source,
@@ -277,20 +281,87 @@ def save_training_case(case: TrainingCase) -> bool:
 
 
 def get_all_training_cases() -> list[dict]:
-    """Load all training cases from JSONL."""
-    if not _TRAINING_FILE.exists():
-        return []
-    out = []
+    """Load all training cases. Primary: JSONL (fast). Fallback: Pinecone (survives deploys)."""
+    # Try JSONL first (fast, cheap)
+    if _TRAINING_FILE.exists():
+        out = []
+        try:
+            with open(_TRAINING_FILE) as f:
+                for line in f:
+                    try:
+                        out.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            if out:
+                return out
+        except Exception as e:
+            logger.warning("Failed to read training JSONL: %s", e)
+
+    # Railway's filesystem is ephemeral — recover from Pinecone
     try:
-        with open(_TRAINING_FILE) as f:
-            for line in f:
+        from cardioauth.agents.precedent_retriever import _get_pinecone
+        index = _get_pinecone()
+        if index is None:
+            return []
+        # List all vectors in training-gold namespace — use stats
+        stats = index.describe_index_stats()
+        ns = (stats.get("namespaces") or {}).get(TRAINING_GOLD_NAMESPACE, {})
+        count = ns.get("vector_count", 0)
+        if count == 0:
+            return []
+        # Fetch up to 100 cases using a broad query (dummy vec)
+        result = index.query(
+            vector=[0.0] * 1024,
+            top_k=min(count, 100),
+            namespace=TRAINING_GOLD_NAMESPACE,
+            filter={"type": "training_gold"},
+            include_metadata=True,
+        )
+        cases = []
+        for m in result.get("matches", []):
+            meta = m.get("metadata") or {}
+            # Prefer full JSON; fall back to summary parsing
+            crit_labels = []
+            labels_json = meta.get("criterion_labels_json")
+            if labels_json:
                 try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+                    crit_labels = json.loads(labels_json)
+                except Exception:
+                    pass
+            if not crit_labels:
+                for entry in (meta.get("criterion_labels_summary") or "").split(";"):
+                    entry = entry.strip()
+                    if "=" in entry:
+                        code, status = entry.split("=", 1)
+                        crit_labels.append({"code": code.strip(), "gold_status": status.strip(), "gold_evidence": ""})
+            cases.append({
+                "case_id": meta.get("case_id", m.get("id", "")),
+                "title": meta.get("title", ""),
+                "procedure_code": meta.get("procedure_code", ""),
+                "procedure_name": meta.get("procedure_name", ""),
+                "payer": meta.get("payer", ""),
+                "raw_note": meta.get("raw_note_excerpt", ""),
+                "actual_outcome": meta.get("actual_outcome", "unknown"),
+                "gold_approval_label": meta.get("gold_approval_label", ""),
+                "gold_approval_score": meta.get("gold_approval_score", 0.0),
+                "criterion_labels": crit_labels,
+                "labeled_by": meta.get("labeled_by", ""),
+                "labeled_at": meta.get("labeled_at", ""),
+                "source": meta.get("source", "pinecone-recovery"),
+            })
+        # Also rehydrate local JSONL so next call is fast
+        try:
+            _TRAINING_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with open(_TRAINING_FILE, "w") as f:
+                for c in cases:
+                    f.write(json.dumps(c) + "\n")
+            logger.info("Rehydrated %d training cases from Pinecone to local JSONL", len(cases))
+        except Exception as e:
+            logger.warning("Failed to rehydrate local JSONL: %s", e)
+        return cases
     except Exception as e:
-        logger.warning("Failed to read training JSONL: %s", e)
-    return out
+        logger.warning("Pinecone recovery of training cases failed: %s", e)
+        return []
 
 
 def get_training_case(case_id: str) -> dict | None:

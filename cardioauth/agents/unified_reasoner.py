@@ -339,10 +339,12 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
         f"{criteria_json}\n\n"
         f"Produce the JSON output per the system prompt. You MUST include "
         f"a criterion_matches entry for EVERY criterion listed above "
-        f"(that's {len(applicable)} criteria total — return exactly "
-        f"{len(applicable)} entries). Mark irrelevant ones as not_applicable. "
-        f"For each MET criterion, include a verbatim evidence_quote from the "
-        f"raw note."
+        f"(that's {len(applicable_criteria)} criteria total — return exactly "
+        f"{len(applicable_criteria)} entries). For each criterion assign "
+        f"status='met' (if supported by evidence) or 'not_met' (if applicable "
+        f"but not supported). Never 'not_applicable' — the CPT filter already "
+        f"handled applicability. For each MET criterion, include a verbatim "
+        f"evidence_quote from the raw note."
     )
 
 

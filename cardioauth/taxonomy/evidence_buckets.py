@@ -40,12 +40,14 @@ def _extract_lvef(chart: dict) -> dict | None:
                     "source_type": "echocardiogram",
                     "source_date": img.get("date", ""),
                     "raw": img.get("result_summary", "")[:200]}
-        m = re.search(r"(?:lvef|ejection fraction|\bef\b)[\s:]*(?:of)?[\s:]*(\d{1,3})\s*%", text)
+        m = re.search(r"(?:lvef|ejection fraction|\bef\b)[\s:]*(?:of)?[\s:]*(\d{1,3})\s*%?", text)
         if m:
             v = int(m.group(1))
-            return {"value": v, "source_type": "echocardiogram",
-                    "source_date": img.get("date", ""),
-                    "raw": img.get("result_summary", "")[:200]}
+            # Sanity: LVEF is a percentage, so 0-100. Ignore implausible values.
+            if 0 < v <= 100:
+                return {"value": v, "source_type": "echocardiogram",
+                        "source_date": img.get("date", ""),
+                        "raw": img.get("result_summary", "")[:200]}
     return None
 
 
