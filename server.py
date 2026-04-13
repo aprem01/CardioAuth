@@ -1852,22 +1852,52 @@ async def export_for_finetuning(
 
 @app.post("/api/training/seed-peter")
 async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
-    """Seed Peter's 5 validation cases as gold-labeled training cases."""
-    from cardioauth.training import TrainingCase, CriterionLabel, save_training_case
+    """Seed Peter's 5 validation cases as gold-labeled training cases.
 
+    Follows Peter's scoring rules exactly:
+      - Criteria NOT applying to the CPT → excluded from labels (handled by upstream filter)
+      - Criteria APPLYING to the CPT and met by evidence → gold_status='met' with quote
+      - All OTHER applicable criteria → gold_status='not_met' (default, Peter's rule #3)
+
+    Never uses 'not_applicable' for criteria that pass the CPT filter.
+    """
+    from cardioauth.training import TrainingCase, CriterionLabel, save_training_case
+    from cardioauth.taxonomy.taxonomy import get_criteria_for_procedure
+
+    def _make_case(case_id, title, cpt, payer, outcome, score, label, raw_note, met_labels):
+        """Helper — fill in all applicable criteria. Met criteria have quotes,
+        everything else defaults to not_met per Peter's rule #3."""
+        applicable_codes = {c.code for c in get_criteria_for_procedure(cpt, payer)}
+        met_codes = {l.code for l in met_labels}
+        labels = list(met_labels)
+        for code in sorted(applicable_codes - met_codes):
+            labels.append(CriterionLabel(
+                code=code,
+                gold_status="not_met",
+                gold_evidence="",
+                physician_note="Applicable to CPT but evidence not present in note (Peter's rule #3)",
+            ))
+        return TrainingCase(
+            case_id=case_id, title=title,
+            procedure_code=cpt, procedure_name={
+                "78492": "Cardiac Stress PET", "78452": "Lexiscan SPECT",
+                "93458": "Left Heart Catheterization", "33361": "TAVR",
+                "93656": "AF Catheter Ablation",
+            }.get(cpt, cpt),
+            payer=payer, raw_note=raw_note,
+            actual_outcome=outcome, gold_approval_label=label,
+            gold_approval_score=score, criterion_labels=labels,
+            labeled_by=user.id, source="peter-v2",
+        )
+
+
+    # Build the 5 cases using _make_case (auto-fills non-met criteria as not_met)
     PETER_CASES = [
-        # C1 — 68M CAD obesity, cardiac stress PET (approved)
-        TrainingCase(
+        _make_case(
             case_id="PETER-C1",
             title="C1 — 68M CAD + obesity + failed TST (PET)",
-            procedure_code="78492",
-            procedure_name="Cardiac Stress PET",
-            payer="UnitedHealthcare",
-            actual_outcome="approved",
-            gold_approval_label="HIGH",
-            gold_approval_score=0.88,
-            labeled_by=user.id,
-            source="peter-v2",
+            cpt="78492", payer="UnitedHealthcare",
+            outcome="approved", score=0.88, label="HIGH",
             raw_note=(
                 "CARDIOLOGY OFFICE NOTE\n"
                 "67-year-old male with known CAD presents for PA evaluation. Patient reports "
@@ -1876,91 +1906,47 @@ async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[s
                 "Unable to do TST due to dyspnea and obesity (BMI 38). Prior exercise treadmill "
                 "test was non-diagnostic, achieving only 68% of maximum predicted heart rate. "
                 "Active diagnoses: I25.10, R07.89, E11.65, I10. HbA1c 7.8%, BNP 245. "
-                "Normal sinus rhythm. LVEF 55%. "
-                "Clinical indication for pharmacologic stress PET to evaluate ischemic burden "
-                "and guide revascularization strategy."
+                "Normal sinus rhythm. LVEF 55%."
             ),
-            criterion_labels=[
-                CriterionLabel(code="EX-001", gold_status="met",
-                               gold_evidence="Unable to do TST due to dyspnea and obesity"),
-                CriterionLabel(code="BMI-001", gold_status="met",
-                               gold_evidence="BMI 38"),
-                CriterionLabel(code="NDX-002", gold_status="met",
-                               gold_evidence="only 68% of maximum predicted heart rate"),
-                CriterionLabel(code="SX-003", gold_status="met",
-                               gold_evidence="CCS Class III exertional angina"),
-                CriterionLabel(code="SX-004", gold_status="met",
-                               gold_evidence="CCS Class III"),
-                CriterionLabel(code="DOC-001", gold_status="met",
-                               gold_evidence="CARDIOLOGY OFFICE NOTE"),
-                CriterionLabel(code="MED-001", gold_status="met",
-                               gold_evidence="worsening over 3 months despite optimal medical therapy"),
-                CriterionLabel(code="SX-001", gold_status="met",
-                               gold_evidence="worsening over 3 months"),
-                CriterionLabel(code="RISK-002", gold_status="met",
-                               gold_evidence="I25.10, E11.65, I10, HbA1c 7.8%"),
-                CriterionLabel(code="NDX-001", gold_status="met",
-                               gold_evidence="Prior exercise treadmill test was non-diagnostic"),
-                CriterionLabel(code="LVEF-001", gold_status="met",
-                               gold_evidence="LVEF 55%"),
-                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
+            met_labels=[
+                CriterionLabel(code="EX-001", gold_status="met", gold_evidence="Unable to do TST due to dyspnea and obesity"),
+                CriterionLabel(code="BMI-001", gold_status="met", gold_evidence="BMI 38"),
+                CriterionLabel(code="NDX-002", gold_status="met", gold_evidence="only 68% of maximum predicted heart rate"),
+                CriterionLabel(code="SX-003", gold_status="met", gold_evidence="CCS Class III exertional angina"),
+                CriterionLabel(code="SX-004", gold_status="met", gold_evidence="CCS Class III"),
+                CriterionLabel(code="DOC-001", gold_status="met", gold_evidence="CARDIOLOGY OFFICE NOTE"),
+                CriterionLabel(code="MED-001", gold_status="met", gold_evidence="worsening over 3 months despite optimal medical therapy"),
+                CriterionLabel(code="SX-001", gold_status="met", gold_evidence="worsening over 3 months"),
+                CriterionLabel(code="RISK-002", gold_status="met", gold_evidence="I25.10, E11.65, I10, HbA1c 7.8%"),
+                CriterionLabel(code="NDX-001", gold_status="met", gold_evidence="Prior exercise treadmill test was non-diagnostic"),
             ],
         ),
-        # C2 — 72F CAD, attenuation artifact SPECT (approved)
-        TrainingCase(
+        _make_case(
             case_id="PETER-C2",
             title="C2 — 72F CAD + attenuation artifact (PET)",
-            procedure_code="78492",
-            procedure_name="Cardiac Stress PET",
-            payer="Blue Cross Blue Shield",
-            actual_outcome="approved",
-            gold_approval_label="HIGH",
-            gold_approval_score=0.85,
-            labeled_by=user.id,
-            source="peter-v2",
+            cpt="78492", payer="Blue Cross Blue Shield",
+            outcome="approved", score=0.85, label="HIGH",
             raw_note=(
                 "CONSULTATION NOTE\n"
                 "72F with CAD s/p PCI (LAD 2022). Referred for cardiac stress PET. Prior SPECT "
                 "stress test (2025-10-15) showed attenuation artifact in inferior wall, likely "
                 "false positive, rendering it non-diagnostic. Recurrent atypical chest pain, "
                 "CCS Class II angina. BMI 36. On metoprolol 100 daily, clopidogrel, rosuvastatin. "
-                "HbA1c 7.4. LVEF 50-55% by echo. Normal sinus rhythm. "
-                "BMI 36 favors PET over SPECT given prior attenuation issues. "
-                "Office note and H&P documented with full history, exam, and plan."
+                "HbA1c 7.4. LVEF 50-55% by echo. Normal sinus rhythm."
             ),
-            criterion_labels=[
-                CriterionLabel(code="NDX-001", gold_status="met",
-                               gold_evidence="attenuation artifact in inferior wall, likely false positive, rendering it non-diagnostic"),
-                CriterionLabel(code="BMI-001", gold_status="met",
-                               gold_evidence="BMI 36"),
-                CriterionLabel(code="DOC-001", gold_status="met",
-                               gold_evidence="Office note and H&P documented"),
-                CriterionLabel(code="SX-003", gold_status="met",
-                               gold_evidence="Recurrent atypical chest pain, CCS Class II angina"),
-                CriterionLabel(code="SX-004", gold_status="met",
-                               gold_evidence="CCS Class II"),
-                CriterionLabel(code="LVEF-001", gold_status="met",
-                               gold_evidence="LVEF 50-55% by echo"),
-                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
-                CriterionLabel(code="EX-001", gold_status="not_applicable"),
+            met_labels=[
+                CriterionLabel(code="NDX-001", gold_status="met", gold_evidence="attenuation artifact, likely false positive, rendering it non-diagnostic"),
+                CriterionLabel(code="BMI-001", gold_status="met", gold_evidence="BMI 36"),
+                CriterionLabel(code="DOC-001", gold_status="met", gold_evidence="CONSULTATION NOTE"),
+                CriterionLabel(code="SX-003", gold_status="met", gold_evidence="Recurrent atypical chest pain, CCS Class II angina"),
+                CriterionLabel(code="SX-004", gold_status="met", gold_evidence="CCS Class II"),
             ],
         ),
-        # C3 — 65M OA, paced rhythm, Lexiscan SPECT (approved)
-        TrainingCase(
+        _make_case(
             case_id="PETER-C3",
             title="C3 — 65M OA + paced rhythm (Lexiscan SPECT)",
-            procedure_code="78452",
-            procedure_name="Lexiscan SPECT",
-            payer="Blue Cross Blue Shield",
-            actual_outcome="approved",
-            gold_approval_label="HIGH",
-            gold_approval_score=0.86,
-            labeled_by=user.id,
-            source="peter-v2",
+            cpt="78452", payer="Blue Cross Blue Shield",
+            outcome="approved", score=0.86, label="HIGH",
             raw_note=(
                 "OFFICE VISIT NOTE\n"
                 "65M with CAD and severe osteoarthritis of bilateral knees preventing ambulation. "
@@ -1970,37 +1956,19 @@ async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[s
                 "CCS Class II angina. On GDMT (optimal medical therapy) for 8 weeks with "
                 "persistent symptoms. Troponin negative. LVEF 55%."
             ),
-            criterion_labels=[
-                CriterionLabel(code="EX-001", gold_status="met",
-                               gold_evidence="severe osteoarthritis of bilateral knees preventing ambulation. Unable to exercise"),
-                CriterionLabel(code="ECG-002", gold_status="met",
-                               gold_evidence="baseline paced rhythm on ECG (ventricular pacing)"),
-                CriterionLabel(code="DOC-001", gold_status="met",
-                               gold_evidence="OFFICE VISIT NOTE"),
-                CriterionLabel(code="MED-001", gold_status="met",
-                               gold_evidence="On GDMT (optimal medical therapy) for 8 weeks"),
-                CriterionLabel(code="SX-003", gold_status="met",
-                               gold_evidence="CCS Class II angina"),
-                CriterionLabel(code="SX-004", gold_status="met",
-                               gold_evidence="CCS Class II"),
-                CriterionLabel(code="BMI-001", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
-                CriterionLabel(code="NDX-001", gold_status="not_applicable"),
-                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
+            met_labels=[
+                CriterionLabel(code="EX-001", gold_status="met", gold_evidence="severe osteoarthritis preventing ambulation. Unable to exercise"),
+                CriterionLabel(code="ECG-002", gold_status="met", gold_evidence="baseline paced rhythm on ECG (ventricular pacing)"),
+                CriterionLabel(code="DOC-001", gold_status="met", gold_evidence="OFFICE VISIT NOTE"),
+                CriterionLabel(code="SX-003", gold_status="met", gold_evidence="CCS Class II angina"),
+                CriterionLabel(code="SX-004", gold_status="met", gold_evidence="CCS Class II"),
             ],
         ),
-        # C4 — 70F HFpEF, BMI 42, attenuation (approved)
-        TrainingCase(
+        _make_case(
             case_id="PETER-C4",
             title="C4 — 70F HFpEF + BMI 42 + attenuation (PET)",
-            procedure_code="78492",
-            procedure_name="Cardiac Stress PET",
-            payer="Blue Cross Blue Shield",
-            actual_outcome="approved",
-            gold_approval_label="HIGH",
-            gold_approval_score=0.86,
-            labeled_by=user.id,
-            source="peter-v2",
+            cpt="78492", payer="Blue Cross Blue Shield",
+            outcome="approved", score=0.86, label="HIGH",
             raw_note=(
                 "CARDIOLOGY CONSULTATION NOTE\n"
                 "70F morbidly obese (BMI 42) with CAD and HFpEF. Prior SPECT (2025-09-10) "
@@ -2008,46 +1976,24 @@ async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[s
                 "PET strongly favored given BMI. NYHA Class II functional capacity. "
                 "Continuing CCS Class II angina despite maximal medical therapy x 12 weeks "
                 "(carvedilol 12.5 BID, lisinopril, furosemide, metformin). BNP 450. HbA1c 8.2. "
-                "LVEF 55% by TTE (technically limited study due to body habitus). "
-                "Normal sinus rhythm with LVH voltage criteria. Cardiac rehab completed."
+                "LVEF 55% by TTE (technically limited study due to body habitus)."
             ),
-            criterion_labels=[
-                CriterionLabel(code="BMI-001", gold_status="met",
-                               gold_evidence="morbidly obese (BMI 42)"),
-                CriterionLabel(code="NDX-001", gold_status="met",
-                               gold_evidence="Prior SPECT limited by breast attenuation artifact and non-diagnostic"),
-                CriterionLabel(code="NDX-004", gold_status="met",
-                               gold_evidence="TTE technically limited study due to body habitus"),
-                CriterionLabel(code="DOC-001", gold_status="met",
-                               gold_evidence="CARDIOLOGY CONSULTATION NOTE"),
-                CriterionLabel(code="SX-004", gold_status="met",
-                               gold_evidence="NYHA Class II"),
-                CriterionLabel(code="SX-003", gold_status="met",
-                               gold_evidence="CCS Class II angina"),
-                CriterionLabel(code="MED-001", gold_status="met",
-                               gold_evidence="maximal medical therapy x 12 weeks"),
-                CriterionLabel(code="MED-002", gold_status="met",
-                               gold_evidence="maximal medical therapy x 12 weeks"),
-                CriterionLabel(code="LVEF-001", gold_status="met",
-                               gold_evidence="LVEF 55% by TTE"),
-                CriterionLabel(code="LVEF-002", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-001", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
-                CriterionLabel(code="EX-001", gold_status="not_applicable"),
+            met_labels=[
+                CriterionLabel(code="BMI-001", gold_status="met", gold_evidence="morbidly obese (BMI 42)"),
+                CriterionLabel(code="NDX-001", gold_status="met", gold_evidence="Prior SPECT limited by breast attenuation artifact and non-diagnostic"),
+                CriterionLabel(code="NDX-004", gold_status="met", gold_evidence="TTE technically limited study due to body habitus"),
+                CriterionLabel(code="DOC-001", gold_status="met", gold_evidence="CARDIOLOGY CONSULTATION NOTE"),
+                CriterionLabel(code="SX-004", gold_status="met", gold_evidence="NYHA Class II"),
+                CriterionLabel(code="SX-003", gold_status="met", gold_evidence="CCS Class II angina"),
+                CriterionLabel(code="MED-001", gold_status="met", gold_evidence="maximal medical therapy x 12 weeks"),
+                CriterionLabel(code="MED-002", gold_status="met", gold_evidence="maximal medical therapy x 12 weeks"),
             ],
         ),
-        # C5 — 62M ischemic CM, LBBB, LVEF 35% (approved)
-        TrainingCase(
+        _make_case(
             case_id="PETER-C5",
             title="C5 — 62M ischemic CM + LBBB + HFrEF (PET)",
-            procedure_code="78492",
-            procedure_name="Cardiac Stress PET",
-            payer="UnitedHealthcare",
-            actual_outcome="approved",
-            gold_approval_label="HIGH",
-            gold_approval_score=0.90,
-            labeled_by=user.id,
-            source="peter-v2",
+            cpt="78492", payer="UnitedHealthcare",
+            outcome="approved", score=0.90, label="HIGH",
             raw_note=(
                 "CARDIOLOGY OFFICE NOTE — H&P\n"
                 "62M with ischemic cardiomyopathy (LVEF 35% by TTE, global hypokinesis), "
@@ -2055,29 +2001,16 @@ async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[s
                 "(Entresto 49/51 BID, metoprolol succinate 100, empagliflozin 10, spironolactone 25). "
                 "LBBB precludes standard stress ECG interpretation. BNP 680, troponin 0.04. "
                 "Active dx: I25.10, I50.22. Prior PCI to RCA (2020). "
-                "Cardiac stress PET requested to evaluate viable myocardium and ischemic burden."
+                "Cardiac stress PET requested to evaluate viable myocardium."
             ),
-            criterion_labels=[
-                CriterionLabel(code="LVEF-002", gold_status="met",
-                               gold_evidence="LVEF 35% by TTE"),
-                CriterionLabel(code="LVEF-001", gold_status="met",
-                               gold_evidence="LVEF 35% by TTE"),
-                CriterionLabel(code="ECG-001", gold_status="met",
-                               gold_evidence="LBBB on baseline ECG. LBBB precludes standard stress ECG interpretation"),
-                CriterionLabel(code="SX-004", gold_status="met",
-                               gold_evidence="NYHA Class III"),
-                CriterionLabel(code="MED-001", gold_status="met",
-                               gold_evidence="maximal GDMT x 6 months"),
-                CriterionLabel(code="MED-002", gold_status="met",
-                               gold_evidence="maximal GDMT x 6 months"),
-                CriterionLabel(code="DOC-001", gold_status="met",
-                               gold_evidence="CARDIOLOGY OFFICE NOTE — H&P"),
-                CriterionLabel(code="SX-001", gold_status="met",
-                               gold_evidence="despite maximal GDMT x 6 months"),
-                CriterionLabel(code="BMI-001", gold_status="not_applicable"),
-                CriterionLabel(code="ECG-002", gold_status="not_applicable"),
-                CriterionLabel(code="EX-001", gold_status="not_applicable"),
-                CriterionLabel(code="NDX-001", gold_status="not_applicable"),
+            met_labels=[
+                CriterionLabel(code="LVEF-002", gold_status="met", gold_evidence="LVEF 35% by TTE"),
+                CriterionLabel(code="ECG-001", gold_status="met", gold_evidence="LBBB on baseline ECG. LBBB precludes standard stress ECG interpretation"),
+                CriterionLabel(code="SX-004", gold_status="met", gold_evidence="NYHA Class III"),
+                CriterionLabel(code="MED-001", gold_status="met", gold_evidence="maximal GDMT x 6 months"),
+                CriterionLabel(code="MED-002", gold_status="met", gold_evidence="maximal GDMT x 6 months"),
+                CriterionLabel(code="DOC-001", gold_status="met", gold_evidence="CARDIOLOGY OFFICE NOTE — H&P"),
+                CriterionLabel(code="SX-001", gold_status="met", gold_evidence="despite maximal GDMT x 6 months"),
             ],
         ),
     ]
@@ -2087,7 +2020,7 @@ async def seed_peter_cases(user: AuthUser = Depends(get_current_user)) -> dict[s
         if save_training_case(case):
             saved += 1
 
-    log_audit(user, "seed_peter", f"saved {saved}/5 cases")
+    log_audit(user, "seed_peter", f"saved {saved}/5 cases (with CPT-gated auto-fill)")
     return {"status": "ok", "saved": saved, "total": len(PETER_CASES)}
 
 
