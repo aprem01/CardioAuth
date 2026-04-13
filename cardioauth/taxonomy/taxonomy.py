@@ -10,6 +10,21 @@ TAXONOMY_VERSION = "1.0.0"
 
 
 @dataclass
+class RequiredElement:
+    """One atomic fact that must be documented for a criterion to be 'met'.
+
+    Introduced after Peter's Apr 13 feedback: the reasoner was treating
+    "feature present" as "criterion satisfied" when the definition actually
+    required multiple elements (e.g., MED-002 needs med name AND start date
+    AND ≥6-week duration). Breaking each criterion into explicit elements
+    lets us enforce conjunctive completeness deterministically.
+    """
+    key: str                    # e.g. "trial_duration_gte_6wk"
+    description: str            # Human-readable — what evidence satisfies it
+    evidence_hint: str = ""     # Where to look in the note (free text)
+
+
+@dataclass
 class Criterion:
     """A single coded clinical criterion."""
     code: str
@@ -22,6 +37,10 @@ class Criterion:
     guideline_source: str = ""
     severity: Literal["required", "supporting"] = "required"
     introduced_version: str = "1.0.0"
+    # All elements must be explicitly documented for the criterion to be 'met'.
+    # Empty list = legacy behavior (single-feature check). Populate for any
+    # criterion whose definition has multiple conjunctive requirements.
+    required_elements: list[RequiredElement] = field(default_factory=list)
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -105,6 +124,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "78452", "78451", "75557", "75574", "93306", "93350"],
         guideline_source="Multi-payer common requirement; ACC AUC",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="symptom_documented",
+                description="A specific symptom (angina, dyspnea, syncope, etc.) is named",
+                evidence_hint="Look in HPI / chief complaint / assessment",
+            ),
+            RequiredElement(
+                key="change_vs_baseline",
+                description="Explicit statement of change vs. prior state — 'new', 'worsening', 'progressed', 'increased frequency', or comparison to a prior specific state. 'No new complaints' or single fleeting episode without comparison does NOT satisfy.",
+                evidence_hint="Look for 'new', 'worsening', 'progression', 'change from baseline', or direct comparison to a prior visit/imaging",
+            ),
+        ],
     ),
     "SX-002": Criterion(
         code="SX-002",
@@ -115,6 +146,23 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "93458", "93656"],
         guideline_source="Payer documentation standard",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="onset",
+                description="Specific onset documented — a date, duration, or relative timing ('X weeks ago', 'since March', 'over 3 months')",
+                evidence_hint="Look for temporal anchors near the symptom mention",
+            ),
+            RequiredElement(
+                key="frequency",
+                description="How often symptoms occur — 'daily', 'weekly', 'with every flight of stairs', 'episodic'",
+                evidence_hint="Look for frequency descriptors",
+            ),
+            RequiredElement(
+                key="progression_or_character",
+                description="Progression pattern (stable / worsening / improving) OR character (typical / atypical / exertional / rest)",
+                evidence_hint="Look for progression or character language",
+            ),
+        ],
     ),
     "SX-003": Criterion(
         code="SX-003",
@@ -147,6 +195,23 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["93458", "92928", "33361"],
         guideline_source="ACC/AHA CCS / HF / Valvular Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="gdmt_medications_listed",
+                description="Specific guideline-directed medications named (beta blocker, ACE/ARB, statin, nitrate, etc.)",
+                evidence_hint="Medication list or narrative",
+            ),
+            RequiredElement(
+                key="maximal_or_tolerated_dose",
+                description="Explicit statement of 'maximally tolerated', 'max-dose', 'titrated to max', OR specific dose at/near guideline max",
+                evidence_hint="Look for titration language or specific doses",
+            ),
+            RequiredElement(
+                key="persistent_symptoms_or_progression",
+                description="Documented persistent symptoms or disease progression despite therapy",
+                evidence_hint="Assessment / plan",
+            ),
+        ],
     ),
     "MED-002": Criterion(
         code="MED-002",
@@ -157,6 +222,23 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["93458", "78492"],
         guideline_source="UnitedHealthcare Commercial Medical Policy",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="medication_name",
+                description="Specific medication name (generic or brand) listed",
+                evidence_hint="Medication list",
+            ),
+            RequiredElement(
+                key="dose",
+                description="Specific dose documented (e.g. 'metoprolol 50 mg BID')",
+                evidence_hint="Medication list dose field",
+            ),
+            RequiredElement(
+                key="start_date_or_duration",
+                description="Start date documented OR explicit duration of therapy ≥ 6 weeks ('started Jan 2024', 'on therapy for 8 weeks', 'x 6 weeks'). Presence of a medication in a list WITHOUT duration does NOT satisfy.",
+                evidence_hint="Start date, 'since', 'x N weeks', 'for N months'",
+            ),
+        ],
     ),
     "MED-003": Criterion(
         code="MED-003",
@@ -363,6 +445,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "78452", "78451"],  # Pharmacologic PET + SPECT both
         guideline_source="Multi-payer pharmacologic stress requirement",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="specific_limiting_condition",
+                description="Specific diagnosis or physical barrier named (severe OA, peripheral neuropathy, COPD, dyspnea + obesity, etc.)",
+                evidence_hint="Problem list / HPI / assessment",
+            ),
+            RequiredElement(
+                key="explicit_causal_link_to_exercise",
+                description="Explicit causal statement: 'unable to exercise due to X', 'cannot perform TST because of X', 'exercise limited by X'. Symptom presence (e.g. dyspnea on exertion) alone does NOT satisfy — the chart must link it to inability to perform the stress test.",
+                evidence_hint="Look for 'unable to', 'cannot', 'precludes', 'prevents', 'limits' + exercise/stress",
+            ),
+        ],
     ),
 
     # ── Guideline appropriate use criteria (GUI) ──

@@ -169,8 +169,10 @@ to this procedure.
 
 Rules for the final classification of each criterion in the list:
 
-  - "met" — clearly supported by verbatim evidence in the note
-  - "not_met" — applicable but the note lacks sufficient documentation
+  - "met" — clearly supported by verbatim evidence in the note AND every
+            required_element (if any) has a verbatim quote satisfying it
+  - "not_met" — applicable but the note lacks sufficient documentation,
+                OR one or more required_elements lack evidence
                 (this is the DEFAULT when evidence is absent or ambiguous)
 
 You MUST return exactly one criterion_matches entry for each criterion in
@@ -179,6 +181,53 @@ the provided CRITERIA TO EVALUATE list. Do not skip any. Do not use
 
 If you're not sure whether a criterion is met, default to "not_met" and
 state what additional documentation would be required.
+
+═══════════════════════════════════════════════════════════════════════════
+DEFINITIONAL COMPLETENESS — NEW STRICT RULE (Apr 13, 2026)
+═══════════════════════════════════════════════════════════════════════════
+
+Each criterion may include `required_elements`. These are atomic facts
+that must ALL be documented for the criterion to qualify as "met".
+Presence of ONE element does NOT satisfy the criterion — you must find
+evidence for EVERY required_element.
+
+For each criterion with required_elements, you MUST return per-element
+findings in `elements_satisfied`:
+
+  {
+    "key": "<the element key>",
+    "found": true | false,
+    "evidence_quote": "<verbatim <=15-word quote from note if found, else empty>"
+  }
+
+Enforcement rule (the system will also deterministically enforce this
+after you respond — but you should apply it yourself first):
+
+  If ANY required_element has found=false, the criterion's status MUST be
+  "not_met". Do not mark met unless every element is found with a quote.
+
+Failure patterns to avoid (Peter's Apr 13 cases):
+
+  ✗ MED-002: medication list shown, no start date or duration documented
+    → INCORRECT to mark met. "start_date_or_duration" element is NOT found.
+    → Correct: not_met, gap="No start date or duration ≥6 weeks documented"
+
+  ✗ SX-001 (repeat imaging): symptoms described but no comparison to
+    baseline, or explicit "no new complaints"
+    → INCORRECT to mark met. "change_vs_baseline" element is NOT found.
+    → Correct: not_met, gap="No explicit new/worsening change vs baseline"
+
+  ✗ SX-002: symptoms mentioned, no onset date / frequency / progression
+    → INCORRECT to mark met. Any missing element = not_met.
+
+  ✗ EX-001: "dyspnea on exertion" noted, no explicit statement linking it
+    to inability to perform stress testing
+    → INCORRECT to mark met. "explicit_causal_link_to_exercise" NOT found.
+    → Correct: not_met, gap="Dyspnea documented but no explicit link to
+       inability to exercise / perform TST"
+
+Rule of thumb: if you would have to INFER one of the required_elements
+rather than quote it, the element is NOT found.
 
 Examples of WRONG behavior (do not do this):
 
@@ -201,7 +250,11 @@ OUTPUT FORMAT — JSON ONLY, no markdown fences:
       "evidence_quote": "Unable to do TST due to dyspnea and obesity",
       "reasoning": "Documented inability to exercise due to specific medical limitations (dyspnea + obesity). Directly justifies pharmacologic stress imaging.",
       "gap": "",
-      "recommendation": ""
+      "recommendation": "",
+      "elements_satisfied": [
+        {"key": "specific_limiting_condition", "found": true, "evidence_quote": "dyspnea and obesity"},
+        {"key": "explicit_causal_link_to_exercise", "found": true, "evidence_quote": "Unable to do TST due to"}
+      ]
     }
   ],
   "narrative_draft": "Full PA narrative (400-600 words) with clinical rationale, evidence citations, and guideline references.",
@@ -219,7 +272,10 @@ OUTPUT FORMAT — JSON ONLY, no markdown fences:
 def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
     """Build the user message with full clinical context."""
 
-    # Format the taxonomy as a structured list
+    # Format the taxonomy as a structured list, including required_elements so
+    # the reasoner must verify each element independently before marking met.
+    # This addresses Peter's Apr 13 feedback: presence of a feature was being
+    # treated as satisfaction of the full definition.
     criteria_json = json.dumps([
         {
             "code": c.code,
@@ -228,6 +284,14 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
             "definition": c.definition,
             "evidence_type": c.evidence_type,
             "severity": c.severity,
+            "required_elements": [
+                {
+                    "key": e.key,
+                    "description": e.description,
+                    "evidence_hint": e.evidence_hint,
+                }
+                for e in (c.required_elements or [])
+            ],
         }
         for c in applicable_criteria
     ], indent=2)
@@ -500,6 +564,49 @@ def _compute_approval_score(matches: list[dict], applicable: list) -> float:
     return round(min(1.0, base + boost), 2)
 
 
+def _enforce_element_completeness(entry: dict, crit) -> dict:
+    """Enforce that all required_elements are found with evidence.
+
+    If the criterion has required_elements and any is missing, force
+    status=not_met regardless of what the LLM decided. Backs Peter's
+    Apr 13 feedback: the LLM was marking criteria met when only part
+    of the definition was documented.
+    """
+    required = getattr(crit, "required_elements", None) or []
+    if not required:
+        return entry
+
+    reported = {e.get("key"): e for e in (entry.get("elements_satisfied") or [])}
+    missing_keys: list[str] = []
+    missing_descriptions: list[str] = []
+
+    for re in required:
+        elem = reported.get(re.key)
+        if not elem or not elem.get("found"):
+            missing_keys.append(re.key)
+            missing_descriptions.append(f"{re.key}: {re.description}")
+
+    if missing_keys and entry.get("status") == "met":
+        # Force not_met — presence of one element is not satisfaction
+        entry["status"] = "not_met"
+        prev_enforced = entry.get("_enforced", "")
+        entry["_enforced"] = (prev_enforced + ";" if prev_enforced else "") + "element_incomplete"
+        existing_gap = entry.get("gap", "") or ""
+        extra_gap = (
+            f"Definitional completeness not met — missing elements: "
+            f"{', '.join(missing_keys)}. Need: {' | '.join(missing_descriptions)}"
+        )
+        entry["gap"] = (existing_gap + " " + extra_gap).strip() if existing_gap else extra_gap
+        if not entry.get("recommendation"):
+            entry["recommendation"] = (
+                f"Document the missing elements explicitly in the note: {', '.join(missing_keys)}"
+            )
+
+    # Surface the element-level verdict for the audit trail
+    entry["_missing_elements"] = missing_keys
+    return entry
+
+
 def _enforce_cpt_gating(raw_matches: list[dict], applicable: list) -> list[dict]:
     """Enforce Peter's rules deterministically:
 
@@ -507,9 +614,8 @@ def _enforce_cpt_gating(raw_matches: list[dict], applicable: list) -> list[dict]
     2. Applicable criteria cannot be marked "not_applicable" — coerce to "not_met"
     3. If the LLM didn't return a criterion, synthesize a "not_met" entry
     4. Normalize status values (accept "met"/"MET"/"Met" → "met")
-
-    This is the post-processing fix for the "14 missing" / "sometimes n/a"
-    pattern Peter documented.
+    5. Definitional completeness: if any required_element lacks evidence,
+       force status=not_met (Apr 13 fix)
     """
     applicable_codes = {c.code for c in applicable}
     crit_by_code = {c.code: c for c in applicable}
@@ -538,6 +644,7 @@ def _enforce_cpt_gating(raw_matches: list[dict], applicable: list) -> list[dict]
                 "gap": crit.definition if hasattr(crit, "definition") else "Evidence required",
                 "recommendation": f"Document evidence satisfying {code}: {crit.short_name}" if hasattr(crit, "short_name") else "",
                 "_enforced": "missing_filled",
+                "_missing_elements": [e.key for e in (crit.required_elements or [])],
             })
             continue
 
@@ -552,12 +659,14 @@ def _enforce_cpt_gating(raw_matches: list[dict], applicable: list) -> list[dict]
             # Preserve any evidence the LLM provided
             if not enforced_entry.get("gap"):
                 enforced_entry["gap"] = enforced_entry.get("reasoning", "")[:200] or "Applicable to CPT but no supporting evidence"
+            enforced_entry = _enforce_element_completeness(enforced_entry, crit)
             enforced.append(enforced_entry)
             continue
 
-        # Accepted status — normalize back
+        # Accepted status — normalize back, then enforce element completeness
         enforced_entry = dict(llm_entry)
         enforced_entry["status"] = status
+        enforced_entry = _enforce_element_completeness(enforced_entry, crit)
         enforced.append(enforced_entry)
 
     return enforced

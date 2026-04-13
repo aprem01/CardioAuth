@@ -41,6 +41,10 @@ class CriterionTrailEntry:
     final_status: str = "unknown"
     drop_reason: str = ""
     flags: list[str] = field(default_factory=list)
+    # Element-level detail (Apr 13 fix): per-element found/not-found verdicts
+    # so a cardiologist can see exactly which part of the definition is missing.
+    elements_satisfied: list[dict] = field(default_factory=list)
+    missing_elements: list[str] = field(default_factory=list)
 
     def mark(self, stage: AuditStage) -> None:
         if stage not in self.stages_passed:
@@ -179,6 +183,11 @@ def build_audit_trail(
             if match.get("_enforced"):
                 entry.mark("cpt_gating_fill")
                 entry.flags.append(f"enforced:{match.get('_enforced')}")
+            # Element-level detail: capture per-element verdicts from reasoner
+            entry.elements_satisfied = list(match.get("elements_satisfied") or [])
+            entry.missing_elements = list(match.get("_missing_elements") or [])
+            if entry.missing_elements:
+                entry.flags.append("element_incomplete")
         else:
             entry.final_status = "dropped"
             entry.drop_reason = "Reasoner returned no match — silently skipped without enforcer"
@@ -217,6 +226,8 @@ def trail_to_dict(entries: list[CriterionTrailEntry]) -> list[dict]:
             "final_status": e.final_status,
             "drop_reason": e.drop_reason,
             "flags": e.flags,
+            "elements_satisfied": e.elements_satisfied,
+            "missing_elements": e.missing_elements,
         }
         for e in entries
     ]
