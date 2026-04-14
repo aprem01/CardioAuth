@@ -752,6 +752,9 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         ),
         "criterion_audit_trail": criterion_audit_trail,
         "validation_reports": validation_reports,
+        "payer_stats": getattr(policy_data, "__dict__", {}).get("_payer_stats"),
+        "payer_global_rules": getattr(policy_data, "__dict__", {}).get("_payer_global_rules", []),
+        "policy_freshness": getattr(policy_data, "__dict__", {}).get("_freshness"),
     }
 
 
@@ -1152,6 +1155,61 @@ def rag_delete(req: DeleteChunksRequest) -> dict[str, Any]:
 
 
 # ─────────────────────────── Taxonomy API ───────────────────────────
+
+
+@app.get("/api/stats/payer")
+def get_payer_stats_endpoint(payer: str, cpt_code: str) -> dict[str, Any]:
+    """Historical approval rate, denial reasons, P2P + appeal rates for a (payer, CPT)."""
+    from cardioauth.stats import get_payer_stats, get_global_rules
+    stats = get_payer_stats(payer, cpt_code)
+    rules = [r.to_dict() for r in get_global_rules(payer)]
+    return {
+        "payer": payer,
+        "cpt_code": cpt_code,
+        "stats": stats.to_dict() if stats else None,
+        "global_rules": rules,
+    }
+
+
+@app.get("/api/stats/payer/all")
+def list_all_payer_stats() -> dict[str, Any]:
+    """Return every seeded (payer, CPT) statistics entry — for admin views."""
+    from cardioauth.stats import list_payer_stats
+    return {"stats": [s.to_dict() for s in list_payer_stats()]}
+
+
+class ValidationRunRequest(BaseModel):
+    cases: list[dict]   # LabeledCase dicts — case_id, procedure_code, payer_name, raw_note, gold_outcome, gold_criterion_labels
+
+
+@app.post("/api/validation/run")
+def run_validation(req: ValidationRunRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Run a batch of labeled cases and return a calibration report.
+
+    Response includes sensitivity, specificity, PPV, NPV, per-criterion accuracy,
+    calibration curve, silent-drop rate, and per-case detail.
+    """
+    log_audit(user, "run_validation", f"n={len(req.cases)}")
+    from cardioauth.validation_harness import LabeledCase, run_validation_batch
+
+    cases = []
+    for c in req.cases:
+        try:
+            cases.append(LabeledCase(
+                case_id=c["case_id"],
+                procedure_code=c["procedure_code"],
+                procedure_name=c.get("procedure_name", c["procedure_code"]),
+                payer_name=c["payer_name"],
+                raw_note=c["raw_note"],
+                gold_outcome=c["gold_outcome"],
+                gold_criterion_labels=c.get("gold_criterion_labels", {}),
+                chart_data=c.get("chart_data", {}),
+            ))
+        except KeyError as e:
+            raise HTTPException(status_code=400, detail=f"missing field {e} in case {c.get('case_id', '?')}")
+
+    report = run_validation_batch(cases, config)
+    return report.to_dict()
 
 
 @app.get("/api/taxonomy")

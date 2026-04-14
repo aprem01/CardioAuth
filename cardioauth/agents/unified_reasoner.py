@@ -325,6 +325,54 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
             if isinstance(crit, dict):
                 policy_text += f"  - {crit.get('criterion', '')}\n"
 
+    # ── Calibration layer — P2 stats + payer-global rules + freshness ──
+    # Historical approval rates anchor the score. Denial patterns are things
+    # the narrative should address preemptively. Global rules are cross-CPT
+    # gotchas (in-network ordering, eligibility re-verification, etc.).
+    calibration_text = ""
+    from cardioauth.stats import check_policy_freshness, get_global_rules, get_payer_stats
+    stats = get_payer_stats(ctx.payer_name, ctx.procedure_code)
+    if stats:
+        calibration_text += (
+            f"\n\nHISTORICAL PAYER STATISTICS ({ctx.payer_name} / {ctx.procedure_code}, "
+            f"n={stats.sample_size}, vintage={stats.data_vintage}):\n"
+            f"  First-pass approval rate: {stats.approval_rate:.0%}\n"
+        )
+        if stats.p2p_success_rate is not None:
+            calibration_text += f"  Peer-to-peer overturn rate: {stats.p2p_success_rate:.0%}\n"
+        if stats.appeal_win_rate is not None:
+            calibration_text += f"  Appeal win rate: {stats.appeal_win_rate:.0%}\n"
+        if stats.top_denial_reasons:
+            calibration_text += "  Top historical denial reasons (address these in the narrative):\n"
+            for reason in stats.top_denial_reasons[:5]:
+                calibration_text += f"    - {reason}\n"
+        calibration_text += (
+            f"\nCalibration hint: when documentation aligns with what this payer\n"
+            f"historically approves for this CPT, use {stats.approval_rate:.0%} as an\n"
+            f"anchor; adjust up if the case is strong on all required criteria, adjust\n"
+            f"down if any historical denial reason is present.\n"
+        )
+
+    global_rules = get_global_rules(ctx.payer_name)
+    if global_rules:
+        calibration_text += f"\nPAYER-GLOBAL RULES ({ctx.payer_name} — apply across every CPT):\n"
+        for rule in global_rules:
+            marker = "⚠" if rule.denial_if_missed else "•"
+            calibration_text += f"  {marker} [{rule.rule_id} / {rule.kind}] {rule.description}\n"
+        calibration_text += (
+            "\nIf any global rule is not addressable from the chart, add it to\n"
+            "cardiologist_review_flags so the physician can verify before submission.\n"
+        )
+
+    if ctx.policy_data:
+        freshness = check_policy_freshness(ctx.policy_data.get("policy_last_updated"))
+        if freshness.level == "stale_critical":
+            calibration_text += f"\n⚠ POLICY FRESHNESS: {freshness.message} Flag this for human review.\n"
+        elif freshness.level == "stale_warning":
+            calibration_text += f"\nPOLICY FRESHNESS: {freshness.message}\n"
+        elif freshness.level == "unknown":
+            calibration_text += f"\nPOLICY FRESHNESS: {freshness.message}\n"
+
     # Gold-standard training cases — retrieved by SEMANTIC SIMILARITY (Pathway 3)
     training_examples_text = ""
     try:
@@ -398,6 +446,7 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
         f"{precedents_text}"
         f"{training_examples_text}"
         f"{policy_text}"
+        f"{calibration_text}"
         f"{corrections_text}\n\n"
         f"CRITERIA TO EVALUATE (evaluate each against the raw note above):\n"
         f"{criteria_json}\n\n"

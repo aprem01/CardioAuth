@@ -217,6 +217,25 @@ class PolicyAgent:
         policy.__dict__["_retrieved_chunks"] = [r.to_dict() for r in results]
         policy.__dict__["_criterion_citations"] = criteria_with_citations
 
+        # ── Attach calibration layer (P2 stats + global rules + freshness) ──
+        # These surface to the reasoner prompt and to the API response.
+        from cardioauth.stats import (
+            check_policy_freshness,
+            get_global_rules,
+            get_payer_stats,
+        )
+        stats = get_payer_stats(payer_name, procedure_code)
+        policy.__dict__["_payer_stats"] = stats.to_dict() if stats else None
+        policy.__dict__["_payer_global_rules"] = [r.to_dict() for r in get_global_rules(payer_name)]
+        freshness = check_policy_freshness(policy.policy_last_updated)
+        policy.__dict__["_freshness"] = {
+            "level": freshness.level,
+            "age_days": freshness.age_days,
+            "message": freshness.message,
+        }
+        if freshness.level in ("stale_warning", "stale_critical"):
+            logger.warning("POLICY_AGENT: %s", freshness.message)
+
         if policy.auth_required is None:
             logger.warning("POLICY_AGENT: auth_required unknown for %s / %s", procedure_code, payer_name)
 

@@ -85,6 +85,11 @@ class ReviewPackage:
     # Validation reports from each agent boundary (policy_agent_output, reasoner_output, ...).
     # Each entry shows expected vs received codes and any missing/unknown flags.
     validation_reports: list[dict] = field(default_factory=list)
+    # Calibration layer (Tier 4 quality): historical stats, cross-CPT rules,
+    # policy freshness. Populated from POLICY_AGENT side-band metadata.
+    payer_stats: dict | None = None
+    payer_global_rules: list[dict] = field(default_factory=list)
+    policy_freshness: dict | None = None
 
 
 class Orchestrator:
@@ -269,6 +274,40 @@ class Orchestrator:
             len(system_warnings),
         )
 
+        # Pull calibration metadata out of policy_data side-band attrs.
+        # Fall back to direct lookup when POLICY_AGENT didn't run (demo path
+        # or agent failure) — stats/rules are hand-curated so always available.
+        payer_stats = policy_data.__dict__.get("_payer_stats") if policy_data else None
+        payer_global_rules = policy_data.__dict__.get("_payer_global_rules", []) if policy_data else []
+        policy_freshness = policy_data.__dict__.get("_freshness") if policy_data else None
+
+        if payer_stats is None or not payer_global_rules or policy_freshness is None:
+            try:
+                from cardioauth.stats import (
+                    check_policy_freshness,
+                    get_global_rules,
+                    get_payer_stats,
+                )
+                if payer_stats is None:
+                    s = get_payer_stats(payer_name, procedure_code)
+                    payer_stats = s.to_dict() if s else None
+                if not payer_global_rules:
+                    payer_global_rules = [r.to_dict() for r in get_global_rules(payer_name)]
+                if policy_freshness is None:
+                    f = check_policy_freshness(
+                        getattr(policy_data, "policy_last_updated", "") if policy_data else "",
+                    )
+                    policy_freshness = {"level": f.level, "age_days": f.age_days, "message": f.message}
+            except Exception as e:
+                logger.warning("Calibration metadata fallback failed: %s", e)
+
+        # Surface stale-policy + missing-global-rule signals as human flags
+        if policy_freshness and policy_freshness.get("level") == "stale_critical":
+            requires_human_action.append(
+                f"Policy is {policy_freshness.get('age_days')} days old (stale). "
+                f"Re-verify current payer policy before submission."
+            )
+
         return ReviewPackage(
             chart_data=chart_data,
             policy_data=policy_data,
@@ -280,6 +319,9 @@ class Orchestrator:
             criterion_citations=criterion_citations,
             criterion_audit_trail=audit_trail_dict,
             validation_reports=validation_reports,
+            payer_stats=payer_stats,
+            payer_global_rules=payer_global_rules,
+            policy_freshness=policy_freshness,
         )
 
     def _run_policy_agent(
