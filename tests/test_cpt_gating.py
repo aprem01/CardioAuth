@@ -91,19 +91,27 @@ def test_enforcer_coerces_garbage_status_to_not_met():
 
 
 def test_enforcer_preserves_met_entries():
-    """If LLM returned met with good evidence, keep it."""
+    """If LLM returned met with all required_elements satisfied, keep it."""
     applicable = _criteria_for("78492")
-    code = applicable[0].code
+    crit = applicable[0]
+    # Provide elements_satisfied for every required_element so completeness enforcer
+    # doesn't flip this to not_met (Apr 13 element-completeness rule)
+    elements_satisfied = [
+        {"key": re.key, "found": True, "evidence_quote": "verbatim"}
+        for re in crit.required_elements
+    ]
     llm_output = [
-        {"code": code, "status": "met", "evidence_quote": "solid evidence",
-         "confidence": 0.9, "reasoning": "clearly met"},
+        {"code": crit.code, "status": "met", "evidence_quote": "solid evidence",
+         "confidence": 0.9, "reasoning": "clearly met",
+         "elements_satisfied": elements_satisfied},
     ]
     result = _enforce_cpt_gating(llm_output, applicable)
-    target = next(r for r in result if r["code"] == code)
+    target = next(r for r in result if r["code"] == crit.code)
     assert target["status"] == "met"
     assert target["evidence_quote"] == "solid evidence"
     assert target.get("confidence") == 0.9
-    assert "_enforced" not in target
+    # _missing_elements should be empty when all satisfied
+    assert target.get("_missing_elements", []) == []
 
 
 def test_enforcer_preserves_not_met_entries():
@@ -119,12 +127,17 @@ def test_enforcer_preserves_not_met_entries():
 
 
 def test_enforcer_normalizes_case():
-    """Accept 'MET' or 'Met' → 'met'."""
+    """Accept 'MET' or 'Met' → 'met' when elements are fully satisfied."""
     applicable = _criteria_for("78492")
-    code = applicable[0].code
-    llm_output = [{"code": code, "status": "MET", "evidence_quote": "x"}]
+    crit = applicable[0]
+    elements_satisfied = [
+        {"key": re.key, "found": True, "evidence_quote": "verbatim"}
+        for re in crit.required_elements
+    ]
+    llm_output = [{"code": crit.code, "status": "MET", "evidence_quote": "x",
+                   "elements_satisfied": elements_satisfied}]
     result = _enforce_cpt_gating(llm_output, applicable)
-    target = next(r for r in result if r["code"] == code)
+    target = next(r for r in result if r["code"] == crit.code)
     assert target["status"] == "met"
 
 

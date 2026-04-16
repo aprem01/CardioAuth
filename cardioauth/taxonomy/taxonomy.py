@@ -82,6 +82,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "78452", "78451", "75557", "75574"],
         guideline_source="ACC/ASNC AUC for Cardiac Radionuclide Imaging",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="prior_stress_modality_named",
+                description="Specific prior stress modality documented (ETT, SPECT, stress echo, stress MRI)",
+                evidence_hint="Imaging list",
+            ),
+            RequiredElement(
+                key="explicit_nondiagnostic_finding",
+                description="Interpretation explicitly states 'non-diagnostic', 'equivocal', 'technically limited', 'attenuation artifact', 'suboptimal', or 'false positive'. A normal or abnormal result alone does NOT satisfy.",
+                evidence_hint="Read the impression line of the stress test report",
+            ),
+        ],
     ),
     "NDX-002": Criterion(
         code="NDX-002",
@@ -92,6 +104,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "78451"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="ett_performed",
+                description="Exercise treadmill / bicycle stress test was attempted",
+                evidence_hint="Stress test report",
+            ),
+            RequiredElement(
+                key="hr_below_85_pct_mphr",
+                description="Documented percent of maximum predicted heart rate < 85% (e.g. '68% MPHR', 'submaximal HR response'). A general 'poor exercise tolerance' does NOT satisfy.",
+                evidence_hint="Numeric %MPHR in the stress report",
+            ),
+        ],
     ),
     "NDX-003": Criterion(
         code="NDX-003",
@@ -102,6 +126,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="prior_ett_done",
+                description="Prior exercise treadmill test reported",
+                evidence_hint="Stress test history",
+            ),
+            RequiredElement(
+                key="equivocal_st_language",
+                description="Impression uses 'equivocal', 'non-specific ST changes', 'borderline', or 'indeterminate ST segments'. A clearly positive or clearly negative ETT does NOT satisfy.",
+                evidence_hint="ETT impression line",
+            ),
+        ],
     ),
     "NDX-004": Criterion(
         code="NDX-004",
@@ -112,6 +148,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "75557", "75574"],
         guideline_source="ACC AUC for Echocardiography",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="prior_echo_performed",
+                description="Prior TTE or stress echocardiogram documented",
+                evidence_hint="Imaging list",
+            ),
+            RequiredElement(
+                key="technical_limitation_stated",
+                description="Explicit language: 'technically limited', 'suboptimal acoustic windows', 'poor image quality', 'body habitus limited'. A normal echo does NOT satisfy.",
+                evidence_hint="Echo report technical quality note",
+            ),
+        ],
     ),
 
     # ── Symptom characterization and timeline (SX) ──
@@ -173,6 +221,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "93458"],
         guideline_source="ACC/AHA CCS Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="symptom_named",
+                description="Specific symptom named (chest pain, dyspnea, angina, jaw pain, arm pain, anginal equivalent)",
+                evidence_hint="HPI",
+            ),
+            RequiredElement(
+                key="symptom_characterization",
+                description="Characterization present — typical / atypical, exertional / rest, or duration. 'Chest pain' alone without any descriptor does NOT satisfy.",
+                evidence_hint="Descriptors in HPI or assessment",
+            ),
+        ],
     ),
     "SX-004": Criterion(
         code="SX-004",
@@ -183,6 +243,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "33361", "93656", "93458"],
         guideline_source="ACC/AHA Clinical Practice Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="validated_scale_used",
+                description="A named validated scale — NYHA, CCS, EHRA, or equivalent — explicitly cited",
+                evidence_hint="Look for 'NYHA Class', 'CCS Class', 'EHRA'",
+            ),
+            RequiredElement(
+                key="specific_class_value",
+                description="A specific class/grade value (I, II, III, IV or 1–4). 'Symptomatic' without a numeric class does NOT satisfy.",
+                evidence_hint="Look for roman numerals or numeric grades after the scale",
+            ),
+        ],
     ),
 
     # ── Failed or maximal medical therapy (MED) ──
@@ -249,6 +321,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["93656"],
         guideline_source="ACC/AHA/HRS AF Guidelines; HRS ablation criteria",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="class_I_or_III_drug_named",
+                description="Specific Class I (flecainide, propafenone) or Class III (amiodarone, sotalol, dofetilide, dronedarone) agent named",
+                evidence_hint="Medication list / HPI",
+            ),
+            RequiredElement(
+                key="failure_or_intolerance_documented",
+                description="Explicit language: 'failed', 'persistent AF despite', 'intolerance', 'adverse effect', or 'discontinued due to'. Simply discontinuing a drug does NOT satisfy without a reason.",
+                evidence_hint="Assessment / plan",
+            ),
+        ],
     ),
 
     # ── BMI / body habitus (BMI) ──
@@ -261,6 +345,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491"],
         guideline_source="ACC/ASNC AUC for Cardiac Radionuclide Imaging",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="bmi_value_documented",
+                description="Specific numeric BMI value documented (e.g. 'BMI 38'). 'Obese' or 'morbidly obese' alone does NOT satisfy — need the number.",
+                evidence_hint="Demographics / problem list",
+            ),
+            RequiredElement(
+                key="bmi_at_or_above_35",
+                description="Numeric value is ≥ 35. BMI < 35 does NOT satisfy regardless of any narrative.",
+                evidence_hint="Compare the extracted BMI to the 35 threshold",
+            ),
+        ],
     ),
     "BMI-002": Criterion(
         code="BMI-002",
@@ -271,6 +367,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492"],
         guideline_source="Payer-specific PET justification",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="prior_spect_report",
+                description="Prior SPECT study with available report",
+                evidence_hint="Imaging list",
+            ),
+            RequiredElement(
+                key="attenuation_explicitly_stated",
+                description="Explicit 'attenuation artifact', 'soft-tissue attenuation', 'breast attenuation', or 'diaphragmatic attenuation' in impression. A questionable finding without attenuation language does NOT satisfy.",
+                evidence_hint="SPECT impression",
+            ),
+        ],
     ),
 
     # ── ECG findings (ECG) ──
@@ -283,6 +391,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "78451"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="baseline_ecg_result_present",
+                description="Baseline ECG result available in the chart (not just ordered — actually reported)",
+                evidence_hint="ECG findings / cardiology note",
+            ),
+            RequiredElement(
+                key="lbbb_explicitly_present",
+                description="'LBBB' or 'left bundle branch block' explicitly stated. Non-specific intraventricular conduction delay does NOT satisfy.",
+                evidence_hint="ECG impression",
+            ),
+        ],
     ),
     "ECG-002": Criterion(
         code="ECG-002",
@@ -293,6 +413,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="baseline_ecg_result_present",
+                description="Baseline ECG result available in the chart",
+                evidence_hint="ECG findings",
+            ),
+            RequiredElement(
+                key="ventricular_pacing_present",
+                description="'Ventricular paced', 'V-paced', 'pacemaker rhythm', or 'A-V paced' explicitly documented. Presence of a pacemaker device alone (without paced rhythm) does NOT satisfy.",
+                evidence_hint="ECG impression or rhythm strip interpretation",
+            ),
+        ],
     ),
     "ECG-003": Criterion(
         code="ECG-003",
@@ -303,6 +435,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="baseline_ecg_result_present",
+                description="Baseline ECG result available",
+                evidence_hint="ECG findings",
+            ),
+            RequiredElement(
+                key="wpw_or_preexcitation_stated",
+                description="'WPW', 'Wolff-Parkinson-White', 'pre-excitation', or 'delta wave' explicitly present. A short PR interval alone does NOT satisfy.",
+                evidence_hint="ECG impression",
+            ),
+        ],
     ),
     "ECG-004": Criterion(
         code="ECG-004",
@@ -313,6 +457,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="lvh_present",
+                description="Left ventricular hypertrophy documented on ECG",
+                evidence_hint="ECG impression",
+            ),
+            RequiredElement(
+                key="strain_pattern_stated",
+                description="'Strain pattern', 'ST-T changes consistent with strain', or 'repolarization abnormality' explicitly documented. LVH alone without repolarization changes does NOT satisfy.",
+                evidence_hint="ECG impression",
+            ),
+        ],
     ),
 
     # ── LVEF (LVEF) ──
@@ -325,6 +481,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["93458", "33361", "92928"],
         guideline_source="UnitedHealthcare Commercial Medical Policy",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="lvef_numeric_or_range",
+                description="LVEF documented as a specific value or range (e.g. '35%', '40-45%', 'LVEF = 50'). Qualitative 'normal' or 'reduced' alone does NOT satisfy.",
+                evidence_hint="Echo / MRI / nuclear imaging report",
+            ),
+            RequiredElement(
+                key="date_within_90_days",
+                description="Study date documented AND within 90 days of request date",
+                evidence_hint="Imaging date field",
+            ),
+        ],
     ),
     "LVEF-002": Criterion(
         code="LVEF-002",
@@ -335,6 +503,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["93458", "33361", "78492"],
         guideline_source="ACC/AHA HF Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="lvef_numeric",
+                description="Numeric LVEF value present",
+                evidence_hint="Imaging report",
+            ),
+            RequiredElement(
+                key="value_at_or_below_40",
+                description="LVEF value is ≤ 40%. LVEF 45-55% is preserved / mid-range and does NOT satisfy. 41-49% is 'mildly reduced' and does NOT satisfy this criterion.",
+                evidence_hint="Compare numeric LVEF to 40% threshold",
+            ),
+        ],
     ),
 
     # ── Cardiovascular and surgical risk (RISK) ──
@@ -347,6 +527,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["33361"],
         guideline_source="ACC/AHA Valvular Heart Disease Guidelines; CMS NCD 20.32",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="sts_score_named",
+                description="'STS-PROM', 'STS score', or 'STS Predicted Risk of Mortality' explicitly referenced",
+                evidence_hint="Pre-TAVR evaluation",
+            ),
+            RequiredElement(
+                key="numeric_score_value",
+                description="Specific numeric value of the STS-PROM score (e.g. '4.5%', 'STS 6.2'). 'High risk' alone without a number does NOT satisfy.",
+                evidence_hint="Pre-TAVR workup / Heart Team note",
+            ),
+        ],
     ),
     "RISK-002": Criterion(
         code="RISK-002",
@@ -357,6 +549,13 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "93458"],
         guideline_source="ACC/AHA CCS Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="at_least_two_risk_factors_named",
+                description="At least two named risk factors (from: DM, HTN, dyslipidemia, smoking, family history of premature CAD, prior CAD/MI, CKD, obesity). A single risk factor alone does NOT satisfy this enumerated-profile criterion.",
+                evidence_hint="Problem list or HPI risk factor section",
+            ),
+        ],
     ),
     "RISK-003": Criterion(
         code="RISK-003",
@@ -367,6 +566,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA AUC; ESC Guidelines",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="stratification_method_named",
+                description="Named stratification method — 'Diamond-Forrester', 'CAD Consortium', 'pre-test probability', or equivalent",
+                evidence_hint="Cardiology note",
+            ),
+            RequiredElement(
+                key="intermediate_to_high_category",
+                description="Category labeled intermediate or high (not low). Low pre-test probability does NOT satisfy for advanced imaging.",
+                evidence_hint="Stratification result",
+            ),
+        ],
     ),
 
     # ── Heart Team / multidisciplinary (HT) ──
@@ -379,6 +590,28 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["33361"],
         guideline_source="CMS NCD 20.32; ACC/AHA Valvular Heart Disease Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="heart_team_note_present",
+                description="Heart Team / multidisciplinary evaluation note documented",
+                evidence_hint="Consultation note",
+            ),
+            RequiredElement(
+                key="cardiothoracic_surgeon_attesting",
+                description="Cardiothoracic surgeon named or signed the note (explicit)",
+                evidence_hint="Note signatories",
+            ),
+            RequiredElement(
+                key="interventional_cardiologist_attesting",
+                description="Interventional cardiologist named or signed the note",
+                evidence_hint="Note signatories",
+            ),
+            RequiredElement(
+                key="tavr_vs_savr_recommendation",
+                description="Explicit TAVR vs SAVR recommendation (not just documentation of severe AS)",
+                evidence_hint="Assessment / plan section",
+            ),
+        ],
     ),
 
     # ── Anticoagulation and stroke risk (ANTI) ──
@@ -391,6 +624,23 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["93656"],
         guideline_source="ACC/AHA/HRS AF Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="score_named",
+                description="'CHA2DS2-VASc' or 'CHADS2-VASc' explicitly referenced",
+                evidence_hint="Cardiology / EP note",
+            ),
+            RequiredElement(
+                key="numeric_value",
+                description="Specific numeric score (0–9). Narrative 'high stroke risk' alone does NOT satisfy.",
+                evidence_hint="Score calculation",
+            ),
+            RequiredElement(
+                key="anticoagulation_plan_documented",
+                description="Anticoagulation decision documented — on anticoagulation, held with reason, or declined by patient with shared decision-making note.",
+                evidence_hint="Medication list or plan",
+            ),
+        ],
     ),
     "ANTI-002": Criterion(
         code="ANTI-002",
@@ -401,6 +651,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["93656"],
         guideline_source="HRS Catheter Ablation Consensus Statement",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="tee_or_cardiac_ct_performed",
+                description="Transesophageal echocardiogram OR cardiac CT documented pre-procedure",
+                evidence_hint="Imaging list",
+            ),
+            RequiredElement(
+                key="laa_thrombus_ruled_out",
+                description="Explicit absence of LAA thrombus documented ('no LAA thrombus', 'LAA clear', 'no evidence of intracardiac thrombus'). Imaging without this finding stated does NOT satisfy.",
+                evidence_hint="TEE/CT impression",
+            ),
+        ],
     ),
 
     # ── Imaging timing and frequency (IMG / FREQ) ──
@@ -413,6 +675,23 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["33361"],
         guideline_source="ACC/AHA Valvular Heart Disease Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="coronary_study_performed",
+                description="Coronary angiography or coronary CTA documented",
+                evidence_hint="Imaging list",
+            ),
+            RequiredElement(
+                key="within_12_months",
+                description="Study date within 12 months of request",
+                evidence_hint="Study date",
+            ),
+            RequiredElement(
+                key="cad_status_reported",
+                description="Coronary disease status explicitly reported (obstructive CAD / non-obstructive / normal). A completed study without a reported assessment does NOT satisfy.",
+                evidence_hint="Study impression",
+            ),
+        ],
     ),
     "IMG-002": Criterion(
         code="IMG-002",
@@ -423,6 +702,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["33361"],
         guideline_source="ACC/AHA Valvular Heart Disease Guidelines",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="cta_aortic_root_and_access",
+                description="CTA covering aortic root AND iliofemoral arteries. Echo alone or partial CT does NOT satisfy.",
+                evidence_hint="CTA protocol description",
+            ),
+            RequiredElement(
+                key="annular_measurements_present",
+                description="Annular measurement values documented (e.g. annular diameter, area, perimeter)",
+                evidence_hint="CTA measurement section",
+            ),
+        ],
     ),
     "FREQ-001": Criterion(
         code="FREQ-001",
@@ -433,6 +724,13 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "78452", "78451", "75557", "75574"],
         guideline_source="Multi-payer frequency limit",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="no_similar_imaging_or_justification_for_repeat",
+                description="Either (a) no similar advanced imaging within 12 months, OR (b) explicit clinical change since prior imaging justifying repeat ('worsening angina since prior PET', 'new symptoms since last SPECT'). Silent repeat with no justification does NOT satisfy.",
+                evidence_hint="Imaging history and HPI",
+            ),
+        ],
     ),
 
     # ── Exercise capacity / functional limitation (EX) ──
@@ -469,6 +767,18 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "78452", "78451", "75557", "75574"],
         guideline_source="ACC Appropriate Use Criteria",
         severity="supporting",
+        required_elements=[
+            RequiredElement(
+                key="auc_referenced",
+                description="ACC AUC / Appropriate Use Criteria explicitly referenced",
+                evidence_hint="Cardiology note",
+            ),
+            RequiredElement(
+                key="numeric_score_7_to_9",
+                description="Specific AUC score in the 7–9 range documented. Lower scores or absence of a numeric score does NOT satisfy.",
+                evidence_hint="Score calculation",
+            ),
+        ],
     ),
 
     # ── Documentation completeness (DOC) ──
@@ -481,6 +791,13 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "93458", "33361", "93656"],
         guideline_source="Payer documentation standard",
         severity="required",
+        required_elements=[
+            RequiredElement(
+                key="substantive_clinical_note_present",
+                description="Clinical narrative with indication, history, exam, or assessment present in chart (office_notes or additional_notes). A blank or one-line note does NOT satisfy.",
+                evidence_hint="clinical_note.office_notes or additional_notes",
+            ),
+        ],
     ),
 }
 

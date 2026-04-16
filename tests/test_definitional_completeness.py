@@ -168,14 +168,29 @@ def test_cpt_gating_enforces_completeness_at_full_pipeline() -> None:
 
 # ── Backward compatibility ──────────────────────────────────────────────
 def test_legacy_criterion_without_elements_unchanged() -> None:
-    """A criterion with no required_elements is unaffected by element enforcement."""
-    # BMI-001 doesn't have required_elements populated yet
-    crit = _crit("BMI-001")
-    assert crit.required_elements == []
+    """A criterion with empty required_elements is unaffected by element enforcement.
 
-    entry = {"code": "BMI-001", "status": "met", "evidence_quote": "BMI 38"}
-    result = _enforce_element_completeness(entry, crit)
+    Note: every production criterion now has required_elements populated after
+    the Apr 13 definitional-completeness rollout. This test uses a synthetic
+    criterion with required_elements=[] to exercise the pass-through code path.
+    """
+    from cardioauth.taxonomy.taxonomy import Criterion
+
+    legacy_crit = Criterion(
+        code="LEGACY-001",
+        category="SX",
+        short_name="Legacy criterion (no elements)",
+        definition="A criterion without atomic elements enumerated.",
+        evidence_type="clinical_note",
+        applies_to=["78492"],
+        severity="supporting",
+        required_elements=[],  # Explicit empty — legacy behavior
+    )
+    entry = {"code": "LEGACY-001", "status": "met", "evidence_quote": "x"}
+    result = _enforce_element_completeness(entry, legacy_crit)
+    # With no required_elements, the entry is returned unmodified
     assert result["status"] == "met"
+    assert result["evidence_quote"] == "x"
 
 
 # ── Audit trail surfaces element gaps ───────────────────────────────────
