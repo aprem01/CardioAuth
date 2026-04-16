@@ -45,6 +45,10 @@ class CriterionTrailEntry:
     # so a cardiologist can see exactly which part of the definition is missing.
     elements_satisfied: list[dict] = field(default_factory=list)
     missing_elements: list[str] = field(default_factory=list)
+    # Self-consistency ensemble (Apr 14): how many reasoner runs agreed on
+    # this criterion's status. 1.0 = unanimous, 0.67 = 2-of-3, 0.5 = split.
+    ensemble_agreement: float | None = None
+    ensemble_n_runs: int | None = None
 
     def mark(self, stage: AuditStage) -> None:
         if stage not in self.stages_passed:
@@ -188,6 +192,12 @@ def build_audit_trail(
             entry.missing_elements = list(match.get("_missing_elements") or [])
             if entry.missing_elements:
                 entry.flags.append("element_incomplete")
+            # Ensemble agreement (from self-consistency runs)
+            if "_ensemble_agreement" in match:
+                entry.ensemble_agreement = match.get("_ensemble_agreement")
+                entry.ensemble_n_runs = match.get("_ensemble_n_runs")
+                if entry.ensemble_agreement is not None and entry.ensemble_agreement < 0.67:
+                    entry.flags.append("low_agreement")
         else:
             entry.final_status = "dropped"
             entry.drop_reason = "Reasoner returned no match — silently skipped without enforcer"
@@ -228,6 +238,8 @@ def trail_to_dict(entries: list[CriterionTrailEntry]) -> list[dict]:
             "flags": e.flags,
             "elements_satisfied": e.elements_satisfied,
             "missing_elements": e.missing_elements,
+            "ensemble_agreement": e.ensemble_agreement,
+            "ensemble_n_runs": e.ensemble_n_runs,
         }
         for e in entries
     ]

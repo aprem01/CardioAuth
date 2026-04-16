@@ -37,6 +37,16 @@ class Config:
     chart_confidence_threshold: float = 0.8
     approval_likelihood_threshold: float = 0.6
 
+    # Self-consistency ensemble — run the reasoner N times and majority-vote.
+    # N=1: single run (fastest + cheapest, pre-production default).
+    # N=3: real clinical use — catches model noise, produces agreement scores
+    # the physician can interpret. Costs ~3x the API calls per request.
+    reasoning_ensemble_n: int = field(default_factory=lambda: int(os.environ.get("REASONING_ENSEMBLE_N", "1")))
+    reasoning_ensemble_temperature: float = field(default_factory=lambda: float(os.environ.get("REASONING_ENSEMBLE_TEMPERATURE", "0.3")))
+    # Any criterion where fewer than this fraction of runs agree on the
+    # final status gets flagged to the cardiologist for review.
+    reasoning_agreement_flag_threshold: float = field(default_factory=lambda: float(os.environ.get("REASONING_AGREEMENT_FLAG_THRESHOLD", "0.67")))
+
     def get_private_key(self) -> str:
         """Return private key contents from env var or file."""
         if self.epic_private_key:

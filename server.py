@@ -755,6 +755,9 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         "payer_stats": getattr(policy_data, "__dict__", {}).get("_payer_stats"),
         "payer_global_rules": getattr(policy_data, "__dict__", {}).get("_payer_global_rules", []),
         "policy_freshness": getattr(policy_data, "__dict__", {}).get("_freshness"),
+        "ensemble_agreement": (
+            unified_ctx.__dict__.get("_ensemble_agreement") if unified_ctx else None
+        ),
     }
 
 
@@ -1180,6 +1183,108 @@ def list_all_payer_stats() -> dict[str, Any]:
 
 class ValidationRunRequest(BaseModel):
     cases: list[dict]   # LabeledCase dicts — case_id, procedure_code, payer_name, raw_note, gold_outcome, gold_criterion_labels
+
+
+class ConsistencyCheckRequest(BaseModel):
+    procedure_code: str
+    procedure_name: str
+    payer_name: str
+    raw_note: str
+    chart_data: dict = {}
+    n_runs: int = 5
+
+
+@app.post("/api/validation/consistency")
+def check_consistency(req: ConsistencyCheckRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Run a case N times through the reasoner and report variance.
+
+    Produces a per-criterion status-distribution table plus overall
+    approval-score variance. Used to answer "is this system reproducible?"
+    for compliance and clinical trust conversations.
+    """
+    log_audit(user, "consistency_check", f"n={req.n_runs} cpt={req.procedure_code}")
+    from cardioauth.agents.unified_reasoner import reason_with_unified_agent
+    from cardioauth.case_context import CaseContext
+
+    runs: list[dict] = []
+    for i in range(max(2, min(req.n_runs, 10))):  # clamp 2..10
+        ctx = CaseContext(
+            case_id=f"consistency-run-{i}",
+            procedure_code=req.procedure_code,
+            procedure_name=req.procedure_name,
+            payer_name=req.payer_name,
+            user_id=user.id,
+            raw_note=req.raw_note,
+            chart_data=req.chart_data,
+        )
+        ctx.build_clinical_narrative()
+        # Force single-run with temperature so each call is independent
+        single_cfg = type(config)(
+            anthropic_api_key=config.anthropic_api_key,
+            model=config.model,
+            epic_base_url=config.epic_base_url,
+            epic_client_id=config.epic_client_id,
+            epic_private_key_path=config.epic_private_key_path,
+            epic_private_key=config.epic_private_key,
+            epic_token_url=config.epic_token_url,
+            pinecone_api_key=config.pinecone_api_key,
+            pinecone_index=config.pinecone_index,
+            aws_region=config.aws_region,
+            use_comprehend_medical=config.use_comprehend_medical,
+            chart_confidence_threshold=config.chart_confidence_threshold,
+            approval_likelihood_threshold=config.approval_likelihood_threshold,
+            reasoning_ensemble_n=1,
+            reasoning_ensemble_temperature=0.4,
+            reasoning_agreement_flag_threshold=config.reasoning_agreement_flag_threshold,
+        )
+        reason_with_unified_agent(ctx, single_cfg)
+        runs.append({
+            "run_index": i,
+            "approval_score": ctx.approval_score,
+            "approval_label": ctx.approval_label,
+            "criterion_matches": [
+                {"code": m.get("code"), "status": m.get("status")} for m in ctx.criterion_matches
+            ],
+        })
+
+    # Aggregate: per-criterion status distribution + score variance
+    per_criterion: dict[str, dict] = {}
+    for r in runs:
+        for m in r["criterion_matches"]:
+            code = m["code"]
+            per_criterion.setdefault(code, {"met": 0, "not_met": 0, "other": 0})
+            s = m.get("status", "not_met")
+            if s == "met":
+                per_criterion[code]["met"] += 1
+            elif s == "not_met":
+                per_criterion[code]["not_met"] += 1
+            else:
+                per_criterion[code]["other"] += 1
+
+    n = len(runs)
+    for code, d in per_criterion.items():
+        agreed = max(d["met"], d["not_met"], d["other"])
+        d["agreement"] = round(agreed / n, 3) if n else None
+        d["majority"] = "met" if d["met"] >= d["not_met"] else "not_met"
+
+    scores = [r["approval_score"] for r in runs]
+    mean_score = sum(scores) / n if n else 0.0
+    variance = sum((s - mean_score) ** 2 for s in scores) / n if n else 0.0
+    spread = max(scores) - min(scores) if scores else 0.0
+
+    low_agreement = [c for c, d in per_criterion.items() if d["agreement"] is not None and d["agreement"] < 0.67]
+
+    return {
+        "n_runs": n,
+        "approval_score_mean": round(mean_score, 3),
+        "approval_score_min": round(min(scores), 3) if scores else None,
+        "approval_score_max": round(max(scores), 3) if scores else None,
+        "approval_score_spread": round(spread, 3),
+        "approval_score_variance": round(variance, 4),
+        "per_criterion_distribution": per_criterion,
+        "low_agreement_criteria": sorted(low_agreement),
+        "runs": runs,
+    }
 
 
 @app.post("/api/validation/run")

@@ -462,27 +462,24 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
 
 
 class UnifiedReasoner:
-    """Single agent that reasons + scores taxonomy in one Claude call."""
+    """Reasons + scores taxonomy via one or more Claude calls.
+
+    Self-consistency ensemble (config.reasoning_ensemble_n > 1):
+      Runs the reasoner N times with mild temperature, then merges by
+      majority vote per criterion. Produces an agreement_score per
+      criterion so physicians can tell confident decisions from noisy
+      ones. Standard technique from Wang et al. self-consistency CoT.
+    """
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
 
     def reason(self, ctx: CaseContext) -> None:
-        """Run unified reasoning over the full CaseContext.
-
-        Populates:
-          ctx.criterion_matches
-          ctx.approval_score
-          ctx.approval_label
-          ctx.narrative_draft
-        """
+        """Run unified reasoning (ensemble or single). Populates ctx."""
         start = time.time()
-
-        # Ensure we have a narrative to reason over
         ctx.build_clinical_narrative()
 
-        # Get applicable criteria for this procedure + payer
         applicable = get_criteria_for_procedure(ctx.procedure_code, ctx.payer_name)
         if not applicable:
             logger.warning("UnifiedReasoner: no taxonomy criteria for CPT %s", ctx.procedure_code)
@@ -491,16 +488,125 @@ class UnifiedReasoner:
             return
 
         user_msg = _build_user_message(ctx, applicable)
+        n_runs = max(1, int(self.config.reasoning_ensemble_n))
 
+        # Use temperature 0 for single runs (deterministic), the configured
+        # temperature for ensembles (diversity across samples).
+        temperature = 0.0 if n_runs == 1 else self.config.reasoning_ensemble_temperature
+
+        run_outputs: list[dict] = []
+        tokens_total = 0
+        for i in range(n_runs):
+            result = self._invoke_once(ctx, user_msg, temperature, run_index=i)
+            if result is None:
+                continue
+            run_outputs.append(result["data"])
+            tokens_total += result["tokens"]
+
+        if not run_outputs:
+            # Every run failed — warnings already recorded in _invoke_once
+            return
+
+        # Merge per-criterion across runs (majority vote + agreement scoring)
+        if len(run_outputs) == 1:
+            merged_matches, per_criterion_agreement = self._merge_single(
+                run_outputs[0].get("criterion_matches", []), applicable,
+            )
+        else:
+            merged_matches, per_criterion_agreement = self._merge_ensemble(
+                [r.get("criterion_matches", []) for r in run_outputs],
+                applicable,
+            )
+
+        ctx.criterion_matches = merged_matches
+        ctx.narrative_draft = run_outputs[0].get("narrative_draft", "")
+
+        # Score: mean across runs, falling back to computed score if LLM didn't return one
+        scores = [r.get("approval_score") for r in run_outputs if isinstance(r.get("approval_score"), (int, float))]
+        if scores:
+            reasoner_score = float(sum(scores)) / len(scores)
+        else:
+            reasoner_score = _compute_approval_score(ctx.criterion_matches, applicable)
+
+        precedent_score = _precedent_median_score(ctx.precedents, ctx.procedure_code)
+        if precedent_score is not None:
+            ctx.approval_score = round(0.7 * reasoner_score + 0.3 * precedent_score, 2)
+            ctx.trace(
+                "ApprovalScoring",
+                f"blended: reasoner={reasoner_score:.2f} × 0.7 + precedent_median={precedent_score:.2f} × 0.3",
+                f"final={ctx.approval_score:.2f}",
+            )
+        else:
+            ctx.approval_score = round(reasoner_score, 2)
+
+        # Ensemble-level agreement summary
+        if per_criterion_agreement:
+            agreements = [a for a in per_criterion_agreement.values() if a is not None]
+            case_agreement = round(sum(agreements) / len(agreements), 2) if agreements else 1.0
+            ctx.__dict__["_ensemble_agreement"] = {
+                "n_runs": len(run_outputs),
+                "case_agreement_score": case_agreement,
+                "per_criterion": per_criterion_agreement,
+            }
+
+            # Flag low-agreement criteria to the cardiologist
+            threshold = self.config.reasoning_agreement_flag_threshold
+            low_agreement = [
+                code for code, agree in per_criterion_agreement.items()
+                if agree is not None and agree < threshold
+            ]
+            if low_agreement:
+                ctx.warn(
+                    "warning", "UnifiedReasoner",
+                    f"Low agreement across {len(run_outputs)} reasoner runs on: "
+                    f"{', '.join(sorted(low_agreement))} — cardiologist should verify.",
+                    "low_agreement",
+                )
+        else:
+            ctx.__dict__["_ensemble_agreement"] = {
+                "n_runs": len(run_outputs),
+                "case_agreement_score": 1.0,
+                "per_criterion": {},
+            }
+
+        ctx.approval_label = run_outputs[0].get("approval_label") or _label_from_score(ctx.approval_score)
+
+        elapsed = int((time.time() - start) * 1000)
+        agreement_str = ""
+        if len(run_outputs) > 1:
+            agreement_str = f", agreement={ctx.__dict__['_ensemble_agreement']['case_agreement_score']:.2f}"
+        ctx.trace(
+            agent_name="UnifiedReasoner",
+            action=f"scored {len(ctx.criterion_matches)} criteria across {len(run_outputs)} run(s), approval={ctx.approval_score:.2f}{agreement_str}",
+            summary=f"{ctx.approval_label}",
+            tokens=tokens_total,
+            ms=elapsed,
+        )
+
+    # ── Ensemble plumbing ─────────────────────────────────────────────
+
+    def _invoke_once(
+        self,
+        ctx: CaseContext,
+        user_msg: str,
+        temperature: float,
+        run_index: int,
+    ) -> dict | None:
+        """One LLM call. Returns {data, tokens} or None on failure."""
         try:
-            response = self.client.messages.create(
+            kwargs = dict(
                 model=self.config.model,
                 max_tokens=8000,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_msg}],
             )
+            if temperature > 0:
+                kwargs["temperature"] = temperature
+            response = self.client.messages.create(**kwargs)
             raw = response.content[0].text
-            tokens = getattr(response.usage, "input_tokens", 0) + getattr(response.usage, "output_tokens", 0) if hasattr(response, "usage") else 0
+            tokens = 0
+            if hasattr(response, "usage"):
+                tokens = getattr(response.usage, "input_tokens", 0) + getattr(response.usage, "output_tokens", 0)
 
             data = parse_llm_json(raw, fallback={
                 "criterion_matches": [],
@@ -508,57 +614,89 @@ class UnifiedReasoner:
                 "approval_score": 0.0,
                 "approval_label": "INSUFFICIENT",
             })
-
-            # Populate context — but enforce Peter's rules deterministically
-            # regardless of what the LLM returned (per-case validation feedback)
-            raw_matches = data.get("criterion_matches", [])
-            ctx.criterion_matches = _enforce_cpt_gating(raw_matches, applicable)
-            ctx.narrative_draft = data.get("narrative_draft", "")
-
-            # Use returned score, or compute from matches
-            returned_score = data.get("approval_score")
-            if isinstance(returned_score, (int, float)):
-                reasoner_score = float(returned_score)
-            else:
-                reasoner_score = _compute_approval_score(
-                    ctx.criterion_matches, applicable
-                )
-
-            # Precedent-weighted blend: 70% reasoner + 30% precedent median
-            # Only apply when we have precedents of the same procedure type
-            precedent_score = _precedent_median_score(ctx.precedents, ctx.procedure_code)
-            if precedent_score is not None:
-                ctx.approval_score = round(0.7 * reasoner_score + 0.3 * precedent_score, 2)
-                ctx.trace(
-                    "ApprovalScoring",
-                    f"blended: reasoner={reasoner_score:.2f} × 0.7 + precedent_median={precedent_score:.2f} × 0.3",
-                    f"final={ctx.approval_score:.2f}",
-                )
-            else:
-                ctx.approval_score = round(reasoner_score, 2)
-
-            ctx.approval_label = data.get("approval_label") or _label_from_score(ctx.approval_score)
-
-            elapsed = int((time.time() - start) * 1000)
-            ctx.trace(
-                agent_name="UnifiedReasoner",
-                action=f"scored {len(ctx.criterion_matches)} criteria, approval={ctx.approval_score:.2f}",
-                summary=f"{ctx.approval_label} — {data.get('required_criteria_met', '?')}/{data.get('required_criteria_total', '?')} required met",
-                tokens=tokens,
-                ms=elapsed,
-            )
+            return {"data": data, "tokens": tokens}
 
         except anthropic.BadRequestError as e:
             msg = str(e)
             kind = "spend_limit" if ("usage limit" in msg.lower() or "spend limit" in msg.lower()) else "bad_request"
-            ctx.warn("critical", "UnifiedReasoner", msg[:200], kind)
-            logger.warning("UnifiedReasoner BadRequest: %s", msg[:200])
-        except anthropic.RateLimitError as e:
-            ctx.warn("warning", "UnifiedReasoner", "Claude rate limit hit", "rate_limit")
-            logger.warning("UnifiedReasoner rate limit: %s", e)
+            ctx.warn("critical", "UnifiedReasoner", f"[run {run_index}] {msg[:200]}", kind)
+            logger.warning("UnifiedReasoner BadRequest (run %d): %s", run_index, msg[:200])
+        except anthropic.RateLimitError:
+            ctx.warn("warning", "UnifiedReasoner", f"[run {run_index}] Claude rate limit hit", "rate_limit")
+            logger.warning("UnifiedReasoner rate limit (run %d)", run_index)
         except Exception as e:
-            ctx.warn("warning", "UnifiedReasoner", f"Reasoning failed: {str(e)[:200]}", "error")
-            logger.exception("UnifiedReasoner failed")
+            ctx.warn("warning", "UnifiedReasoner", f"[run {run_index}] Reasoning failed: {str(e)[:200]}", "error")
+            logger.exception("UnifiedReasoner failed (run %d)", run_index)
+        return None
+
+    @staticmethod
+    def _merge_single(
+        raw_matches: list[dict],
+        applicable: list,
+    ) -> tuple[list[dict], dict[str, float]]:
+        """Single-run merge = just enforce CPT gating and record agreement=1.0."""
+        enforced = _enforce_cpt_gating(raw_matches, applicable)
+        agreement = {e["code"]: 1.0 for e in enforced if "code" in e}
+        return enforced, agreement
+
+    @staticmethod
+    def _merge_ensemble(
+        per_run_matches: list[list[dict]],
+        applicable: list,
+    ) -> tuple[list[dict], dict[str, float]]:
+        """Majority-vote status per criterion across runs; record agreement.
+
+        Agreement score for a criterion = (# runs that agreed with majority) / N.
+        Tie goes to 'not_met' (safer default — we'd rather the physician
+        verify a borderline case than auto-approve).
+        """
+        # Enforce each run individually first — so missing criteria get filled
+        # before voting.
+        enforced_runs = [_enforce_cpt_gating(m, applicable) for m in per_run_matches]
+        n_runs = len(enforced_runs)
+        codes = [c.code for c in applicable]
+
+        merged: list[dict] = []
+        agreement: dict[str, float] = {}
+
+        for code in sorted(codes):
+            runs_for_code = [next((e for e in run if e.get("code") == code), None) for run in enforced_runs]
+            runs_for_code = [r for r in runs_for_code if r]
+            if not runs_for_code:
+                continue
+
+            statuses = [r.get("status", "not_met") for r in runs_for_code]
+            met_count = sum(1 for s in statuses if s == "met")
+            not_met_count = sum(1 for s in statuses if s == "not_met")
+
+            # Majority — tie → not_met (conservative)
+            if met_count > not_met_count:
+                majority_status = "met"
+                agreeing = met_count
+            else:
+                majority_status = "not_met"
+                agreeing = not_met_count
+
+            # Representative entry: take the first run matching majority status
+            representative = next(
+                (r for r in runs_for_code if r.get("status") == majority_status),
+                runs_for_code[0],
+            )
+
+            merged_entry = dict(representative)
+            merged_entry["status"] = majority_status
+            merged_entry["_ensemble_n_runs"] = n_runs
+            merged_entry["_ensemble_agreement"] = round(agreeing / n_runs, 2)
+            merged_entry["_ensemble_statuses"] = statuses
+            if agreeing < n_runs:
+                merged_entry["_ensemble_dissent"] = (
+                    f"{agreeing}/{n_runs} runs said {majority_status}; "
+                    f"{n_runs - agreeing} dissenting"
+                )
+            merged.append(merged_entry)
+            agreement[code] = round(agreeing / n_runs, 2)
+
+        return merged, agreement
 
 
 # ────────────────────────────────────────────────────────────────────────
