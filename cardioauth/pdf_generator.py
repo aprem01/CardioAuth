@@ -475,3 +475,164 @@ def generate_pa_letter(
 
     doc.build(story)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Submission packet — the artifact that actually goes to the payer
+# ---------------------------------------------------------------------------
+def generate_submission_packet(
+    *,
+    chart_data: dict,
+    policy_data: dict,
+    reasoning: dict,
+    cover_summary: str = "",
+    criterion_audit_trail: list[dict] | None = None,
+    raw_note: str = "",
+) -> bytes:
+    """Build the submission-ready PDF.
+
+    Per Peter (Apr 14): first-pass PA submissions consume the clinical note +
+    a short medical-necessity summary + ICD/CPT codes — not a 400-word
+    argument. This packet is structured for that consumption pattern:
+
+      1. Cover sheet with patient, payer, procedure, ICD/CPT, indication,
+         and the 80-word cover summary
+      2. Criterion summary table (met / not met) for payer reviewer triage
+      3. Clinical note verbatim (the primary evidence the reviewer reads)
+
+    The long narrative is saved for appeal letters, not first submissions.
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+        title="Prior Authorization Submission Packet",
+    )
+    styles = _build_styles()
+    story: list = []
+
+    story.append(Paragraph("PRIOR AUTHORIZATION SUBMISSION PACKET", styles["title"]))
+    story.append(HRFlowable(width="100%", thickness=1.2, color=_BRAND_BLUE, spaceAfter=10))
+
+    today = datetime.now().strftime("%B %d, %Y")
+    story.append(Paragraph(f"Submission date: <b>{today}</b>", styles["small"]))
+    story.append(Spacer(1, 10))
+
+    # Cover sheet: patient + procedure at a glance
+    patient_name = chart_data.get("patient_name") or chart_data.get("patient_id", "Patient")
+    age = chart_data.get("age", "")
+    sex = chart_data.get("sex", "")
+    insurance_id = chart_data.get("insurance_id", "")
+    payer = policy_data.get("payer", "")
+    cpt = chart_data.get("procedure_code") or policy_data.get("cpt_code", "")
+    procedure = chart_data.get("procedure_requested") or policy_data.get("procedure", "")
+    icd10_codes = chart_data.get("diagnosis_codes", []) or []
+
+    cover_rows = [
+        ["Patient", patient_name],
+        ["Age / Sex", f"{age} / {sex}".strip(" /")],
+        ["Insurance ID", insurance_id or "—"],
+        ["Payer", payer or "—"],
+        ["Procedure", procedure or "—"],
+        ["CPT Code", cpt or "—"],
+        ["ICD-10 Diagnoses", ", ".join(icd10_codes) if icd10_codes else "—"],
+    ]
+    cover_table = Table(cover_rows, colWidths=[1.5 * inch, 5.25 * inch])
+    cover_table.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (0, -1), _BRAND_LIGHT),
+            ("TEXTCOLOR", (0, 0), (0, -1), _BRAND_BLUE),
+            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+            ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.5, _BRAND_LIGHT),
+        ])
+    )
+    story.append(cover_table)
+    story.append(Spacer(1, 14))
+
+    # Medical necessity cover summary (~80 words)
+    if cover_summary:
+        story.append(Paragraph("MEDICAL NECESSITY SUMMARY", styles["section"]))
+        story.append(Paragraph(cover_summary, styles["body"]))
+        story.append(Spacer(1, 12))
+
+    # Criterion summary table
+    if criterion_audit_trail:
+        story.append(Paragraph("CRITERION SUMMARY", styles["section"]))
+        story.append(Paragraph(
+            "Structured mapping of payer criteria against documentation.",
+            styles["small"],
+        ))
+        story.append(Spacer(1, 4))
+
+        header = [["Code", "Criterion", "Status", "Evidence / Gap"]]
+        rows = []
+        for e in criterion_audit_trail[:40]:
+            status = (e.get("final_status") or "").lower()
+            status_label = "MET" if status == "met" else ("NOT MET" if status == "not_met" else (status.upper() or "—"))
+            evidence_or_gap = ""
+            if e.get("missing_elements"):
+                evidence_or_gap = "Missing: " + ", ".join(e["missing_elements"][:3])
+            rows.append([
+                e.get("code", ""),
+                (e.get("short_name", "") or "")[:60],
+                status_label,
+                evidence_or_gap[:60],
+            ])
+        if not rows:
+            rows.append(["—", "No criteria evaluated", "—", "—"])
+
+        table = Table(header + rows, colWidths=[0.8 * inch, 3.0 * inch, 0.9 * inch, 2.1 * inch], repeatRows=1)
+        table_style_cmds = [
+            ("BACKGROUND", (0, 0), (-1, 0), _TABLE_HEADER_BG),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.3, _GREY),
+        ]
+        for i, row in enumerate(rows, start=1):
+            status_label = row[2]
+            if status_label == "MET":
+                table_style_cmds.append(("TEXTCOLOR", (2, i), (2, i), colors.HexColor("#047857")))
+            elif status_label == "NOT MET":
+                table_style_cmds.append(("TEXTCOLOR", (2, i), (2, i), colors.HexColor("#b91c1c")))
+        table.setStyle(TableStyle(table_style_cmds))
+        story.append(table)
+        story.append(Spacer(1, 14))
+
+    # Clinical note (primary evidence)
+    if raw_note:
+        story.append(Paragraph("CLINICAL NOTE (SOURCE DOCUMENTATION)", styles["section"]))
+        story.append(Paragraph(
+            "Verbatim clinical note attached. Primary evidence for payer reviewer.",
+            styles["small"],
+        ))
+        story.append(Spacer(1, 4))
+        for block in raw_note.split("\n\n"):
+            block = block.strip()
+            if block:
+                story.append(Paragraph(block.replace("\n", "<br/>"), styles["body"]))
+                story.append(Spacer(1, 4))
+        story.append(Spacer(1, 10))
+
+    story.append(HRFlowable(width="100%", thickness=0.5, color=_GREY, spaceAfter=6))
+    story.append(Paragraph(
+        "Generated by CardioAuth  |  Confidential Medical Document",
+        styles["footer"],
+    ))
+
+    doc.build(story)
+    return buf.getvalue()

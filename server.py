@@ -758,6 +758,11 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         "ensemble_agreement": (
             unified_ctx.__dict__.get("_ensemble_agreement") if unified_ctx else None
         ),
+        # Short medical-necessity cover summary for portals that accept free text.
+        # Derived from the narrative's first ~80 words rather than a separate
+        # Claude call to keep latency flat. When we want a purpose-built summary
+        # we promote this to its own prompt.
+        "cover_summary": _first_n_words(reasoning.pa_narrative_draft or "", 80),
     }
 
 
@@ -1399,6 +1404,80 @@ def export_pdf(req: ApprovalRequest):
             "Content-Disposition": f"attachment; filename=PA-{req.request_id}.pdf"
         },
     )
+
+
+@app.post("/api/pa/submission-packet")
+def export_submission_packet(req: ApprovalRequest):
+    """Generate the payer submission packet PDF (Apr 14 — Peter feedback).
+
+    Unlike export-pdf (which produces the appeal-shaped long narrative),
+    this produces what first-pass submissions actually look like:
+      - Cover sheet (patient / procedure / ICD / CPT / payer)
+      - 80-word medical necessity summary
+      - Criterion summary table
+      - The raw clinical note verbatim
+
+    This is the artifact back-office staff send to the payer portal.
+    """
+    review = _reviews.get(req.request_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review package not found")
+
+    from cardioauth.pdf_generator import generate_submission_packet
+    from cardioauth.case_context import CaseContext
+
+    # Derive cover summary (first ~80 words of the narrative)
+    narrative = review.reasoning.pa_narrative_draft or ""
+    cover_summary = _first_n_words(narrative, 80)
+
+    # Try to get the raw note from the stored CaseContext (unified path stores
+    # it), fall back to a reconstructed narrative from chart_data
+    raw_note = ""
+    ctx = _contexts.get(req.request_id) if "_contexts" in globals() else None
+    if ctx is not None:
+        raw_note = ctx.raw_note
+    else:
+        tmp_ctx = CaseContext(
+            case_id=req.request_id,
+            procedure_code=review.chart_data.procedure_code,
+            procedure_name=review.chart_data.procedure_requested,
+            payer_name=review.policy_data.payer,
+            chart_data=review.chart_data.model_dump(),
+        )
+        raw_note = tmp_ctx.build_clinical_narrative()
+
+    pdf_bytes = generate_submission_packet(
+        chart_data=review.chart_data.model_dump(),
+        policy_data=review.policy_data.model_dump(),
+        reasoning=review.reasoning.model_dump(),
+        cover_summary=cover_summary,
+        criterion_audit_trail=review.criterion_audit_trail,
+        raw_note=raw_note,
+    )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=PA-SUBMISSION-{req.request_id}.pdf"
+        },
+    )
+
+
+def _first_n_words(text: str, n: int) -> str:
+    """Extract the first N words of a text, breaking on a sentence boundary if possible."""
+    if not text:
+        return ""
+    words = text.strip().split()
+    if len(words) <= n:
+        return text.strip()
+    # Try to end on a sentence boundary within the N-word window
+    cut = " ".join(words[:n])
+    for punct in (". ", ".\n", "."):
+        last = cut.rfind(punct)
+        if last > int(len(cut) * 0.6):
+            return cut[: last + 1]
+    return cut + "…"
 
 
 @app.get("/api/authorizations")
