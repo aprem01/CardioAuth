@@ -160,6 +160,50 @@ CORE PRINCIPLES
    - If unsure, mark NOT_MET and explain.
    - Never invent labs, dates, medications, or findings that aren't in the note.
 
+GAP CLASSIFICATION — PATHWAY GROUPS (Peter C10-C13 Apr 14)
+
+Some criteria are ALTERNATIVE pathways to qualify, not all required
+together. When you receive the criteria list you will see each criterion
+annotated with an optional `pathway_group`. If criteria share a
+pathway_group, the case qualifies if ANY ONE is met — the others are
+not "gaps", they are simply pathways not used.
+
+When you produce your narrative and reasoning:
+
+  - Do NOT list unmet pathway_group members as blocking deficiencies
+    if another member of that group is met.
+  - The system post-processor will reclassify them automatically, but
+    your narrative should not claim the case is weak on the basis of
+    alternative pathways not used.
+
+Example: For CPT 78492 the pharmacologic-stress-justification pathway
+group contains EX-001, ECG-001, ECG-002, ECG-003, ECG-004. If the chart
+documents an inability to exercise (EX-001 met), then the case has its
+pharmacologic justification — the absence of LBBB, paced rhythm, WPW,
+and LVH is NOT a gap. It's simply "alternatives not used."
+
+NARRATIVE STAY-IN-TAXONOMY RULE (Peter C10-C13 #2)
+
+Your narrative MUST only argue medical necessity using the scored
+criteria. Do NOT invoke clinical reasoning that isn't backed by a
+coded criterion (e.g. citing RBBB/LAFB as if they were formal PET
+pathways when the taxonomy does not include them). If you genuinely
+believe a case merits a clinical argument beyond the taxonomy, place
+it in a separate `supplemental_clinical_argument` field with the
+explicit disclaimer "not policy-backed — for physician judgment only".
+
+HEADLINE SUMMARY (Peter C10-C13 #6)
+
+Return a `headline_summary` with the top 1–3 real reasons the case is
+strong or weak. This is what the physician reads first. Examples:
+  - "Strong: prior SPECT non-diagnostic + LBBB on ECG + BMI 38"
+  - "Weak: no qualifying pathway for pharmacologic stress (patient
+     exercises without limitation; no ECG abnormality)"
+  - "Weak: BMI not documented; no prior non-diagnostic testing"
+
+Keep each reason to ≤12 words. Do NOT include pathway alternatives
+not used as reasons.
+
 COMPLETENESS + CPT GATING — CRITICAL RULES
 
 The list of criteria you receive has ALREADY BEEN FILTERED to those that
@@ -264,7 +308,12 @@ OUTPUT FORMAT — JSON ONLY, no markdown fences:
   "required_criteria_total": 10,
   "key_supporting_evidence": [
     "Short bullet summarizing the strongest clinical support"
-  ]
+  ],
+  "headline_summary": [
+    "Top 1-3 reasons case is strong or weak, each <=12 words",
+    "Do not list alternative pathways not used as reasons"
+  ],
+  "supplemental_clinical_argument": ""
 }
 """
 
@@ -284,6 +333,10 @@ def _build_user_message(ctx: CaseContext, applicable_criteria: list) -> str:
             "definition": c.definition,
             "evidence_type": c.evidence_type,
             "severity": c.severity,
+            # Peter C10-C13: pathway_group tells the reasoner that criteria
+            # sharing the same group value are ALTERNATIVES. Case qualifies if
+            # any one is met — unmet others are not gaps, just alternatives.
+            "pathway_group": c.pathway_group or None,
             "required_elements": [
                 {
                     "key": e.key,
@@ -520,6 +573,36 @@ class UnifiedReasoner:
 
         ctx.criterion_matches = merged_matches
         ctx.narrative_draft = run_outputs[0].get("narrative_draft", "")
+
+        # Stash headline summary + supplemental argument from the first run
+        # (these don't make sense to majority-vote — keep first-run version)
+        first = run_outputs[0]
+        ctx.__dict__["_headline_summary"] = first.get("headline_summary") or []
+        ctx.__dict__["_supplemental_clinical_argument"] = first.get("supplemental_clinical_argument", "")
+
+        # Classify gaps into blocking / alternative_not_used / supporting_unmet.
+        # Peter C10-C13 #1: the UI and narrative should treat these differently.
+        try:
+            from cardioauth.taxonomy.taxonomy import classify_gaps
+            gap_classes = classify_gaps(applicable, merged_matches)
+            ctx.__dict__["_gap_classification"] = {
+                "blocking": gap_classes["blocking"],
+                "alternative_not_used": gap_classes["alternative_not_used"],
+                "supporting_unmet": gap_classes["supporting_unmet"],
+            }
+            # Apply the _gap_class tag back onto the merged_matches so the
+            # audit trail and UI can render per-criterion classification.
+            by_code = {m.get("code"): m for m in merged_matches}
+            for bucket_name in ("blocking", "alternative_not_used", "supporting_unmet"):
+                for m in gap_classes[bucket_name]:
+                    target = by_code.get(m.get("code"))
+                    if target is not None:
+                        target["_gap_class"] = bucket_name
+                        if m.get("_pathway_group"):
+                            target["_pathway_group"] = m["_pathway_group"]
+        except Exception as e:
+            logger.warning("classify_gaps failed: %s", e)
+            ctx.__dict__["_gap_classification"] = None
 
         # Score: mean across runs, falling back to computed score if LLM didn't return one
         scores = [r.get("approval_score") for r in run_outputs if isinstance(r.get("approval_score"), (int, float))]

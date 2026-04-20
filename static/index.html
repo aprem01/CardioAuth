@@ -1911,13 +1911,26 @@ This procedure is essential for determining whether percutaneous coronary interv
     const conf = confidenceColor(data.confidence?.score ?? data.confidence_score ?? 0.87);
     const score = data.confidence?.score ?? data.confidence_score ?? 0.87;
 
-    // Normalize data with fallbacks
+    // Normalize data with fallbacks. v2: chart_data carries categorized buckets.
     const cs = data.clinical_summary || {};
+    const cd = data.chart_data || {};
+    const headlineSummary = data.headline_summary || [];
+    const gapClass = data.gap_classification || null;
+    const supplemental = data.supplemental_clinical_argument || '';
     const diagnoses = cs.diagnoses || [];
     const labs = cs.labs || [];
     const imaging = cs.imaging || 'N/A';
     const medications = cs.medications || [];
     const priorTreatments = cs.prior_treatments || [];
+    // v2 categorized buckets — pulled directly from chart_data
+    const activeComorbidities = cd.active_comorbidities || [];
+    const pastMedicalHistory = cd.past_medical_history || [];
+    const familyHistory = cd.family_history || [];
+    const currentSymptoms = cd.current_symptoms || [];
+    const examFindings = cd.exam_findings || [];
+    const priorStressTests = cd.prior_stress_tests || [];
+    const priorProcedures = cd.prior_procedures || [];
+    const ecgFindings = Array.isArray(cd.ecg_findings) ? cd.ecg_findings : [];
     const criteriaMatch = data.criteria_match || { met: [], not_met: [] };
     const narrative = data.narrative || '';
     const actionItems = data.action_items || [];
@@ -1994,6 +2007,83 @@ This procedure is essential for determining whether percutaneous coronary interv
           <p class="text-sm text-slate-300 bg-surface rounded-lg px-4 py-2.5 border border-surface-border">${imaging}</p>
         </div>
 
+        <!-- v2 categorized clinical data: each bucket has its own named section
+             so data lands cleanly (per Peter Apr 14 feedback). -->
+
+        <!-- Current symptoms (patient-reported or clinician-observed) -->
+        ${currentSymptoms.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Current Symptoms</p>
+          <ul class="space-y-1">${currentSymptoms.map(s => {
+            const parts = [s.name];
+            if (s.character) parts.push(s.character);
+            if (s.onset) parts.push('onset ' + s.onset);
+            if (s.frequency) parts.push(s.frequency);
+            if (s.severity) parts.push(s.severity);
+            if (s.change_vs_baseline) parts.push('<span class="text-amber-300">' + s.change_vs_baseline + '</span>');
+            return `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0"></span>${parts.join(' · ')}</li>`;
+          }).join('')}</ul>
+        </div>` : ''}
+
+        <!-- Exam findings (physical exam) -->
+        ${examFindings.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Exam Findings</p>
+          <ul class="space-y-1">${examFindings.map(e => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-slate-400 flex-shrink-0"></span>${e.finding}${e.system ? ' <span class="text-slate-500">(' + e.system + ')</span>' : ''}</li>`).join('')}</ul>
+        </div>` : ''}
+
+        <!-- Active comorbidities (chronic conditions) -->
+        ${activeComorbidities.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Active Comorbidities</p>
+          <div class="flex flex-wrap gap-2">
+            ${activeComorbidities.map(c => `<span class="bg-surface border border-surface-border rounded-lg px-3 py-1 text-sm text-slate-300">${c}</span>`).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- Past medical history (prior events) -->
+        ${pastMedicalHistory.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Past Medical History</p>
+          <ul class="space-y-1">${pastMedicalHistory.map(p => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-indigo-400 flex-shrink-0"></span>${p.condition}${p.date ? ' <span class="text-slate-500">(' + p.date + ')</span>' : ''}${p.details ? ' — ' + p.details : ''}</li>`).join('')}</ul>
+        </div>` : ''}
+
+        <!-- Family history -->
+        ${familyHistory.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Family History</p>
+          <ul class="space-y-1">${familyHistory.map(f => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0"></span>${f.relation || 'family'}: ${f.condition}${f.age_at_event ? ' at ' + f.age_at_event : ''}</li>`).join('')}</ul>
+        </div>` : ''}
+
+        <!-- ECG findings (dedicated bucket) -->
+        ${ecgFindings.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">ECG Findings</p>
+          <ul class="space-y-1">${ecgFindings.map(e => {
+            const parts = [];
+            if (e.rhythm) parts.push('rhythm: ' + e.rhythm);
+            if (e.conduction) parts.push('conduction: ' + e.conduction);
+            if (e.hypertrophy_or_strain) parts.push(e.hypertrophy_or_strain);
+            if (e.ischemic_changes) parts.push(e.ischemic_changes);
+            if (e.pacing) parts.push('pacing: ' + e.pacing);
+            if (e.summary && !parts.length) parts.push(e.summary);
+            return `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-pink-400 flex-shrink-0"></span>${parts.join(' · ')}${e.date ? ' <span class="text-slate-500">(' + e.date + ')</span>' : ''}</li>`;
+          }).join('')}</ul>
+        </div>` : ''}
+
+        <!-- Prior stress tests (separate from imaging) -->
+        ${priorStressTests.length ? `
+        <div class="mb-5">
+          <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Prior Stress Tests</p>
+          <ul class="space-y-1">${priorStressTests.map(s => {
+            const parts = [s.modality || 'stress test'];
+            if (s.date) parts.push(s.date);
+            if (s.max_hr_percent) parts.push(s.max_hr_percent + ' MPHR');
+            if (s.interpretation) parts.push('<span class="text-amber-300">' + s.interpretation + '</span>');
+            return `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-teal-400 flex-shrink-0"></span>${parts.join(' · ')}${s.result_summary ? ' — ' + s.result_summary : ''}</li>`;
+          }).join('')}</ul>
+        </div>` : ''}
+
         <!-- Meds & Prior Procedures -->
         <div class="grid md:grid-cols-2 gap-4">
           <div>
@@ -2002,24 +2092,95 @@ This procedure is essential for determining whether percutaneous coronary interv
           </div>
           <div>
             <p class="text-sm font-medium text-slate-400 mb-2 uppercase tracking-wider">Prior Procedures</p>
-            <ul class="space-y-1">${priorTreatments.map(t => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-accent-cyan flex-shrink-0"></span>${t}</li>`).join('')}</ul>
+            <ul class="space-y-1">${
+              priorProcedures.length
+                ? priorProcedures.map(p => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-accent-cyan flex-shrink-0"></span>${p.name}${p.date ? ' <span class="text-slate-500">(' + p.date + ')</span>' : ''}</li>`).join('')
+                : priorTreatments.map(t => `<li class="text-sm text-slate-300 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-accent-cyan flex-shrink-0"></span>${t}</li>`).join('')
+            }</ul>
           </div>
         </div>
       `)}
 
-      <!-- PRIMARY PHYSICIAN VIEW: action-required gaps first, then full criterion matrix -->
-      ${criteriaMatch.not_met.length ? card(`
+      <!-- Headline summary — top 1-3 reasons case is strong or weak (Peter C10-C13 #6) -->
+      ${headlineSummary.length ? card(`
+        <h3 class="text-lg font-semibold text-white mb-3 flex items-center gap-2">
+          <svg class="w-5 h-5 text-accent-cyan" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Headline
+        </h3>
+        <ul class="space-y-1.5">
+          ${headlineSummary.slice(0,3).map(r => `<li class="text-sm text-slate-200 flex items-start gap-2"><span class="w-1.5 h-1.5 rounded-full bg-accent-cyan mt-1.5 flex-shrink-0"></span>${escapeHtml(r)}</li>`).join('')}
+        </ul>
+      `) : ''}
+
+      <!-- BLOCKING GAPS — only true deficiencies (Peter C10-C13 #1) -->
+      ${gapClass && gapClass.blocking && gapClass.blocking.length ? card(`
         <h3 class="text-lg font-semibold text-white mb-3 flex items-center gap-2">
           <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z"/></svg>
-          <span id="gaps-header">Action required (${criteriaMatch.not_met.length} gap${criteriaMatch.not_met.length === 1 ? '' : 's'})</span>
+          Blocking deficiencies (${gapClass.blocking.length})
         </h3>
-        <p class="text-xs text-slate-500 mb-3">These criteria are not yet satisfied. Click <span class="text-emerald-400">✓ Address</span> if you have already documented or resolved one.</p>
+        <p class="text-xs text-slate-500 mb-3">These are real gaps — required criteria not satisfied by any pathway. The case cannot be approved without addressing them.</p>
+        <div class="space-y-3">
+          ${gapClass.blocking.map(g => `
+            <div class="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
+              <p class="text-sm font-medium text-red-300">${escapeHtml(g.code || '')}${g._pathway_group ? ' <span class="text-xs text-slate-500">(all '+escapeHtml(g._pathway_group)+' pathways unmet)</span>' : ''}</p>
+              <p class="text-xs text-slate-400 mt-1">${escapeHtml(g.gap || g.reasoning || '')}</p>
+              ${g.recommendation ? `<p class="text-xs text-amber-300 mt-1"><span class="text-amber-400">Recommendation:</span> ${escapeHtml(g.recommendation)}</p>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `) : ''}
+
+      <!-- ALTERNATIVE PATHWAYS NOT USED — not gaps, just alternatives not needed -->
+      ${gapClass && gapClass.alternative_not_used && gapClass.alternative_not_used.length ? `
+        <details class="bg-surface rounded-xl border border-surface-border">
+          <summary class="cursor-pointer px-6 py-4 text-sm font-semibold text-slate-400 hover:text-accent-cyan transition flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            Alternative pathways not used (${gapClass.alternative_not_used.length}) — NOT gaps
+          </summary>
+          <div class="px-6 pb-5">
+            <p class="text-xs text-slate-500 mb-3">Another criterion in each pathway group is already satisfied, so these aren't deficiencies — just alternative routes the case didn't need.</p>
+            <div class="space-y-2">
+              ${gapClass.alternative_not_used.map(g => `
+                <div class="bg-slate-500/5 border border-slate-500/20 rounded-lg px-3 py-2">
+                  <p class="text-sm text-slate-400">${escapeHtml(g.code || '')} ${g._pathway_group ? '<span class="text-xs">('+escapeHtml(g._pathway_group)+')</span>' : ''}</p>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </details>
+      ` : ''}
+
+      <!-- Supporting unmet — reduces score but not blocking -->
+      ${gapClass && gapClass.supporting_unmet && gapClass.supporting_unmet.length ? `
+        <details class="bg-surface rounded-xl border border-surface-border">
+          <summary class="cursor-pointer px-6 py-4 text-sm font-semibold text-slate-400 hover:text-accent-cyan transition flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            Supporting criteria not met (${gapClass.supporting_unmet.length}) — reduce score but non-blocking
+          </summary>
+          <div class="px-6 pb-5">
+            <div class="space-y-2">
+              ${gapClass.supporting_unmet.map(g => `
+                <div class="bg-amber-500/5 border border-amber-500/20 rounded-lg px-3 py-2">
+                  <p class="text-sm text-amber-200">${escapeHtml(g.code || '')} — ${escapeHtml(g.gap || g.reasoning || '')}</p>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </details>
+      ` : ''}
+
+      <!-- LEGACY fallback: if backend didn't provide gap_classification, show flat list -->
+      ${(!gapClass && criteriaMatch.not_met.length) ? card(`
+        <h3 class="text-lg font-semibold text-white mb-3 flex items-center gap-2">
+          <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z"/></svg>
+          <span id="gaps-header">Gaps (${criteriaMatch.not_met.length})</span>
+        </h3>
         <div id="gaps-list" class="space-y-3">
           ${criteriaMatch.not_met.map((c, i) => `
             <div id="gap-${i}" class="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3 transition-all">
               <div class="flex items-start justify-between gap-2">
                 <p class="text-sm font-medium text-red-300 flex-1">${c.criterion}</p>
-                <button onclick="clearGap(${i})" class="flex-shrink-0 text-xs px-2 py-1 rounded border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 transition flex items-center gap-1" title="Mark this gap as addressed">
+                <button onclick="clearGap(${i})" class="flex-shrink-0 text-xs px-2 py-1 rounded border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 transition flex items-center gap-1">
                   <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
                   Address
                 </button>
@@ -2029,6 +2190,16 @@ This procedure is essential for determining whether percutaneous coronary interv
             </div>
           `).join('')}
         </div>
+      `) : ''}
+
+      <!-- Supplemental clinical argument (explicitly not policy-backed) -->
+      ${supplemental ? card(`
+        <h3 class="text-lg font-semibold text-amber-300 mb-2 flex items-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z"/></svg>
+          Supplemental clinical argument
+        </h3>
+        <p class="text-xs text-amber-400 mb-2">Not policy-backed — for physician judgment only.</p>
+        <p class="text-sm text-slate-300 bg-surface rounded-lg px-4 py-3 border border-surface-border">${escapeHtml(supplemental)}</p>
       `) : ''}
 
       <!-- Full criterion matrix — the primary decision view Peter preferred -->

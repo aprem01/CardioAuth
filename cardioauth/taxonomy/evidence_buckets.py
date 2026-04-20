@@ -52,10 +52,20 @@ def _extract_lvef(chart: dict) -> dict | None:
 
 
 def _extract_bmi(chart: dict) -> dict | None:
-    """Pull BMI from comorbidities, additional notes, or imaging."""
+    """Pull BMI. v2 sources: active_comorbidities + additional_notes + imaging.
+    Falls back to legacy comorbidities list.
+    """
     haystacks = []
+    # v2 preferred
+    for c in chart.get("active_comorbidities", []) or []:
+        haystacks.append(("active_comorbidities", c))
+    for c in chart.get("exam_findings", []) or []:
+        if isinstance(c, dict):
+            haystacks.append(("exam_findings", c.get("finding", "")))
+    # Legacy
     for c in chart.get("comorbidities", []) or []:
-        haystacks.append(("comorbidities", c))
+        haystacks.append(("comorbidities_legacy", c))
+    haystacks.append(("additional_notes", chart.get("additional_notes", "") or ""))
     for img in chart.get("relevant_imaging", []) or []:
         haystacks.append(("imaging", img.get("result_summary", "")))
     for src, text in haystacks:
@@ -66,7 +76,34 @@ def _extract_bmi(chart: dict) -> dict | None:
 
 
 def _extract_hr_percent(chart: dict) -> dict | None:
-    """Pull % maximum predicted HR from prior stress test imaging."""
+    """Pull % MPHR. v2 preferred: prior_stress_tests entries. Legacy fallback
+    to imaging entries tagged as stress tests.
+    """
+    # v2 preferred: prior_stress_tests
+    for st in chart.get("prior_stress_tests", []) or []:
+        if not isinstance(st, dict):
+            continue
+        explicit = str(st.get("max_hr_percent", "") or "").strip()
+        if explicit:
+            m = re.search(r"(\d{1,3})", explicit)
+            if m:
+                return {
+                    "value": int(m.group(1)),
+                    "source_date": st.get("date", ""),
+                    "source": "prior_stress_tests",
+                    "raw": explicit,
+                }
+        text = str(st.get("result_summary", "") or "").lower()
+        m = re.search(r"(\d{1,3})\s*%\s*(?:of\s*)?(?:max|mphr|maximum predicted)", text)
+        if m:
+            return {
+                "value": int(m.group(1)),
+                "source_date": st.get("date", ""),
+                "source": "prior_stress_tests",
+                "raw": str(st.get("result_summary", ""))[:200],
+            }
+
+    # Legacy fallback
     for img in chart.get("relevant_imaging", []) or []:
         text = (img.get("result_summary", "") + " " + img.get("type", "")).lower()
         if "stress" not in text and "ett" not in text and "treadmill" not in text:
@@ -75,50 +112,81 @@ def _extract_hr_percent(chart: dict) -> dict | None:
         if m:
             return {"value": int(m.group(1)),
                     "source_date": img.get("date", ""),
+                    "source": "relevant_imaging_legacy",
                     "raw": img.get("result_summary", "")[:200]}
     return None
 
 
 def _extract_ecg_findings(chart: dict) -> str:
-    """Pull explicit ECG findings only (not echo, not stress test)."""
+    """Pull ECG findings. v2 sources structured ecg_findings; falls back to
+    legacy imaging entries with ECG type for old payloads.
+    """
     findings = []
+    # v2 preferred: structured ecg_findings list
+    for e in chart.get("ecg_findings", []) or []:
+        parts = []
+        for key in ("rhythm", "conduction", "hypertrophy_or_strain",
+                    "ischemic_changes", "pacing", "summary"):
+            v = (e.get(key) or "").strip()
+            if v:
+                parts.append(f"{key}: {v}")
+        if parts:
+            date = (e.get("date") or "").strip()
+            prefix = f"ECG ({date}) — " if date else "ECG — "
+            findings.append(prefix + "; ".join(parts))
+
+    # Legacy fallback: ECG entries that ended up in relevant_imaging
     for img in chart.get("relevant_imaging", []) or []:
         img_type = (img.get("type", "")).lower()
         if "ecg" in img_type or "ekg" in img_type or "12-lead" in img_type or "electrocardiogram" in img_type:
             findings.append(f"{img.get('type')} ({img.get('date', '')}): {img.get('result_summary', '')}")
+
+    # Legacy fallback: single ecg_findings string field (pre-v2 format)
+    legacy_ecg = chart.get("ecg_findings_text") or ""
+    if isinstance(chart.get("ecg_findings"), str):
+        # Old custom-request payloads sometimes sent ecg_findings as a plain string
+        legacy_ecg = chart["ecg_findings"]
+    if legacy_ecg:
+        findings.append(str(legacy_ecg))
+
     return "\n".join(findings) if findings else ""
 
 
 def _extract_symptoms(chart: dict) -> str:
-    """Pull symptom-relevant clinical notes (NOT diagnosis codes)."""
+    """Pull symptom documentation. v2: prefers structured current_symptoms."""
     bits = []
-    # Look in comorbidities for symptom phrases (not diagnoses)
+
+    # v2 preferred: structured symptom objects
+    for sym in chart.get("current_symptoms", []) or []:
+        if not isinstance(sym, dict):
+            continue
+        parts = [sym.get("name", "")]
+        for key in ("change_vs_baseline", "character", "onset", "frequency", "severity"):
+            v = (sym.get(key) or "").strip()
+            if v:
+                parts.append(f"{key}={v}")
+        bits.append(" | ".join(p for p in parts if p))
+
+    # Legacy fallback: symptoms that ended up in comorbidities
     for c in chart.get("comorbidities", []) or []:
         text = str(c).lower()
-        if any(sym in text for sym in ["dyspnea", "chest pain", "syncope", "palpitations", "fatigue",
-                                        "exertional", "orthopnea", "pnd", "angina", "lightheaded",
-                                        "dizziness", "presyncope", "shortness of breath", "edema"]):
-            bits.append(c)
-    # Sometimes symptoms are mentioned in additional notes / prior treatments
-    for pt in chart.get("prior_treatments", []) or []:
-        if "symptom" in str(pt).lower() or "stress" in str(pt).lower():
-            bits.append(pt)
-    # Also check additional_notes for symptom mentions
+        if any(s in text for s in ["dyspnea", "chest pain", "syncope", "palpitations", "fatigue",
+                                    "exertional", "orthopnea", "pnd", "angina", "lightheaded",
+                                    "dizziness", "presyncope", "shortness of breath", "edema"]):
+            bits.append(str(c))
+
+    # Also check additional_notes for symptom mentions (same as before)
     notes = chart.get("additional_notes", "") or ""
     if notes:
         notes_lower = notes.lower()
-        if any(sym in notes_lower for sym in ["dyspnea", "chest pain", "syncope", "palpitations",
-                                               "fatigue", "angina", "shortness of breath", "edema"]):
+        if any(s in notes_lower for s in ["dyspnea", "chest pain", "syncope", "palpitations",
+                                           "fatigue", "angina", "shortness of breath", "edema"]):
             bits.append(notes)
     return " | ".join(str(b) for b in bits) if bits else ""
 
 
 def _extract_functional_class(chart: dict) -> str:
-    """Pull NYHA, CCS angina class, or EHRA score from chart data.
-
-    These functional classifications may appear in comorbidities,
-    additional_notes, prior_treatments, or imaging result summaries.
-    """
+    """Pull NYHA / CCS / EHRA class. v2 sources symptoms[*].severity first."""
     patterns = [
         r"(?:nyha|new york heart association)\s*(?:class|functional class)?\s*(?:i{1,4}v?|[1-4])",
         r"(?:ccs|canadian cardiovascular society)\s*(?:class|angina class)?\s*(?:i{1,4}v?|[1-4])",
@@ -127,6 +195,13 @@ def _extract_functional_class(chart: dict) -> str:
         r"(?:functional class|functional capacity)\s*(?:i{1,4}v?|[1-4])",
     ]
     haystacks = []
+
+    # v2 preferred
+    for sym in chart.get("current_symptoms", []) or []:
+        if isinstance(sym, dict):
+            haystacks.append(sym.get("severity", ""))
+
+    # Legacy fallbacks
     for c in chart.get("comorbidities", []) or []:
         haystacks.append(str(c))
     haystacks.append(chart.get("additional_notes", "") or "")
@@ -143,7 +218,6 @@ def _extract_functional_class(chart: dict) -> str:
         for pat in patterns:
             m = re.search(pat, text_lower)
             if m:
-                # Extract context around the match
                 start = max(0, m.start() - 20)
                 end = min(len(text), m.end() + 20)
                 findings.append(text[start:end].strip())
@@ -264,19 +338,31 @@ def bucket_chart_evidence(chart: dict) -> dict[str, Any]:
             "age": chart.get("age"),
             "sex": chart.get("sex"),
             "bmi": bmi,
-            "body_habitus_notes": [c for c in (chart.get("comorbidities", []) or [])
-                                   if "obesity" in str(c).lower() or "bmi" in str(c).lower()],
+            # v2: body habitus from active_comorbidities first, then legacy fallback
+            "body_habitus_notes": [
+                c for c in (chart.get("active_comorbidities", []) or chart.get("comorbidities", []) or [])
+                if "obesity" in str(c).lower() or "bmi" in str(c).lower()
+            ],
         },
 
         # Medications — for medical-therapy criteria
         "medication": _extract_medication_trials(chart),
 
-        # Clinical notes — symptom documentation, NOT diagnoses
+        # Clinical notes — v2: structured categories. Each sub-field populated
+        # from the canonical v2 bucket with legacy fallback so existing
+        # payloads still produce useful output.
         "clinical_note": {
             "symptoms": _extract_symptoms(chart),
             "functional_class": _extract_functional_class(chart),
-            "prior_treatments": chart.get("prior_treatments", []) or [],
-            "comorbidities_full": chart.get("comorbidities", []) or [],
+            "active_comorbidities": chart.get("active_comorbidities", []) or [],
+            "past_medical_history": chart.get("past_medical_history", []) or [],
+            "family_history": chart.get("family_history", []) or [],
+            "exam_findings": chart.get("exam_findings", []) or [],
+            "prior_procedures": chart.get("prior_procedures", []) or [],
+            "prior_stress_tests": chart.get("prior_stress_tests", []) or [],
+            # Legacy fields — kept for reasoning transparency; may be empty after migration
+            "prior_treatments_legacy": chart.get("prior_treatments", []) or [],
+            "comorbidities_legacy": chart.get("comorbidities", []) or [],
             "additional_notes": chart.get("additional_notes", "") or "",
             "office_notes": chart.get("office_notes", "") or chart.get("consultation_note", "") or "",
         },

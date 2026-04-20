@@ -41,6 +41,22 @@ class Criterion:
     # Empty list = legacy behavior (single-feature check). Populate for any
     # criterion whose definition has multiple conjunctive requirements.
     required_elements: list[RequiredElement] = field(default_factory=list)
+    # Apr 14 (Peter C10-C13 feedback): pathway_group identifies criteria that
+    # are ALTERNATIVE pathways to qualify, not all required together. If any
+    # criterion in the group is met, the whole group is satisfied — the unmet
+    # alternatives are NOT "blocking gaps" for the physician, just pathways
+    # not used. Empty string = criterion is evaluated independently.
+    #
+    # Example: for pharmacologic stress imaging (78492/78452), the "why can't
+    # the patient do exercise stress?" justification can come from any of:
+    #   - EX-001 (specific functional limitation preventing exercise)
+    #   - ECG-001 (LBBB)
+    #   - ECG-002 (paced rhythm)
+    #   - ECG-003 (WPW)
+    #   - ECG-004 (severe LVH with strain)
+    # All five are tagged pathway_group="pharm_stress_justification". The case
+    # qualifies if ONE is met. The other four show as "alternative not used".
+    pathway_group: str = ""
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -82,6 +98,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "78452", "78451", "75557", "75574"],
         guideline_source="ACC/ASNC AUC for Cardiac Radionuclide Imaging",
         severity="required",
+        pathway_group="prior_testing_nondiagnostic",
         required_elements=[
             RequiredElement(
                 key="prior_stress_modality_named",
@@ -104,6 +121,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "78451"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        pathway_group="prior_testing_nondiagnostic",
         required_elements=[
             RequiredElement(
                 key="ett_performed",
@@ -126,6 +144,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        pathway_group="prior_testing_nondiagnostic",
         required_elements=[
             RequiredElement(
                 key="prior_ett_done",
@@ -148,6 +167,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "75557", "75574"],
         guideline_source="ACC AUC for Echocardiography",
         severity="supporting",
+        pathway_group="prior_testing_nondiagnostic",
         required_elements=[
             RequiredElement(
                 key="prior_echo_performed",
@@ -391,6 +411,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452", "78451"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="required",
+        pathway_group="pharm_stress_justification",
         required_elements=[
             RequiredElement(
                 key="baseline_ecg_result_present",
@@ -413,6 +434,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="required",
+        pathway_group="pharm_stress_justification",
         required_elements=[
             RequiredElement(
                 key="baseline_ecg_result_present",
@@ -435,6 +457,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        pathway_group="pharm_stress_justification",
         required_elements=[
             RequiredElement(
                 key="baseline_ecg_result_present",
@@ -457,6 +480,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78452"],
         guideline_source="ACC/AHA Stress Testing Guidelines",
         severity="supporting",
+        pathway_group="pharm_stress_justification",
         required_elements=[
             RequiredElement(
                 key="lvh_present",
@@ -743,6 +767,7 @@ CRITERION_TAXONOMY: dict[str, Criterion] = {
         applies_to=["78492", "78491", "78452", "78451"],  # Pharmacologic PET + SPECT both
         guideline_source="Multi-payer pharmacologic stress requirement",
         severity="required",
+        pathway_group="pharm_stress_justification",
         required_elements=[
             RequiredElement(
                 key="specific_limiting_condition",
@@ -825,3 +850,97 @@ def get_criteria_for_procedure(cpt_code: str, payer: str = "") -> list[Criterion
 def get_categories() -> dict[str, str]:
     """Return the category code → label mapping."""
     return CATEGORIES.copy()
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Pathway group helpers (Apr 14 — Peter C10-C13 feedback)
+# ────────────────────────────────────────────────────────────────────────
+
+def get_pathway_groups(cpt_code: str, payer: str = "") -> dict[str, list[Criterion]]:
+    """Return criteria grouped by pathway_group for a given CPT/payer.
+
+    Criteria without a pathway_group land under a "__independent__" key —
+    each is evaluated on its own. Criteria WITH a pathway_group are
+    alternatives: if any is met, the group is satisfied.
+    """
+    groups: dict[str, list[Criterion]] = {}
+    for crit in get_criteria_for_procedure(cpt_code, payer):
+        key = crit.pathway_group or "__independent__"
+        groups.setdefault(key, []).append(crit)
+    return groups
+
+
+def classify_gaps(
+    applicable: list[Criterion],
+    matches: list[dict],
+) -> dict[str, list[dict]]:
+    """Partition not_met criteria into three classes.
+
+    Peter C10-C13 #1: the reasoner was flagging every unmet criterion as a
+    "gap", even when the unmet one was just an alternative pathway the case
+    didn't need. This helper separates:
+
+      - blocking: required criterion not met AND no alternative in its
+        pathway group is satisfied. This is a real gap.
+      - alternative_not_used: criterion not met, but another criterion in
+        its pathway group IS met, so this one didn't need to be satisfied.
+      - supporting_unmet: supporting (not required) criterion not met —
+        reduces score but not blocking.
+
+    The UI and narrative generator should treat these three classes very
+    differently.
+    """
+    crit_by_code = {c.code: c for c in applicable}
+    status_by_code: dict[str, str] = {}
+    for m in matches:
+        code = m.get("code", "")
+        if code:
+            status_by_code[code] = (m.get("status") or "").lower()
+
+    # For each pathway_group, is ANY member met?
+    group_has_met: dict[str, bool] = {}
+    for crit in applicable:
+        key = crit.pathway_group or ""
+        if not key:
+            continue
+        group_has_met.setdefault(key, False)
+        if status_by_code.get(crit.code) == "met":
+            group_has_met[key] = True
+
+    blocking: list[dict] = []
+    alternative_not_used: list[dict] = []
+    supporting_unmet: list[dict] = []
+
+    for m in matches:
+        code = m.get("code", "")
+        if not code or status_by_code.get(code) != "not_met":
+            continue
+        crit = crit_by_code.get(code)
+        if crit is None:
+            blocking.append(m)
+            continue
+
+        classified = dict(m)
+        classified["_gap_class"] = None
+
+        group = crit.pathway_group
+        if group and group_has_met.get(group):
+            classified["_gap_class"] = "alternative_not_used"
+            classified["_pathway_group"] = group
+            alternative_not_used.append(classified)
+            continue
+
+        if crit.severity == "required":
+            classified["_gap_class"] = "blocking"
+            if group:
+                classified["_pathway_group"] = group
+            blocking.append(classified)
+        else:
+            classified["_gap_class"] = "supporting_unmet"
+            supporting_unmet.append(classified)
+
+    return {
+        "blocking": blocking,
+        "alternative_not_used": alternative_not_used,
+        "supporting_unmet": supporting_unmet,
+    }

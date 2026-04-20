@@ -183,13 +183,28 @@ class CustomPARequest(BaseModel):
     procedure_code: str
     payer_name: str
     diagnosis_codes: list[str] = []
-    relevant_labs: list[dict[str, str]] = []
-    relevant_imaging: list[dict[str, str]] = []
-    relevant_medications: list[dict[str, str]] = []
+    relevant_labs: list[dict[str, Any]] = []
+    relevant_imaging: list[dict[str, Any]] = []
+    relevant_medications: list[dict[str, Any]] = []
+
+    # v2 canonical fields (Apr 14 — Peter feedback). All optional so old
+    # clients that only send comorbidities/prior_treatments keep working.
+    active_comorbidities: list[str] = []
+    past_medical_history: list[dict[str, Any]] = []
+    family_history: list[dict[str, Any]] = []
+    current_symptoms: list[dict[str, Any]] = []
+    exam_findings: list[dict[str, Any]] = []
+    prior_stress_tests: list[dict[str, Any]] = []
+    prior_procedures: list[dict[str, Any]] = []
+    ecg_findings_v2: list[dict[str, Any]] = []   # structured ECG
+
+    # Legacy flat fields — kept so old integrations keep working. Migrated
+    # into v2 buckets via migrate_legacy_chart() on ingest.
     prior_treatments: list[str] = []
     comorbidities: list[str] = []
     ejection_fraction: str = ""
-    ecg_findings: str = ""
+    ecg_findings: str = ""    # legacy free-text ECG string
+
     additional_notes: str = ""
     extraction_engine: str = "claude"  # "claude" | "comprehend" | "comprehend+claude"
     reasoning_mode: str = "unified"    # "unified" (new, default) | "multi-agent" (legacy)
@@ -367,23 +382,39 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
     """Run PA pipeline with user-provided clinical data."""
     log_audit(user, "create_custom_pa", f"CPT={req.procedure_code} payer={req.payer_name}")
     import uuid
-    from cardioauth.models.chart import ChartData, LabResult, ImagingResult, Medication
+    from cardioauth.models.chart import (
+        ChartData, LabResult, ImagingResult, Medication,
+        ECGFinding, StressTestResult, ProcedureHistory,
+        Symptom, ExamFinding, PMHEntry, FamilyHistoryEntry,
+    )
+    from cardioauth.models.chart_migration import migrate_legacy_chart
     from cardioauth.demo import get_demo_policy, get_demo_reasoning
 
-    # Build ChartData from custom input
+    # Build ChartData from custom input — accept both v1 (flat) and v2 (structured)
     labs = [LabResult(name=l.get("name", ""), value=l.get("value", ""), date=l.get("date", ""), unit=l.get("unit", "")) for l in req.relevant_labs]
     imaging = [ImagingResult(type=i.get("type", ""), date=i.get("date", ""), result_summary=i.get("result_summary", "")) for i in req.relevant_imaging]
     meds = [Medication(name=m.get("name", ""), dose=m.get("dose", ""), start_date=m.get("start_date", ""), indication=m.get("indication", "")) for m in req.relevant_medications]
 
-    # If ECG findings provided, add as imaging entry — critical for PET/SPECT approvals
-    if req.ecg_findings:
-        imaging.append(ImagingResult(
-            type="ECG (12-lead)",
-            date="",
-            result_summary=req.ecg_findings,
-        ))
+    # v2 structured ECG takes precedence. If client sent structured ecg_findings_v2,
+    # use those; otherwise if legacy free-text ecg_findings string was sent, wrap
+    # it as a single ECGFinding summary so it still lives in the right bucket.
+    v2_ecg = [
+        ECGFinding(
+            rhythm=e.get("rhythm", ""),
+            conduction=e.get("conduction", ""),
+            hypertrophy_or_strain=e.get("hypertrophy_or_strain", ""),
+            ischemic_changes=e.get("ischemic_changes", ""),
+            pacing=e.get("pacing", ""),
+            date=e.get("date", ""),
+            summary=e.get("summary", ""),
+        )
+        for e in req.ecg_findings_v2
+    ]
+    if req.ecg_findings and not v2_ecg:
+        v2_ecg = [ECGFinding(summary=req.ecg_findings)]
 
-    # If ejection fraction provided as standalone field, add to imaging summary
+    # If ejection_fraction sent as legacy standalone field, keep it visible as
+    # an ImagingResult so the LVEF extractors pick it up.
     if req.ejection_fraction:
         imaging.append(ImagingResult(
             type="Ejection Fraction (LVEF)",
@@ -395,18 +426,42 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         patient_id=f"CUSTOM-{uuid.uuid4().hex[:6].upper()}",
         procedure_requested=req.procedure_name,
         procedure_code=req.procedure_code,
-        diagnosis_codes=req.diagnosis_codes,
-        relevant_labs=labs,
-        relevant_imaging=imaging,
-        relevant_medications=meds,
-        prior_treatments=req.prior_treatments,
-        comorbidities=req.comorbidities,
         attending_physician="",
         insurance_id="",
         payer_name=req.payer_name,
+        diagnosis_codes=req.diagnosis_codes,
+
+        # v2 structured fields (if client supplied them)
+        active_comorbidities=req.active_comorbidities,
+        past_medical_history=[PMHEntry(**p) for p in req.past_medical_history],
+        family_history=[FamilyHistoryEntry(**f) for f in req.family_history],
+        current_symptoms=[Symptom(**s) for s in req.current_symptoms],
+        exam_findings=[ExamFinding(**e) for e in req.exam_findings],
+        ecg_findings=v2_ecg,
+        prior_stress_tests=[StressTestResult(**s) for s in req.prior_stress_tests],
+        prior_procedures=[ProcedureHistory(**p) for p in req.prior_procedures],
+
+        relevant_labs=labs,
+        relevant_imaging=imaging,
+        relevant_medications=meds,
+
+        additional_notes=req.additional_notes or "",
+
+        # Legacy flat fields — migrate_legacy_chart will route them into v2
+        prior_treatments=req.prior_treatments,
+        comorbidities=req.comorbidities,
+
         confidence_score=0.95 if labs and imaging else 0.75,
         missing_fields=[],
     )
+
+    # Migrate any legacy-only content into v2 buckets so downstream always
+    # sees clean categorization regardless of which format the client sent.
+    chart_data = migrate_legacy_chart(chart_data)
+
+    # Safety: drop future-dated labs before reasoning (Peter C10-C13 #5).
+    from cardioauth.models.chart_migration import validate_lab_source_anchoring
+    chart_data, _lab_warnings = validate_lab_source_anchoring(chart_data, strict=False)
 
     # ── Optional: AWS Comprehend Medical preprocessing ──
     # When extraction_engine includes "comprehend", run Comprehend Medical
@@ -757,6 +812,17 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         "policy_freshness": getattr(policy_data, "__dict__", {}).get("_freshness"),
         "ensemble_agreement": (
             unified_ctx.__dict__.get("_ensemble_agreement") if unified_ctx else None
+        ),
+        # Peter C10-C13: top 1-3 reasons case is strong or weak
+        "headline_summary": (
+            unified_ctx.__dict__.get("_headline_summary") if unified_ctx else []
+        ),
+        # Peter C10-C13: not_met criteria split by class
+        "gap_classification": (
+            unified_ctx.__dict__.get("_gap_classification") if unified_ctx else None
+        ),
+        "supplemental_clinical_argument": (
+            unified_ctx.__dict__.get("_supplemental_clinical_argument", "") if unified_ctx else ""
         ),
         # Short medical-necessity cover summary for portals that accept free text.
         # Derived from the narrative's first ~80 words rather than a separate
