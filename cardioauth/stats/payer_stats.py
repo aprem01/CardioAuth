@@ -229,8 +229,42 @@ _STATS_INDEX: dict[tuple[str, str], PayerStatistics] = {
 
 
 def get_payer_stats(payer: str, cpt_code: str) -> PayerStatistics | None:
-    """Return historical stats for a (payer, cpt) pair, or None if not seeded."""
-    return _STATS_INDEX.get((_canonicalize_payer(payer), cpt_code))
+    """Return historical stats for a (payer, cpt) pair.
+
+    Preference order:
+      1. Live rolling stats from recorded outcomes (if we have ≥5 real cases).
+      2. Hand-seeded baseline from public policies + industry reports.
+
+    Live stats override seeds once we have enough real outcome data to
+    produce a meaningful estimate.
+    """
+    seeded = _STATS_INDEX.get((_canonicalize_payer(payer), cpt_code))
+
+    # Try live rolling stats from the outcome store.
+    try:
+        from cardioauth.persistence import get_store
+        rolling = get_store().get_rolling_stats(payer, cpt_code)
+        if rolling and rolling.get("total", 0) >= 5 and rolling.get("approval_rate") is not None:
+            # Blend: use live approval rate, carry seeded qualitative fields
+            # (top denial reasons, p2p rates) until we also accumulate those
+            # live.
+            blended = PayerStatistics(
+                payer=seeded.payer if seeded else payer,
+                cpt_code=cpt_code,
+                approval_rate=rolling["approval_rate"],
+                top_denial_reasons=list(seeded.top_denial_reasons) if seeded else [],
+                p2p_success_rate=seeded.p2p_success_rate if seeded else None,
+                avg_days_to_decision=seeded.avg_days_to_decision if seeded else None,
+                appeal_win_rate=seeded.appeal_win_rate if seeded else None,
+                sample_size=rolling["total"],
+                data_vintage=f"live_rolling_since_{rolling.get('last_outcome_at', '')[:10]}",
+            )
+            return blended
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("payer_stats: rolling lookup failed: %s", e)
+
+    return seeded
 
 
 def list_payer_stats() -> list[PayerStatistics]:

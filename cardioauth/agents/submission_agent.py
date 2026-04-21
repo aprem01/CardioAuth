@@ -57,11 +57,24 @@ class SubmissionAgent:
         reasoning: ReasoningResult,
         submission_channel: str,
         approved_by: str,
+        cpt_code: str = "",
+        pdf_bytes: bytes = b"",
+        cover_summary: str = "",
     ) -> SubmissionResult:
+        """Actually submit the PA via the appropriate channel (or mock/fax),
+        persist the submission, and return the tracked SubmissionResult.
+        """
+        from cardioauth.persistence import get_store
+        from cardioauth.submission_channels import (
+            SubmissionPackage,
+            get_channel_for,
+        )
+
         now = datetime.now(timezone.utc)
         submission_id = f"CA-{uuid.uuid4().hex[:8].upper()}"
 
-        logger.info("SUBMISSION_AGENT: submitting %s via %s", submission_id, submission_channel)
+        logger.info("SUBMISSION_AGENT: preparing submission %s (payer=%s, requested_channel=%s)",
+                    submission_id, payer, submission_channel)
 
         audit = [
             AuditEntry(
@@ -76,31 +89,109 @@ class SubmissionAgent:
             ),
         ]
 
-        # In production, this would call the payer portal/clearinghouse/fax API.
-        # For now we build the package and return it ready for dispatch.
+        # Route through the pluggable channel layer. This actually calls
+        # something — mock returns a realistic confirmation, fax queues,
+        # portal stubs return pending_credentials until wired.
+        channel = get_channel_for(payer=payer, submission_format=submission_channel)
+        package = SubmissionPackage(
+            submission_id=submission_id,
+            patient_id=patient_id,
+            payer=payer,
+            procedure_name=procedure,
+            cpt_code=cpt_code,
+            cover_summary=cover_summary,
+            pdf_bytes=pdf_bytes,
+            metadata={"channel_name": channel.name, "approved_by": approved_by},
+        )
+        try:
+            channel_result = channel.submit(package)
+        except Exception as e:
+            logger.exception("SUBMISSION_AGENT: channel %s failed: %s", channel.name, e)
+            channel_result = None
 
-        turnaround_days = 14  # default; would come from PolicyData in production
-        expected_decision = now + timedelta(days=turnaround_days)
-        follow_up = expected_decision - timedelta(days=2)
+        if channel_result is None:
+            # Channel error — surface but do not silently succeed.
+            audit.append(AuditEntry(
+                action=f"channel_error_{channel.name}",
+                timestamp=now.isoformat(),
+                actor="SUBMISSION_AGENT",
+            ))
+            result = SubmissionResult(
+                submission_id=submission_id,
+                payer=payer,
+                procedure=procedure,
+                patient_id=patient_id,
+                submission_channel=channel.name,
+                submission_timestamp=now.isoformat(),
+                status="error",
+                audit_trail=audit,
+            )
+            self._persist(result, reasoning)
+            return result
+
+        # Successful channel call (mock / fax / portal-stub).
+        expected_decision = (
+            channel_result.expected_decision_date
+            or (now + timedelta(days=5)).date().isoformat()
+        )
+        # Follow-up 2 business days before expected decision
+        from datetime import date
+        try:
+            fu_dt = datetime.fromisoformat(expected_decision) - timedelta(days=2)
+            follow_up = fu_dt.date().isoformat() if isinstance(fu_dt, datetime) else str(fu_dt)
+        except Exception:
+            follow_up = ""
+
+        # Map channel status → SubmissionResult.status
+        status_map = {
+            "submitted": "submitted",
+            "fax_queued": "submitted",          # counts as submitted-in-flight
+            "pending_credentials": "pending_approval",  # human must push through
+            "failed": "error",
+        }
+        result_status = status_map.get(channel_result.status, "submitted")
 
         audit.append(AuditEntry(
-            action=f"submitted_via_{submission_channel}",
-            timestamp=now.isoformat(),
+            action=f"channel_{channel.name}_{channel_result.status}",
+            timestamp=channel_result.submitted_at or now.isoformat(),
             actor="SUBMISSION_AGENT",
         ))
 
-        return SubmissionResult(
+        result = SubmissionResult(
             submission_id=submission_id,
             payer=payer,
             procedure=procedure,
             patient_id=patient_id,
-            submission_channel=submission_channel,
-            submission_timestamp=now.isoformat(),
-            expected_decision_date=expected_decision.date().isoformat(),
-            follow_up_scheduled=follow_up.date().isoformat(),
-            status="submitted",
+            submission_channel=channel.name,
+            submission_timestamp=channel_result.submitted_at or now.isoformat(),
+            confirmation_number=channel_result.confirmation_number,
+            expected_decision_date=expected_decision,
+            follow_up_scheduled=follow_up,
+            status=result_status,
             audit_trail=audit,
         )
+        result.__dict__["_channel_notes"] = channel_result.channel_notes
+        result.__dict__["_channel_requires_human_action"] = channel_result.requires_human_action
+
+        self._persist(result, reasoning, cpt_code=cpt_code)
+        return result
+
+    def _persist(self, result: SubmissionResult, reasoning: ReasoningResult, cpt_code: str = "") -> None:
+        """Write the submission to durable storage so it survives restarts."""
+        try:
+            from cardioauth.persistence import get_store
+            store = get_store()
+            data = result.model_dump(mode="json")
+            data["cpt_code"] = cpt_code or data.get("procedure_code", "")
+            store.save_submission(result.submission_id, data)
+            store.append_audit(
+                actor=result.audit_trail[0].actor if result.audit_trail else "system",
+                action="submission_persisted",
+                subject_id=result.submission_id,
+                detail=f"status={result.status} channel={result.submission_channel}",
+            )
+        except Exception as e:
+            logger.warning("SUBMISSION_AGENT: failed to persist %s: %s", result.submission_id, e)
 
     def process_outcome(
         self,

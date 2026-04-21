@@ -629,11 +629,36 @@ class Orchestrator:
         review: ReviewPackage,
         approved_by: str,
     ) -> SubmissionResult:
-        """Submit the PA after the cardiologist has approved."""
+        """Submit the PA after the cardiologist has approved.
+
+        Generates the submission-packet PDF and routes it through the
+        pluggable channel layer (mock/fax/portal-stub). The channel actually
+        transmits (or queues) the package — this isn't just building it.
+        """
         if not approved_by:
             raise ValueError("Cannot submit without an identified approver")
 
         logger.info("ORCHESTRATOR: Step 4 — SUBMISSION_AGENT (approved by %s)", approved_by)
+
+        # Build the payer-ready PDF so the channel has something to transmit.
+        pdf_bytes = b""
+        cover_summary = ""
+        try:
+            from cardioauth.pdf_generator import generate_submission_packet
+            cover_summary = (review.reasoning.pa_narrative_draft or "")[:600]
+            # Trim cover_summary to ~80 words like the API endpoint does
+            words = cover_summary.split()
+            cover_summary = " ".join(words[:80]) + ("…" if len(words) > 80 else "")
+            pdf_bytes = generate_submission_packet(
+                chart_data=review.chart_data.model_dump(),
+                policy_data=review.policy_data.model_dump(),
+                reasoning=review.reasoning.model_dump(),
+                cover_summary=cover_summary,
+                criterion_audit_trail=review.criterion_audit_trail,
+                raw_note="",
+            )
+        except Exception as e:
+            logger.warning("ORCHESTRATOR: PDF generation failed, submitting without attachment: %s", e)
 
         return self.submission_agent.submit(
             patient_id=review.chart_data.patient_id,
@@ -642,6 +667,9 @@ class Orchestrator:
             reasoning=review.reasoning,
             submission_channel=review.policy_data.submission_format,
             approved_by=approved_by,
+            cpt_code=review.chart_data.procedure_code or review.policy_data.cpt_code or "",
+            pdf_bytes=pdf_bytes,
+            cover_summary=cover_summary,
         )
 
     def process_payer_response(

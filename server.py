@@ -87,8 +87,80 @@ if _missing_config:
 
 orchestrator = Orchestrator(config)
 
-# In-memory store for review packages (use Redis/DB in production)
+# In-memory hot cache for the active session. Every write also persists to
+# the Store so reviews survive container restarts.
 _reviews: dict[str, ReviewPackage] = {}
+
+
+def _review_to_store_dict(review: ReviewPackage) -> dict:
+    """Serialize a ReviewPackage into a JSON-safe dict for persistence.
+
+    We keep the core pydantic fields as model_dump() output and attach the
+    auxiliary dataclass fields that are already JSON-compatible. On reload
+    we reconstruct a ReviewPackage via _review_from_store_dict().
+    """
+    return {
+        "chart_data": review.chart_data.model_dump(mode="json"),
+        "policy_data": review.policy_data.model_dump(mode="json"),
+        "reasoning": review.reasoning.model_dump(mode="json"),
+        "requires_human_action": list(review.requires_human_action),
+        "taxonomy_match": review.taxonomy_match,
+        "system_warnings": list(review.system_warnings),
+        "retrieved_chunks": list(review.retrieved_chunks),
+        "criterion_citations": list(review.criterion_citations),
+        "criterion_audit_trail": list(review.criterion_audit_trail),
+        "validation_reports": list(review.validation_reports),
+        "payer_stats": review.payer_stats,
+        "payer_global_rules": list(review.payer_global_rules),
+        "policy_freshness": review.policy_freshness,
+    }
+
+
+def _review_from_store_dict(data: dict) -> ReviewPackage:
+    from cardioauth.models import ChartData, PolicyData
+    from cardioauth.models.reasoning import ReasoningResult
+    return ReviewPackage(
+        chart_data=ChartData(**data["chart_data"]),
+        policy_data=PolicyData(**data["policy_data"]),
+        reasoning=ReasoningResult(**data["reasoning"]),
+        requires_human_action=data.get("requires_human_action", []),
+        taxonomy_match=data.get("taxonomy_match"),
+        system_warnings=data.get("system_warnings", []),
+        retrieved_chunks=data.get("retrieved_chunks", []),
+        criterion_citations=data.get("criterion_citations", []),
+        criterion_audit_trail=data.get("criterion_audit_trail", []),
+        validation_reports=data.get("validation_reports", []),
+        payer_stats=data.get("payer_stats"),
+        payer_global_rules=data.get("payer_global_rules", []),
+        policy_freshness=data.get("policy_freshness"),
+    )
+
+
+def _save_review(review_id: str, review: ReviewPackage, user_id: str = "") -> None:
+    """Persist a review to the Store AND keep it in the hot cache."""
+    _reviews[review_id] = review
+    try:
+        from cardioauth.persistence import get_store
+        get_store().save_review(review_id, _review_to_store_dict(review), user_id=user_id)
+    except Exception as e:
+        logging.warning("persistence: failed to save review %s: %s", review_id, e)
+
+
+def _load_review(review_id: str) -> ReviewPackage | None:
+    """Return a review from the hot cache, or rehydrate from the Store."""
+    cached = _reviews.get(review_id)
+    if cached is not None:
+        return cached
+    try:
+        from cardioauth.persistence import get_store
+        raw = get_store().get_review(review_id)
+        if raw:
+            review = _review_from_store_dict(raw)
+            _reviews[review_id] = review
+            return review
+    except Exception as e:
+        logging.warning("persistence: failed to load review %s: %s", review_id, e)
+    return None
 
 
 # Global exception handler — never leak stack traces to the client
@@ -755,7 +827,7 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         criterion_audit_trail = []
         validation_reports = []
 
-    _reviews[request_id] = review
+    _save_review(request_id, review, user_id=user.id)
 
     # Persist to database (best-effort — don't block response if DB fails)
     try:
@@ -862,7 +934,7 @@ def create_pa_request(req: PARequest, user: AuthUser = Depends(get_current_user)
         raise HTTPException(status_code=500, detail=str(e))
 
     request_id = review.chart_data.patient_id + "-" + review.chart_data.procedure_code
-    _reviews[request_id] = review
+    _save_review(request_id, review, user_id=user.id if hasattr(user, "id") else "")
 
     from cardioauth.demo import DEMO_PATIENT_INFO
 
@@ -892,7 +964,7 @@ def create_pa_request(req: PARequest, user: AuthUser = Depends(get_current_user)
 @app.post("/api/pa/approve")
 def approve_and_submit(req: ApprovalRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Step 4: Cardiologist approves — submit to payer."""
-    review = _reviews.get(req.request_id)
+    review = _load_review(req.request_id)
     if not review:
         raise HTTPException(status_code=404, detail="Review package not found")
 
@@ -901,7 +973,18 @@ def approve_and_submit(req: ApprovalRequest, user: AuthUser = Depends(get_curren
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    del _reviews[req.request_id]
+    # Keep the review record for audit — don't delete post-submission. Future
+    # outcome events need to be able to look it up.
+    from cardioauth.persistence import get_store
+    try:
+        get_store().append_audit(
+            actor=req.approved_by,
+            action="pa_approved_and_submitted",
+            subject_id=req.request_id,
+            detail=f"submission_id={submission.submission_id}",
+        )
+    except Exception:
+        pass
 
     return submission.model_dump()
 
@@ -927,6 +1010,160 @@ def process_outcome(req: PayerResponseRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
     return outcome.model_dump()
+
+
+class OutcomeRecordRequest(BaseModel):
+    submission_id: str
+    outcome: str                       # APPROVED | DENIED | PENDING | INFO_REQUESTED
+    denial_reason: str = ""
+    authorization_number: str = ""
+    recorded_by: str = ""
+    notes: str = ""
+
+
+@app.post("/api/pa/outcome/record")
+def record_outcome(req: OutcomeRecordRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Manually record a payer decision on a submitted PA.
+
+    This is the outcome feedback loop — when a payer responds (via portal
+    notification, fax, phone), staff record the outcome here. The pipeline:
+
+      1. Save the outcome to durable storage (persisted, survives restarts)
+      2. Update submission status to reflect the decision
+      3. Update rolling stats for (payer, cpt_code) so future cases
+         calibrate against real outcomes, not just seed data
+      4. Store the outcome as a precedent in Pinecone (best-effort) so
+         similarity retrieval sees real-world outcomes
+      5. If DENIED + appeal recommended, return an appeal draft
+      6. Append to the immutable audit log
+
+    This is how the system learns from real submissions.
+    """
+    from cardioauth.persistence import get_store
+    store = get_store()
+
+    outcome_upper = (req.outcome or "").upper()
+    if outcome_upper not in ("APPROVED", "DENIED", "PENDING", "INFO_REQUESTED"):
+        raise HTTPException(status_code=400, detail=f"Invalid outcome '{req.outcome}'")
+
+    # Look up the submission for context
+    submission = store.get_submission(req.submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail=f"Submission {req.submission_id} not found")
+
+    payer = submission.get("payer", "")
+    cpt_code = submission.get("cpt_code", "") or submission.get("procedure_code", "")
+    procedure = submission.get("procedure", "")
+
+    # 1. Persist the outcome
+    outcome_record = {
+        "submission_id": req.submission_id,
+        "outcome": outcome_upper,
+        "denial_reason": req.denial_reason,
+        "authorization_number": req.authorization_number,
+        "recorded_by": req.recorded_by or user.id,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "payer": payer,
+        "cpt_code": cpt_code,
+        "procedure": procedure,
+        "notes": req.notes,
+    }
+    store.save_outcome(req.submission_id, outcome_record)
+
+    # 2. Update the submission status
+    if outcome_upper == "APPROVED":
+        store.update_submission_status(req.submission_id, "approved",
+                                        note=f"Auth# {req.authorization_number}")
+    elif outcome_upper == "DENIED":
+        store.update_submission_status(req.submission_id, "denied",
+                                        note=req.denial_reason or "no reason stated")
+    elif outcome_upper == "PENDING":
+        store.update_submission_status(req.submission_id, "pending",
+                                        note=req.notes)
+    elif outcome_upper == "INFO_REQUESTED":
+        store.update_submission_status(req.submission_id, "info_requested",
+                                        note=req.notes)
+
+    # 3. Update rolling stats
+    if payer and cpt_code:
+        store.record_outcome_for_stats(payer, cpt_code, outcome_upper)
+
+    # 4. Best-effort precedent store for Pinecone
+    precedent_stored = False
+    try:
+        from cardioauth.case_context import CaseContext, PrecedentCase
+        from cardioauth.agents.precedent_retriever import store_case_as_precedent
+        # We don't have a live CaseContext here — build a skeletal one from
+        # the submission + outcome metadata. Precedent retriever only needs
+        # enough to index.
+        ctx = CaseContext(
+            case_id=req.submission_id,
+            procedure_code=cpt_code,
+            procedure_name=procedure,
+            payer_name=payer,
+            user_id=user.id,
+        )
+        ctx.criterion_matches = submission.get("criterion_matches", []) or []
+        ctx.approval_score = submission.get("approval_score", 0.0) or 0.0
+        ctx.approval_label = submission.get("approval_label", "") or ""
+        store_case_as_precedent(ctx, outcome=outcome_upper.lower())
+        precedent_stored = True
+    except Exception as e:
+        logging.warning("outcome recording: precedent write failed: %s", e)
+
+    # 5. Draft appeal if denied
+    appeal_draft = ""
+    if outcome_upper == "DENIED" and req.denial_reason:
+        try:
+            from cardioauth.demo import get_demo_appeal
+            # Rehydrate review if possible for a richer appeal
+            review_id = submission.get("review_id", "") or f"{submission.get('patient_id', '')}-{cpt_code}"
+            review = _load_review(review_id)
+            if review:
+                appeal_draft = get_demo_appeal(
+                    review.chart_data, review.policy_data, req.denial_reason,
+                )
+        except Exception as e:
+            logging.warning("outcome recording: appeal draft failed: %s", e)
+
+    # 6. Audit
+    store.append_audit(
+        actor=req.recorded_by or user.id,
+        action=f"outcome_recorded_{outcome_upper}",
+        subject_id=req.submission_id,
+        detail=f"payer={payer} cpt={cpt_code} denial={req.denial_reason[:100]}",
+    )
+
+    return {
+        "submission_id": req.submission_id,
+        "outcome": outcome_upper,
+        "persisted": True,
+        "stats_updated": bool(payer and cpt_code),
+        "precedent_stored": precedent_stored,
+        "appeal_draft": appeal_draft,
+        "submission_status": outcome_upper.lower(),
+    }
+
+
+@app.get("/api/pa/outcome/{submission_id}")
+def get_outcome_record(submission_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Look up the recorded outcome for a submission."""
+    from cardioauth.persistence import get_store
+    outcome = get_store().get_outcome(submission_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail=f"No outcome recorded for {submission_id}")
+    return outcome
+
+
+@app.get("/api/submissions/{submission_id}")
+def get_submission_record(submission_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Look up a persisted submission by ID (survives container restart)."""
+    from cardioauth.persistence import get_store
+    submission = get_store().get_submission(submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail=f"Submission {submission_id} not found")
+    outcome = get_store().get_outcome(submission_id)
+    return {"submission": submission, "outcome": outcome}
 
 
 class ModifierCheckRequest(BaseModel):
@@ -958,7 +1195,7 @@ class AppealRequest(BaseModel):
 @app.post("/api/pa/appeal")
 def generate_appeal(req: AppealRequest) -> dict[str, Any]:
     """Generate an appeal draft for a denied PA."""
-    review = _reviews.get(req.request_id)
+    review = _load_review(req.request_id)
     if review:
         chart_data = review.chart_data
         policy_data = review.policy_data
@@ -1466,7 +1703,7 @@ def promote_emerging(req: PromoteRequest) -> dict[str, Any]:
 @app.post("/api/pa/export-pdf")
 def export_pdf(req: ApprovalRequest):
     """Export the PA review package as a PDF letter."""
-    review = _reviews.get(req.request_id)
+    review = _load_review(req.request_id)
     if not review:
         raise HTTPException(status_code=404, detail="Review package not found")
 
@@ -1500,7 +1737,7 @@ def export_submission_packet(req: ApprovalRequest):
 
     This is the artifact back-office staff send to the payer portal.
     """
-    review = _reviews.get(req.request_id)
+    review = _load_review(req.request_id)
     if not review:
         raise HTTPException(status_code=404, detail="Review package not found")
 
