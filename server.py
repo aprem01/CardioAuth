@@ -460,8 +460,18 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
     chart_data = migrate_legacy_chart(chart_data)
 
     # Safety: drop future-dated labs before reasoning (Peter C10-C13 #5).
+    # Collect warnings so the physician sees which labs we rejected.
     from cardioauth.models.chart_migration import validate_lab_source_anchoring
-    chart_data, _lab_warnings = validate_lab_source_anchoring(chart_data, strict=False)
+    chart_data, lab_warnings = validate_lab_source_anchoring(chart_data, strict=False)
+    lab_safety_warnings = [
+        {
+            "level": "warning",
+            "agent": "LAB_SAFETY",
+            "kind": "lab_dropped",
+            "message": w,
+        }
+        for w in lab_warnings
+    ]
 
     # ── Optional: AWS Comprehend Medical preprocessing ──
     # When extraction_engine includes "comprehend", run Comprehend Medical
@@ -791,10 +801,15 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         "chart_data": chart_data.model_dump(),
         "policy_data": policy_data.model_dump(),
         "taxonomy_match": taxonomy_match,
-        "system_warnings": (review.system_warnings if hasattr(review, 'system_warnings') else []) + (unified_ctx.system_warnings if unified_ctx else []),
+        "system_warnings": (
+            (review.system_warnings if hasattr(review, 'system_warnings') else [])
+            + (unified_ctx.system_warnings if unified_ctx else [])
+            + lab_safety_warnings
+        ),
         "retrieved_chunks": getattr(policy_data, "__dict__", {}).get("_retrieved_chunks", []),
         "criterion_citations": getattr(policy_data, "__dict__", {}).get("_criterion_citations", []),
         "reasoning_mode": reasoning_mode,
+        "extraction_engine": getattr(req, "extraction_engine", "claude"),
         "reasoning_trace": (
             [{"agent": t.agent_name, "action": t.action, "summary": t.output_summary, "ms": t.duration_ms}
              for t in unified_ctx.reasoning_trace]

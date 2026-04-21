@@ -120,6 +120,16 @@ NEGATIVE EXAMPLES — common mistakes the previous schema made. Do NOT repeat:
    NOT past_medical_history (PCI is an intervention).
    NOT prior_stress_tests.
 
+✗ DO NOT INFER DIAGNOSES FROM MEDICATIONS. This is a frequent and
+   dangerous over-inference. If a patient is on levothyroxine, you may
+   NOT add "hypothyroidism" to diagnosis_codes or active_comorbidities
+   unless the diagnosis is explicitly documented elsewhere in the chart.
+   Same for: atorvastatin → hyperlipidemia, metformin → diabetes,
+   warfarin → AF/DVT, levothyroxine → hypothyroidism, furosemide → HF.
+   A medication list is evidence of what the patient is taking, not
+   confirmation of the underlying diagnosis. Peter flagged the
+   levothyroxine → hypothyroidism case explicitly (C13 Apr 14).
+
 ═══════════════════════════════════════════════════════════════════════════
 CONTRADICTION + RECENCY HANDLING (Peter C10-C13 Apr 14)
 ═══════════════════════════════════════════════════════════════════════════

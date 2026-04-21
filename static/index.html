@@ -1635,6 +1635,7 @@
       retrieved_chunks: api.retrieved_chunks || [],
       criterion_citations: api.criterion_citations || [],
       reasoning_mode: api.reasoning_mode || 'multi-agent',
+      extraction_engine: api.extraction_engine || 'claude',
       reasoning_trace: api.reasoning_trace || [],
       clinical_relationships: api.clinical_relationships || [],
       audit_trail: [
@@ -1947,7 +1948,16 @@ This procedure is essential for determining whether percutaneous coronary interv
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
           Dashboard
         </button>
-        <span class="text-sm font-mono text-slate-500">${data.request_id || 'PA-2026-XXXX'}</span>
+        <div class="flex items-center gap-2">
+          ${(() => {
+            const engine = (data.extraction_engine || 'claude').toLowerCase();
+            if (engine === 'claude') {
+              return '<span class="text-xs px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" title="Claude Only — Peter recommended default (safer, closer to source)">🛡 Claude Only</span>';
+            }
+            return '<span class="text-xs px-2 py-1 rounded-full bg-amber-500/10 border border-amber-500/40 text-amber-300" title="Comprehend+Claude — better entity pickup but stronger guardrails needed per Peter C12">⚠ Comprehend + Claude</span>';
+          })()}
+          <span class="text-sm font-mono text-slate-500">${data.request_id || 'PA-2026-XXXX'}</span>
+        </div>
       </div>
 
       ${systemWarnings.length ? renderSystemWarnings(systemWarnings) : ''}
