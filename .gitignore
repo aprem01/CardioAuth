@@ -7,3 +7,7 @@ dist/
 .DS_Store
 *.pem
 jwks.json
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
