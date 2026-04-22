@@ -112,6 +112,11 @@ class PolicyAgent:
         self.config = config
         self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
 
+    # Payer criteria for a given CPT are effectively stable within a short
+    # window. Cache the PolicyData for 1 hour to avoid re-running RAG + Claude
+    # on every case during a demo session or burst of validation cases.
+    _CACHE_TTL_SECONDS = 3600
+
     def run(
         self,
         procedure_code: str,
@@ -119,6 +124,24 @@ class PolicyAgent:
         cms_context: dict | None = None,
     ) -> PolicyData:
         logger.info("POLICY_AGENT: retrieving policy chunks for procedure=%s payer=%s", procedure_code, payer_name)
+
+        # ── Response cache check (1h TTL) ──
+        cache_key = f"policy_agent:v2:{payer_name}:{procedure_code}"
+        try:
+            from cardioauth.persistence import get_store
+            cached = get_store().cache_get(cache_key)
+            if cached:
+                logger.info("POLICY_AGENT: cache HIT for %s / %s", procedure_code, payer_name)
+                policy = PolicyData(**cached["policy"])
+                policy.__dict__["_retrieved_chunks"] = cached.get("_retrieved_chunks", [])
+                policy.__dict__["_criterion_citations"] = cached.get("_criterion_citations", [])
+                policy.__dict__["_payer_stats"] = cached.get("_payer_stats")
+                policy.__dict__["_payer_global_rules"] = cached.get("_payer_global_rules", [])
+                policy.__dict__["_freshness"] = cached.get("_freshness")
+                policy.__dict__["_cache_hit"] = True
+                return policy
+        except Exception as e:
+            logger.warning("POLICY_AGENT cache_get failed (continuing): %s", e)
 
         # ── Stage 1 RAG retrieval ──
         from cardioauth.rag import retrieve_for_pa
@@ -162,21 +185,25 @@ class PolicyAgent:
                 f"ACC/AHA guidelines, and leave cited_chunk_ids empty."
             )
 
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=8000,
-            system=SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Build the prior authorization criteria for:\n"
-                    f"  Procedure CPT: {procedure_code}\n"
-                    f"  Payer: {payer_name}\n"
-                    f"{cms_section}"
-                    f"{chunks_section}"
-                ),
-            }],
-        )
+        from cardioauth.claude_cost import TimedCall, system_with_cache_control, track_usage
+        with TimedCall() as _t:
+            response = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=8000,
+                system=system_with_cache_control(SYSTEM_PROMPT),
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Build the prior authorization criteria for:\n"
+                        f"  Procedure CPT: {procedure_code}\n"
+                        f"  Payer: {payer_name}\n"
+                        f"{cms_section}"
+                        f"{chunks_section}"
+                    ),
+                }],
+            )
+        track_usage(response, agent="POLICY_AGENT", model=self.config.model,
+                    duration_ms=_t.ms, case_id=f"{payer_name}-{procedure_code}")
 
         raw = response.content[0].text
         from cardioauth.agents.json_recovery import parse_llm_json
@@ -238,5 +265,23 @@ class PolicyAgent:
 
         if policy.auth_required is None:
             logger.warning("POLICY_AGENT: auth_required unknown for %s / %s", procedure_code, payer_name)
+
+        # ── Response cache write (1h TTL) ──
+        try:
+            from cardioauth.persistence import get_store
+            get_store().cache_set(
+                cache_key,
+                {
+                    "policy": policy.model_dump(mode="json"),
+                    "_retrieved_chunks": policy.__dict__.get("_retrieved_chunks", []),
+                    "_criterion_citations": policy.__dict__.get("_criterion_citations", []),
+                    "_payer_stats": policy.__dict__.get("_payer_stats"),
+                    "_payer_global_rules": policy.__dict__.get("_payer_global_rules", []),
+                    "_freshness": policy.__dict__.get("_freshness"),
+                },
+                ttl_seconds=self._CACHE_TTL_SECONDS,
+            )
+        except Exception as e:
+            logger.warning("POLICY_AGENT cache_set failed (continuing): %s", e)
 
         return policy

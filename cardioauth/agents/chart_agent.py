@@ -245,21 +245,25 @@ class ChartAgent:
 
         fhir_bundle = self.fhir.get_patient_bundle(patient_id, procedure_code)
 
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=3000,
-            system=SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Extract clinical data for prior authorization.\n"
-                    f"Patient ID: {patient_id}\n"
-                    f"Procedure code (CPT): {procedure_code}\n"
-                    f"Payer ID: {payer_id}\n\n"
-                    f"FHIR Resources:\n{json.dumps(fhir_bundle, indent=2, default=str)}"
-                ),
-            }],
-        )
+        from cardioauth.claude_cost import TimedCall, system_with_cache_control, track_usage
+        with TimedCall() as _t:
+            response = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=3000,
+                system=system_with_cache_control(SYSTEM_PROMPT),
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Extract clinical data for prior authorization.\n"
+                        f"Patient ID: {patient_id}\n"
+                        f"Procedure code (CPT): {procedure_code}\n"
+                        f"Payer ID: {payer_id}\n\n"
+                        f"FHIR Resources:\n{json.dumps(fhir_bundle, indent=2, default=str)}"
+                    ),
+                }],
+            )
+        track_usage(response, agent="CHART_AGENT", model=self.config.model,
+                    duration_ms=_t.ms, case_id=f"{patient_id}-{procedure_code}")
 
         raw = response.content[0].text
         data = json.loads(raw)

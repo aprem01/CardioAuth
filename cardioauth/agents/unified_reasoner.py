@@ -676,16 +676,28 @@ class UnifiedReasoner:
         run_index: int,
     ) -> dict | None:
         """One LLM call. Returns {data, tokens} or None on failure."""
+        from cardioauth.claude_cost import TimedCall, system_with_cache_control, track_usage
         try:
             kwargs = dict(
                 model=self.config.model,
                 max_tokens=8000,
-                system=SYSTEM_PROMPT,
+                # Cache the large stable system prompt (~6KB) so ensemble
+                # runs 2 and 3 read it from cache instead of re-tokenizing.
+                system=system_with_cache_control(SYSTEM_PROMPT),
                 messages=[{"role": "user", "content": user_msg}],
             )
             if temperature > 0:
                 kwargs["temperature"] = temperature
-            response = self.client.messages.create(**kwargs)
+            with TimedCall() as _t:
+                response = self.client.messages.create(**kwargs)
+            track_usage(
+                response,
+                agent="UNIFIED_REASONER",
+                model=self.config.model,
+                duration_ms=_t.ms,
+                case_id=ctx.case_id,
+            )
+
             raw = response.content[0].text
             tokens = 0
             if hasattr(response, "usage"):

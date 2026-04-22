@@ -82,6 +82,30 @@ class Store(ABC):
         Used by the criterion-outcome correlation report.
         """
 
+    @abstractmethod
+    def log_cost(
+        self,
+        *,
+        agent: str,
+        model: str = "",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        duration_ms: int = 0,
+        endpoint: str = "",
+        case_id: str = "",
+    ) -> None: ...
+
+    @abstractmethod
+    def summarize_cost(self, window_hours: int = 24, agent: str = "") -> dict: ...
+
+    @abstractmethod
+    def cache_get(self, cache_key: str) -> dict | None: ...
+
+    @abstractmethod
+    def cache_set(self, cache_key: str, value: dict, ttl_seconds: int) -> None: ...
+
 
 # ────────────────────────────────────────────────────────────────────────
 # SQLite backend (default)
@@ -141,6 +165,34 @@ CREATE TABLE IF NOT EXISTS stats_rollup (
     last_outcome_at TEXT,
     PRIMARY KEY (payer, cpt_code)
 );
+
+-- Cost accounting per Claude call. Every agent writes here after every
+-- Anthropic request so we can see which feature is burning spend.
+CREATE TABLE IF NOT EXISTS cost_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    endpoint TEXT,
+    agent TEXT NOT NULL,
+    model TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    case_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cost_log_time ON cost_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_cost_log_agent ON cost_log(agent, timestamp DESC);
+
+-- TTL response cache. Used by POLICY_AGENT and similar idempotent-ish
+-- calls to skip redundant Claude round-trips within a short window.
+CREATE TABLE IF NOT EXISTS response_cache (
+    cache_key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_response_cache_expiry ON response_cache(expires_at);
 """
 
 
@@ -333,6 +385,129 @@ class SQLiteStore(Store):
         }
 
     # ── criterion-outcome correlation feed ─────────────────────────────
+
+    # ── cost logging ───────────────────────────────────────────────────
+
+    def log_cost(
+        self,
+        *,
+        agent: str,
+        model: str = "",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        duration_ms: int = 0,
+        endpoint: str = "",
+        case_id: str = "",
+    ) -> None:
+        """Append a cost-log row. Called from every agent after a Claude call."""
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO cost_log (timestamp, endpoint, agent, model,
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                     duration_ms, case_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (self._now(), endpoint, agent, model,
+                 int(input_tokens), int(output_tokens),
+                 int(cache_read_tokens), int(cache_creation_tokens),
+                 int(duration_ms), case_id),
+            )
+
+    def summarize_cost(self, window_hours: int = 24, agent: str = "") -> dict:
+        """Roll up cost-log rows within the given time window."""
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+        params: list[Any] = [cutoff]
+        agent_clause = ""
+        if agent:
+            agent_clause = " AND agent = ?"
+            params.append(agent)
+        with self._conn() as conn:
+            totals = conn.execute(
+                f"""SELECT
+                      COUNT(*) AS n,
+                      COALESCE(SUM(input_tokens),0) AS in_tok,
+                      COALESCE(SUM(output_tokens),0) AS out_tok,
+                      COALESCE(SUM(cache_read_tokens),0) AS cache_read,
+                      COALESCE(SUM(cache_creation_tokens),0) AS cache_create,
+                      COALESCE(AVG(duration_ms),0) AS avg_ms
+                    FROM cost_log WHERE timestamp >= ?{agent_clause}""",
+                tuple(params),
+            ).fetchone()
+            per_agent = conn.execute(
+                f"""SELECT agent,
+                      COUNT(*) AS n,
+                      COALESCE(SUM(input_tokens),0) AS in_tok,
+                      COALESCE(SUM(output_tokens),0) AS out_tok,
+                      COALESCE(SUM(cache_read_tokens),0) AS cache_read,
+                      COALESCE(SUM(cache_creation_tokens),0) AS cache_create
+                    FROM cost_log WHERE timestamp >= ?{agent_clause}
+                    GROUP BY agent ORDER BY in_tok DESC""",
+                tuple(params),
+            ).fetchall()
+        agents = [
+            {
+                "agent": r["agent"],
+                "calls": r["n"],
+                "input_tokens": r["in_tok"],
+                "output_tokens": r["out_tok"],
+                "cache_read_tokens": r["cache_read"],
+                "cache_creation_tokens": r["cache_create"],
+                # Hit rate: fraction of input tokens served from cache
+                "cache_hit_rate": round(
+                    r["cache_read"] / (r["in_tok"] + r["cache_read"]) if (r["in_tok"] + r["cache_read"]) else 0.0,
+                    3,
+                ),
+            }
+            for r in per_agent
+        ]
+        return {
+            "window_hours": window_hours,
+            "agent_filter": agent or "ALL",
+            "total_calls": totals["n"],
+            "total_input_tokens": totals["in_tok"],
+            "total_output_tokens": totals["out_tok"],
+            "total_cache_read_tokens": totals["cache_read"],
+            "total_cache_creation_tokens": totals["cache_create"],
+            "avg_duration_ms": round(totals["avg_ms"], 1) if totals["avg_ms"] else 0,
+            "per_agent": agents,
+        }
+
+    # ── TTL response cache ─────────────────────────────────────────────
+
+    def cache_get(self, cache_key: str) -> dict | None:
+        """Return the cached value if still within TTL, else None."""
+        now = self._now()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT value_json, expires_at FROM response_cache WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+        if not row:
+            return None
+        if row["expires_at"] <= now:
+            # Expired — delete and return None
+            with self._conn() as conn:
+                conn.execute("DELETE FROM response_cache WHERE cache_key = ?", (cache_key,))
+            return None
+        return json.loads(row["value_json"])
+
+    def cache_set(self, cache_key: str, value: dict, ttl_seconds: int) -> None:
+        """Write a cache entry. Overwrites any existing entry at the same key."""
+        from datetime import timedelta
+        now_dt = datetime.now(timezone.utc)
+        expires = (now_dt + timedelta(seconds=ttl_seconds)).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO response_cache (cache_key, value_json, created_at, expires_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(cache_key) DO UPDATE SET
+                     value_json = excluded.value_json,
+                     created_at = excluded.created_at,
+                     expires_at = excluded.expires_at""",
+                (cache_key, json.dumps(value, default=str), now_dt.isoformat(), expires),
+            )
 
     def iter_submissions_with_outcomes(
         self,

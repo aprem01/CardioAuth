@@ -1537,6 +1537,23 @@ def get_payer_stats_endpoint(payer: str, cpt_code: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/stats/cost")
+def cost_summary(
+    hours: int = 24,
+    agent: str = "",
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Token usage + cache hit rate per agent over the last N hours.
+
+    Tells us which agent is burning the Anthropic spend cap when it
+    gets hit. Also shows prompt-caching effectiveness: cache_hit_rate
+    close to 1.0 means we're getting the full discount.
+    """
+    from cardioauth.persistence import get_store
+    window_hours = max(1, min(int(hours), 720))  # 1 hour .. 30 days
+    return get_store().summarize_cost(window_hours=window_hours, agent=agent)
+
+
 @app.get("/api/stats/criterion-outcome-correlation")
 def criterion_outcome_correlation(
     payer: str = "",
