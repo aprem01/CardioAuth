@@ -75,6 +75,13 @@ class Store(ABC):
     @abstractmethod
     def get_rolling_stats(self, payer: str, cpt_code: str, window_days: int = 90) -> dict | None: ...
 
+    @abstractmethod
+    def iter_submissions_with_outcomes(self, payer: str = "", cpt_code: str = "") -> Iterator[dict]:
+        """Yield dicts with keys {submission, outcome} for every submission that
+        has a recorded outcome. Optional filters on payer + cpt_code.
+        Used by the criterion-outcome correlation report.
+        """
+
 
 # ────────────────────────────────────────────────────────────────────────
 # SQLite backend (default)
@@ -324,6 +331,37 @@ class SQLiteStore(Store):
             "last_outcome_at": row["last_outcome_at"],
             "source": "live_rollup",
         }
+
+    # ── criterion-outcome correlation feed ─────────────────────────────
+
+    def iter_submissions_with_outcomes(
+        self,
+        payer: str = "",
+        cpt_code: str = "",
+    ) -> Iterator[dict]:
+        """Yield {submission, outcome} for every submission that has an outcome."""
+        query = """
+            SELECT s.data_json AS sub_json, o.data_json AS out_json, o.outcome, o.payer, o.cpt_code
+            FROM outcomes o
+            JOIN submissions s ON s.submission_id = o.submission_id
+        """
+        conditions = []
+        params: list[Any] = []
+        if payer:
+            conditions.append("o.payer = ?")
+            params.append(payer)
+        if cpt_code:
+            conditions.append("o.cpt_code = ?")
+            params.append(cpt_code)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        with self._conn() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        for row in rows:
+            yield {
+                "submission": json.loads(row["sub_json"]),
+                "outcome": json.loads(row["out_json"]),
+            }
 
 
 # ────────────────────────────────────────────────────────────────────────

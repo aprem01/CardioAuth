@@ -189,12 +189,16 @@ def run_end_to_end_demo(
 
     # ── Step 3: POLICY_AGENT (RAG-grounded) ──
     t = _StepTimer(3, "POLICY_AGENT — RAG-grounded criteria", "POLICY_AGENT")
+    import os
     from cardioauth.config import Config
     from cardioauth.demo import get_demo_policy
     cfg = Config()
+    # Escape hatch: if DEMO_E2E_FORCE_OFFLINE=1, skip live Claude calls entirely.
+    # Useful when Anthropic spend limit is hit or for reliably-fast demos.
+    _force_offline = os.environ.get("DEMO_E2E_FORCE_OFFLINE", "").lower() in ("1", "true", "yes")
     policy_data = None
     rag_chunks_count = 0
-    if cfg.anthropic_api_key:
+    if cfg.anthropic_api_key and not _force_offline:
         try:
             from cardioauth.agents.policy_agent import PolicyAgent
             from cardioauth.integrations.cms_coverage import get_cms_coverage_context
@@ -231,7 +235,21 @@ def run_end_to_end_demo(
     t = _StepTimer(4, "UnifiedReasoner — criterion matching", "UNIFIED_REASONER")
     reasoning = None
     unified_ctx = None
-    if cfg.anthropic_api_key:
+    if cfg.anthropic_api_key and not _force_offline:
+        try:
+            from copy import replace  # type: ignore
+        except ImportError:
+            replace = None  # type: ignore
+
+        # Force single-run reasoning for the demo path so we fit under
+        # Railway's 60s gateway timeout. Production cases still use the
+        # configured ensemble N — this only affects the demo endpoint.
+        from dataclasses import replace as _dc_replace
+        try:
+            demo_cfg = _dc_replace(cfg, reasoning_ensemble_n=1)
+        except Exception:
+            demo_cfg = cfg
+
         try:
             from cardioauth.agents.relationship_extractor import extract_relationships
             from cardioauth.agents.unified_reasoner import reason_with_unified_agent
@@ -248,10 +266,10 @@ def run_end_to_end_demo(
             )
             unified_ctx.build_clinical_narrative()
             try:
-                extract_relationships(unified_ctx, cfg)
+                extract_relationships(unified_ctx, demo_cfg)
             except Exception:
                 pass
-            reason_with_unified_agent(unified_ctx, cfg)
+            reason_with_unified_agent(unified_ctx, demo_cfg)
 
             # Build ReasoningResult shape for downstream
             from cardioauth.models.reasoning import CriterionEvaluation, CriterionGap, ReasoningResult

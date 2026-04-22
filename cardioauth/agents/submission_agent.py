@@ -177,18 +177,53 @@ class SubmissionAgent:
         return result
 
     def _persist(self, result: SubmissionResult, reasoning: ReasoningResult, cpt_code: str = "") -> None:
-        """Write the submission to durable storage so it survives restarts."""
+        """Write the submission to durable storage so it survives restarts.
+
+        Also stores the criterion_matches snapshot so the correlation report
+        can later answer "when MED-002 was not_met, what did the payer decide?"
+        """
         try:
             from cardioauth.persistence import get_store
             store = get_store()
             data = result.model_dump(mode="json")
             data["cpt_code"] = cpt_code or data.get("procedure_code", "")
+
+            # Snapshot the per-criterion state so downstream correlation
+            # analysis can join criterion status against outcomes.
+            crit_snapshot: list[dict] = []
+            try:
+                # UnifiedReasoner path stashes the raw matches
+                raw = reasoning.__dict__.get("_unified_matches")
+                if raw:
+                    for m in raw:
+                        crit_snapshot.append({
+                            "code": m.get("code", ""),
+                            "status": m.get("status", ""),
+                            "gap_class": m.get("_gap_class", ""),
+                        })
+                else:
+                    # Legacy shape: derive from criteria_met / criteria_not_met
+                    for c in reasoning.criteria_met or []:
+                        code = (c.criterion or "").split(":")[0].strip()
+                        if code:
+                            crit_snapshot.append({"code": code, "status": "met", "gap_class": ""})
+                    for c in reasoning.criteria_not_met or []:
+                        code = (c.criterion or "").split(":")[0].strip()
+                        if code:
+                            crit_snapshot.append({"code": code, "status": "not_met", "gap_class": ""})
+            except Exception as e:
+                logger.warning("Could not snapshot criterion matches: %s", e)
+
+            data["criterion_matches_snapshot"] = crit_snapshot
+            data["approval_score"] = reasoning.approval_likelihood_score
+            data["approval_label"] = reasoning.approval_likelihood_label
+
             store.save_submission(result.submission_id, data)
             store.append_audit(
                 actor=result.audit_trail[0].actor if result.audit_trail else "system",
                 action="submission_persisted",
                 subject_id=result.submission_id,
-                detail=f"status={result.status} channel={result.submission_channel}",
+                detail=f"status={result.status} channel={result.submission_channel} crit_count={len(crit_snapshot)}",
             )
         except Exception as e:
             logger.warning("SUBMISSION_AGENT: failed to persist %s: %s", result.submission_id, e)

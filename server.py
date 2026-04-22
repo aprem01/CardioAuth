@@ -1537,6 +1537,26 @@ def get_payer_stats_endpoint(payer: str, cpt_code: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/stats/criterion-outcome-correlation")
+def criterion_outcome_correlation(
+    payer: str = "",
+    cpt_code: str = "",
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Per-criterion approval correlation from persisted outcomes.
+
+    Peter's ask: identify which criteria are load-bearing for each payer.
+    When MED-002 is met, what's the approval rate? When it's not_met, what?
+    The difference is the criterion's predictive weight.
+
+    Becomes meaningful once 20+ decisive outcomes accumulate per filter.
+    Returns empty/directional data gracefully before that.
+    """
+    log_audit(user, "criterion_correlation", f"payer={payer} cpt={cpt_code}")
+    from cardioauth.stats.criterion_correlation import compute_criterion_correlation
+    return compute_criterion_correlation(payer=payer, cpt_code=cpt_code)
+
+
 @app.get("/api/stats/payer/all")
 def list_all_payer_stats() -> dict[str, Any]:
     """Return every seeded (payer, CPT) statistics entry — for admin views."""
