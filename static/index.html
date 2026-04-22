@@ -534,6 +534,12 @@
         New PA Request
       </a>
 
+      <!-- End-to-end demo -->
+      <a href="#demo-e2e" class="sidebar-link" data-route="demo-e2e">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        End-to-end Demo
+      </a>
+
       <!-- Pre-Submission Tools -->
       <div class="sidebar-group-label mt-4">Pre-Submission Tools</div>
       <a href="#payer-matrix" class="sidebar-link" data-route="payer-matrix">
@@ -700,6 +706,7 @@
     else if (hash === '#emerging') { app.innerHTML = renderLoading('Emerging Criteria'); loadEmerging(); }
     else if (hash === '#policy-library') { app.innerHTML = renderLoading('Policy Library'); loadPolicyLibrary(); }
     else if (hash === '#privacy') app.innerHTML = renderPrivacy();
+    else if (hash === '#demo-e2e') app.innerHTML = renderE2EDemo();
     else { app.innerHTML = renderDashboard(); }
   }
 
@@ -799,6 +806,168 @@
 
   function redX() {
     return `<svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>`;
+  }
+
+  // ──────────────────────────── End-to-End Demo ────────────────────────────
+  function renderE2EDemo() {
+    return `
+    <div class="fade-in space-y-6">
+      <div class="flex items-center justify-between">
+        <button onclick="navigate('#dashboard')" class="text-sm text-slate-400 hover:text-accent-cyan transition flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Dashboard
+        </button>
+        <span class="text-sm text-slate-500">End-to-end pipeline demo</span>
+      </div>
+
+      <div class="bg-surface rounded-xl border border-surface-border p-6">
+        <h2 class="text-xl font-semibold text-white mb-2">Full pipeline, one click</h2>
+        <p class="text-sm text-slate-400 mb-4">
+          Runs the whole flow — FHIR fetch → CHART_AGENT → POLICY_AGENT → UnifiedReasoner →
+          physician approval → submission via mock channel → payer response → outcome feedback —
+          against a synthetic demo patient. Uses real Claude + Pinecone for reasoning; never
+          touches real PHI. Every step timed and surfaced so you can see where latency lives.
+        </p>
+        <div class="grid md:grid-cols-4 gap-3 mb-4">
+          <div>
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Patient</label>
+            <select id="e2e-patient" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200">
+              <option value="DEMO-001">DEMO-001 (67M CAD, PET case)</option>
+              <option value="DEMO-002">DEMO-002</option>
+              <option value="DEMO-003">DEMO-003</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Procedure (CPT)</label>
+            <input id="e2e-cpt" value="78492" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+          </div>
+          <div>
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
+            <select id="e2e-payer" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200">
+              <option>UnitedHealthcare</option>
+              <option>Aetna</option>
+              <option>Anthem</option>
+              <option>Medicare</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Scripted outcome</label>
+            <select id="e2e-outcome" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200">
+              <option>APPROVED</option>
+              <option>DENIED</option>
+              <option>PENDING</option>
+            </select>
+          </div>
+        </div>
+        <button id="e2e-run-btn" onclick="runE2EDemo()"
+          class="w-full py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg hover:shadow-accent-blue/40 transition-all flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Run end-to-end pipeline
+        </button>
+      </div>
+
+      <div id="e2e-timeline" class="space-y-3"></div>
+      <div id="e2e-summary"></div>
+    </div>`;
+  }
+
+  async function runE2EDemo() {
+    const btn = document.getElementById('e2e-run-btn');
+    const timeline = document.getElementById('e2e-timeline');
+    const summary = document.getElementById('e2e-summary');
+    if (!btn || !timeline) return;
+
+    const payload = {
+      patient_id: document.getElementById('e2e-patient').value,
+      procedure_code: document.getElementById('e2e-cpt').value || '78492',
+      payer_name: document.getElementById('e2e-payer').value,
+      scripted_outcome: document.getElementById('e2e-outcome').value,
+      approver_name: 'Dr. Demo',
+    };
+
+    btn.disabled = true;
+    btn.innerHTML = `${spinnerSVG(5)} Running… (10–25 seconds for live reasoning)`;
+    timeline.innerHTML = '';
+    summary.innerHTML = '';
+
+    try {
+      const res = await fetch('/api/demo/end-to-end', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+      const data = await res.json();
+      renderE2ETimeline(data);
+    } catch (e) {
+      timeline.innerHTML = `<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-300">E2E run failed: ${escapeHtml(String(e))}</div>`;
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> Run again`;
+  }
+
+  function renderE2ETimeline(data) {
+    const timeline = document.getElementById('e2e-timeline');
+    const summary = document.getElementById('e2e-summary');
+    if (!timeline) return;
+
+    const statusColor = (s) => ({
+      ok: 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300',
+      fallback: 'border-amber-500/30 bg-amber-500/5 text-amber-300',
+      skipped: 'border-slate-500/30 bg-slate-500/5 text-slate-400',
+      failed: 'border-red-500/30 bg-red-500/5 text-red-300',
+    })[s] || 'border-surface-border';
+
+    const statusIcon = (s) => ({
+      ok: '✓',
+      fallback: '~',
+      skipped: '–',
+      failed: '✗',
+    })[s] || '•';
+
+    const stepsHtml = (data.steps || []).map((step, i) => `
+      <div class="flex gap-4 items-start e2e-step-${i}" style="animation: fadeIn 0.3s ease-out ${i * 0.15}s both">
+        <div class="flex-shrink-0 flex flex-col items-center">
+          <div class="w-9 h-9 rounded-full border-2 ${statusColor(step.status)} flex items-center justify-center font-bold">${statusIcon(step.status)}</div>
+          ${i < data.steps.length - 1 ? '<div class="w-0.5 h-8 bg-surface-border my-1"></div>' : ''}
+        </div>
+        <div class="flex-1 bg-surface rounded-lg border ${statusColor(step.status)} px-4 py-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex-1">
+              <p class="text-sm font-semibold text-white">${step.step}. ${escapeHtml(step.name)}</p>
+              <p class="text-xs text-slate-400 mt-0.5"><span class="font-mono">${escapeHtml(step.agent)}</span> · ${step.duration_ms}ms</p>
+            </div>
+            <span class="text-xs uppercase font-medium opacity-80">${step.status}</span>
+          </div>
+          <p class="text-sm mt-2">${escapeHtml(step.summary)}</p>
+          ${step.detail ? `<details class="mt-2"><summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">detail</summary><pre class="text-xs text-slate-400 mt-1 overflow-x-auto">${escapeHtml(JSON.stringify(step.detail, null, 2))}</pre></details>` : ''}
+        </div>
+      </div>
+    `).join('');
+
+    timeline.innerHTML = stepsHtml;
+
+    const outcomeColor = (data.outcome === 'APPROVED') ? 'text-emerald-400' :
+                         (data.outcome === 'DENIED') ? 'text-red-400' :
+                         (data.outcome === 'PENDING') ? 'text-amber-400' : 'text-slate-400';
+    summary.innerHTML = `
+      <div class="bg-surface rounded-xl border border-surface-border p-5 mt-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-xs uppercase text-slate-500">Final outcome</p>
+            <p class="text-2xl font-bold ${outcomeColor}">${escapeHtml(data.outcome || '—')}</p>
+          </div>
+          <div class="text-right">
+            <p class="text-xs uppercase text-slate-500">Total time</p>
+            <p class="text-2xl font-bold text-white">${((data.total_duration_ms || 0) / 1000).toFixed(1)}s</p>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500 mt-3">Case ID: <span class="font-mono">${escapeHtml(data.case_id || '')}</span> · Patient: ${escapeHtml(data.patient_id || '')} · CPT: ${escapeHtml(data.procedure_code || '')} · Payer: ${escapeHtml(data.payer || '')}</p>
+      </div>`;
   }
 
   // ──────────────────────────── Dashboard ────────────────────────────

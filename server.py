@@ -1155,6 +1155,46 @@ def get_outcome_record(submission_id: str, user: AuthUser = Depends(get_current_
     return outcome
 
 
+class E2EDemoRequest(BaseModel):
+    patient_id: str = "DEMO-001"
+    procedure_code: str = "78492"
+    payer_name: str = "UnitedHealthcare"
+    scripted_outcome: str = "APPROVED"   # APPROVED | DENIED | PENDING
+    approver_name: str = "Dr. Demo"
+
+
+@app.post("/api/demo/end-to-end")
+def end_to_end_demo(req: E2EDemoRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Run the full pipeline from Epic → submission → payer response.
+
+    Returns a structured timeline so the UI can animate through each stage.
+    Uses existing demo patients and MockChannel — never touches real PHI
+    or real payer portals. Still runs real Claude + Pinecone calls for
+    CHART / POLICY / REASONER so what you see is genuine AI behavior
+    against synthetic input.
+    """
+    log_audit(user, "e2e_demo", f"patient={req.patient_id} cpt={req.procedure_code}")
+    from cardioauth.demo_e2e import run_end_to_end_demo
+
+    scripted = (req.scripted_outcome or "APPROVED").upper()
+    if scripted not in ("APPROVED", "DENIED", "PENDING"):
+        raise HTTPException(status_code=400, detail=f"scripted_outcome must be APPROVED|DENIED|PENDING, got {scripted}")
+
+    try:
+        timeline = run_end_to_end_demo(
+            patient_id=req.patient_id,
+            procedure_code=req.procedure_code,
+            payer_name=req.payer_name,
+            scripted_outcome=scripted,  # type: ignore[arg-type]
+            approver_name=req.approver_name,
+        )
+    except Exception as e:
+        logging.exception("E2E demo failed")
+        raise HTTPException(status_code=500, detail=f"Demo failed: {e}")
+
+    return timeline.to_dict()
+
+
 @app.get("/api/submissions/{submission_id}")
 def get_submission_record(submission_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Look up a persisted submission by ID (survives container restart)."""
