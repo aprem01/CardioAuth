@@ -1158,9 +1158,11 @@ def get_outcome_record(submission_id: str, user: AuthUser = Depends(get_current_
 class E2EDemoRequest(BaseModel):
     patient_id: str = "DEMO-001"
     procedure_code: str = "78492"
+    procedure_name: str = ""
     payer_name: str = "UnitedHealthcare"
     scripted_outcome: str = "APPROVED"   # APPROVED | DENIED | PENDING
     approver_name: str = "Dr. Demo"
+    raw_note: str = ""                   # Peter's deidentified-note path
 
 
 @app.post("/api/demo/end-to-end")
@@ -1184,9 +1186,11 @@ def end_to_end_demo(req: E2EDemoRequest, user: AuthUser = Depends(get_current_us
         timeline = run_end_to_end_demo(
             patient_id=req.patient_id,
             procedure_code=req.procedure_code,
+            procedure_name=req.procedure_name or "",
             payer_name=req.payer_name,
             scripted_outcome=scripted,  # type: ignore[arg-type]
             approver_name=req.approver_name,
+            raw_note=req.raw_note or "",
         )
     except Exception as e:
         logging.exception("E2E demo failed")
