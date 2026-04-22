@@ -488,8 +488,51 @@ def run_end_to_end_demo(
         timeline.outcome = "ERROR"
         return timeline
 
-    # ── Step 7: Simulated payer response (scripted for demo) ──
-    t = _StepTimer(7, "Payer response (simulated)", "Payer")
+    # ── Step 7 (was 7, now inserted before payer response): Payer form preview ──
+    # Peter's Apr 22 ask: map extracted data into the actual payer form
+    # structure so we can see which fields are populated vs missing.
+    t = _StepTimer(7, "Payer form preview", "PayerFormMapper")
+    try:
+        from cardioauth.payer_forms import get_payer_form, populate_payer_form
+        form = get_payer_form(payer_name, procedure_code)
+        if form is None:
+            t.set_result(
+                f"No form template for {payer_name} — using generic UHC shape as fallback",
+                status="fallback",
+                detail={"form_available": False, "payer": payer_name},
+            )
+        else:
+            populated = populate_payer_form(
+                form,
+                chart_data=chart,
+                policy_data=policy_data,
+                reasoning=reasoning,
+            )
+            counts = populated["counts"]
+            summary_str = (
+                f"{form.vendor} / {form.name} — "
+                f"{counts['populated']}/{counts['total']} populated"
+            )
+            if counts["missing_required"]:
+                summary_str += f", {counts['missing_required']} required MISSING"
+            if counts["incomplete"]:
+                summary_str += f", {counts['incomplete']} incomplete"
+            if populated["ready_to_submit"]:
+                summary_str += " — ready to submit"
+
+            t.set_result(
+                summary_str,
+                detail=populated,
+                status=("ok" if populated["ready_to_submit"] else "fallback"),
+            )
+    except Exception as e:
+        logger.warning("Payer form preview failed: %s", e)
+        t.set_result(f"Form preview error: {e}", status="failed")
+    timeline.steps.append(t.finish())
+
+    # Renumber remaining steps (original step 7 → now step 8)
+    # ── Step 8: Simulated payer response (scripted for demo) ──
+    t = _StepTimer(8, "Payer response (simulated)", "Payer")
     if scripted_outcome == "APPROVED":
         auth_number = f"AUTH-{uuid.uuid4().hex[:8].upper()}"
         t.set_result(
@@ -517,7 +560,7 @@ def run_end_to_end_demo(
     timeline.steps.append(t.finish())
 
     # ── Step 8: Outcome persisted + stats updated + precedent stored ──
-    t = _StepTimer(8, "Outcome recorded + feedback loop", "OutcomeRecorder")
+    t = _StepTimer(9, "Outcome recorded + feedback loop", "OutcomeRecorder")
     try:
         from cardioauth.persistence import get_store
         store = get_store()
@@ -573,31 +616,93 @@ _NOTE_EXTRACTION_PROMPT = """\
 You are CHART_AGENT, extracting structured clinical data from a free-text
 clinical note for prior authorization.
 
+Peter's Apr 22 feedback: "CHART_AGENT often showed limited or no structured
+output for symptoms, ECG findings, prior stress tests even though they were
+present in the note." Your job is to be THOROUGH. If the note mentions it,
+extract it into the correct v2 bucket.
+
 You will receive a DEIDENTIFIED clinical note as plain text and must return
 a ChartData v2 object. Follow the same categorization rules you use for
 FHIR bundles — each field has one and only one kind of data.
 
-Categorization rules (do NOT mix):
-  - active_comorbidities     — chronic conditions (HTN, DM, CKD, CAD)
-  - past_medical_history     — prior events with dates (MI 2021, stroke)
-  - family_history           — first-degree relative cardiac conditions
-  - current_symptoms         — patient-reported symptoms with onset/frequency/character/change_vs_baseline
-  - exam_findings            — physical exam findings (JVD, edema, murmur)
-  - ecg_findings             — baseline ECG: rhythm, conduction, strain, pacing
-  - prior_stress_tests       — ETT, SPECT, PET, stress echo, stress MRI
-  - prior_procedures         — PCI, CABG, TAVR, ablation, ICD
-  - relevant_imaging         — echo, CT, MRI, angiography (NOT ECG, NOT stress tests)
-  - relevant_labs            — lab values with source_anchor (verbatim quote)
-  - relevant_medications     — name, dose, start_date or duration, indication
+═══════════════════════════════════════════════════════════════════════════
+CATEGORY RULES (each field has one kind of data)
+═══════════════════════════════════════════════════════════════════════════
 
-Safety rules:
+  active_comorbidities     — chronic conditions (HTN, DM, CKD, CAD, COPD)
+  past_medical_history     — prior events with dates (MI 2021, stroke, PCI'05)
+  family_history           — first-degree relative cardiac conditions
+  current_symptoms         — patient-reported or clinician-observed symptoms
+                              with onset / frequency / character / severity /
+                              change_vs_baseline
+  exam_findings            — physical exam findings (JVD, edema, murmur,
+                              gallop, bruit, rales)
+  ecg_findings             — baseline ECG with structured sub-fields:
+                              rhythm, conduction, hypertrophy_or_strain,
+                              ischemic_changes, pacing, summary
+  prior_stress_tests       — ETT, SPECT, PET, stress echo, stress MRI with
+                              modality, date, max_hr_percent, interpretation,
+                              result_summary
+  prior_procedures         — PCI, CABG, TAVR, ablation, ICD, pacemaker
+                              implant — things done TO the patient
+  relevant_imaging         — echo, CT, MRI, angiography (NOT ECG,
+                              NOT stress tests)
+  relevant_labs            — lab values with name, value, unit, date, and
+                              source_anchor (verbatim quote from note)
+  relevant_medications     — name, dose, start_date or duration, indication
+
+═══════════════════════════════════════════════════════════════════════════
+BE THOROUGH — EXTRACTION IS WHAT POPULATES THE PAYER FORM
+═══════════════════════════════════════════════════════════════════════════
+
+Typical patterns to extract aggressively:
+
+  SYMPTOMS: Any mention of chest pain, dyspnea, palpitations, syncope,
+  presyncope, fatigue, orthopnea, PND, edema that the PATIENT REPORTS or
+  the clinician describes in HPI/assessment. Extract each as a Symptom
+  object with character (typical/atypical/exertional/rest), onset
+  ("3 weeks ago", "since March"), frequency ("daily", "weekly"),
+  change_vs_baseline ("new", "worsening", "stable"), severity.
+
+  ECG: Any mention of rhythm (sinus, AF, paced), conduction
+  (LBBB, RBBB, LAFB, first-degree block), LVH with strain, ischemic
+  changes, pacing. Break into the structured sub-fields. "ECG: NSR, LBBB"
+  → rhythm="sinus rhythm (NSR)", conduction="LBBB". Do NOT stuff it all
+  into the summary field.
+
+  PRIOR STRESS TESTS: Any mention of ETT, treadmill, SPECT, MPI, stress
+  echo, PET, dobutamine. Extract modality, date if given, %MPHR if given,
+  interpretation (non-diagnostic / equivocal / positive / negative /
+  attenuation artifact / technically limited), and result_summary.
+
+  EXAM: Findings from physical examination — edema, JVD, murmur, S3/S4,
+  rales, hepatomegaly, bruit. These are NOT symptoms (patient report) or
+  comorbidities (chronic conditions).
+
+  PMH: Prior events with years — "s/p MI 2021", "HF admission 2023",
+  "stroke 2019". NOT procedures (those go to prior_procedures).
+
+═══════════════════════════════════════════════════════════════════════════
+SAFETY RULES (do not violate)
+═══════════════════════════════════════════════════════════════════════════
+
   - Never invent labs not in the source note. Leave out rather than fabricate.
-  - Never infer diagnoses from medications (levothyroxine ≠ hypothyroidism).
+  - Never infer diagnoses from medications (levothyroxine ≠ hypothyroidism,
+    atorvastatin ≠ hyperlipidemia, metformin ≠ diabetes, warfarin ≠ AF).
+    A medication list evidences what the patient takes, not the diagnosis.
   - Never emit future-dated labs — set date to "" if source date is future.
   - Resolved symptoms → past_medical_history, not current_symptoms.
+  - When ROS explicitly denies a symptom, do NOT include it as a current
+    symptom. Current HPI + assessment outrank old problem list carryover.
+
+═══════════════════════════════════════════════════════════════════════════
+OUTPUT
+═══════════════════════════════════════════════════════════════════════════
 
 Return ONLY valid JSON matching the ChartData v2 schema. Fields you cannot
 find from the note should be empty arrays or empty strings — do NOT invent.
+If in doubt about a categorization, include it with its best guess; better
+to extract and let downstream reasoning assess than leave it out.
 """
 
 

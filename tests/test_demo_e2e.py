@@ -27,6 +27,7 @@ def test_e2e_demo_produces_all_stages_even_without_api_key(monkeypatch) -> None:
         "UNIFIED_REASONER",
         "Physician",
         "SUBMISSION_AGENT",
+        "PayerFormMapper",   # Apr 22: Peter's ask — payer form preview
         "Payer",
         "OutcomeRecorder",
     ]

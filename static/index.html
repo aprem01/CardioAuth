@@ -1075,6 +1075,9 @@
     if (agent === 'OutcomeRecorder') {
       return renderOutcomeDetail(d);
     }
+    if (agent === 'PayerFormMapper') {
+      return renderPayerFormDetail(d);
+    }
     if (agent === 'NoteIngest') {
       return `<details class="mt-2" open><summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Note preview</summary>
         <pre class="text-xs text-slate-400 mt-1 bg-background rounded p-2 whitespace-pre-wrap">${escapeHtml(d.preview || '')}</pre>
@@ -1206,6 +1209,81 @@
         ${d.channel_notes ? `<div><p class="text-xs font-semibold text-slate-300 uppercase mb-1">Channel notes</p><p class="text-xs text-slate-400">${escapeHtml(d.channel_notes)}</p></div>` : ''}
         ${d.requires_human_action ? `<div><p class="text-xs font-semibold text-amber-400 uppercase mb-1">⚠ Requires human action</p><p class="text-xs text-amber-300">${escapeHtml(d.requires_human_action)}</p></div>` : ''}
         ${payload.audit_trail && payload.audit_trail.length ? `<details><summary class="text-xs cursor-pointer text-slate-500">Audit trail (${payload.audit_trail.length} entries)</summary><ul class="text-xs text-slate-400 ml-3">${payload.audit_trail.map(a => '<li><span class="font-mono">'+escapeHtml(a.timestamp || '')+'</span> · '+escapeHtml(a.action || '')+' · <span class="text-slate-500">'+escapeHtml(a.actor || '')+'</span></li>').join('')}</ul></details>` : ''}
+      </div>
+    </details>`;
+  }
+
+  function renderPayerFormDetail(d) {
+    if (!d || !d.fields) {
+      return `<details class="mt-2" open><summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Form preview</summary><pre class="text-xs text-slate-400 mt-1">${escapeHtml(JSON.stringify(d || {}, null, 2))}</pre></details>`;
+    }
+    const c = d.counts || {};
+    const fields = d.fields || [];
+
+    const statusBadge = (s) => {
+      const map = {
+        populated: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+        missing:   'bg-red-500/10 text-red-300 border-red-500/30',
+        incomplete:'bg-amber-500/10 text-amber-300 border-amber-500/30',
+      };
+      return `<span class="text-xs px-1.5 py-0.5 rounded border ${map[s] || 'bg-slate-500/10 text-slate-400 border-slate-500/30'}">${s}</span>`;
+    };
+    const categoryColor = (cat) => ({
+      patient:  'text-accent-cyan',
+      provider: 'text-indigo-300',
+      procedure:'text-teal-300',
+      clinical: 'text-amber-300',
+      attestation:'text-red-300',
+    }[cat] || 'text-slate-400');
+
+    // Group by category for readability
+    const byCategory = {};
+    fields.forEach(f => { (byCategory[f.category] = byCategory[f.category] || []).push(f); });
+    const categoryOrder = ['patient','provider','procedure','clinical','attestation'];
+
+    const categorySection = (cat) => {
+      const items = byCategory[cat] || [];
+      if (!items.length) return '';
+      return `<div class="mb-3">
+        <p class="text-xs font-semibold uppercase ${categoryColor(cat)} mb-1">${cat}</p>
+        <table class="w-full text-xs text-slate-400">
+          <tbody>${items.map(f => {
+            const missingRequired = f.required && f.status === 'missing';
+            const rowCls = missingRequired ? 'bg-red-500/5 border-l-2 border-red-500/40 pl-2' : '';
+            return `<tr class="border-b border-surface-border/50">
+              <td class="py-1.5 pr-3 align-top ${rowCls}" style="width:40%">
+                <div class="font-medium text-slate-300">${escapeHtml(f.label)}${f.required ? ' <span class="text-red-400">*</span>' : ''}</div>
+                ${f.help_text ? `<div class="text-xs text-slate-500 mt-0.5">${escapeHtml(f.help_text)}</div>` : ''}
+              </td>
+              <td class="py-1.5 pr-3 align-top" style="width:45%">
+                <div class="text-xs ${f.status === 'missing' ? 'text-slate-600 italic' : 'text-slate-300'}">${f.value ? escapeHtml(String(f.value).slice(0, 400)) : '<span class="italic">— empty —</span>'}</div>
+                ${f.missing_reason ? `<div class="text-xs text-red-400 mt-0.5">${escapeHtml(f.missing_reason)}</div>` : ''}
+              </td>
+              <td class="py-1.5 align-top">${statusBadge(f.status)}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>`;
+    };
+
+    const readyBanner = d.ready_to_submit
+      ? `<div class="bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-2 mb-3 text-sm text-emerald-300">✓ Form is ready to submit — all required fields populated.</div>`
+      : `<div class="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 mb-3 text-sm text-amber-300">⚠ Form not ready — ${c.missing_required || 0} required field(s) missing${c.incomplete ? ', ' + c.incomplete + ' incomplete' : ''}. Chart or extraction needs to be strengthened before submission.</div>`;
+
+    return `<details class="mt-2" open>
+      <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">${escapeHtml(d.form_name || 'Payer form')} — ${escapeHtml(d.vendor || '')} · click to ${'collapse'}</summary>
+      <div class="mt-2 bg-background rounded p-3">
+        <div class="flex flex-wrap gap-4 text-xs mb-3">
+          <span><span class="text-slate-500">Payer:</span> <span class="text-accent-cyan">${escapeHtml(d.payer || '')}</span></span>
+          <span><span class="text-slate-500">Channel:</span> <span class="font-mono">${escapeHtml(d.submission_channel || '')}</span></span>
+          <span class="text-emerald-300">● populated ${c.populated || 0}</span>
+          <span class="text-red-300">● missing ${c.missing_required || 0}</span>
+          <span class="text-amber-300">● incomplete ${c.incomplete || 0}</span>
+          <span class="text-slate-500">● optional empty ${c.optional_empty || 0}</span>
+        </div>
+        ${readyBanner}
+        ${categoryOrder.map(categorySection).join('')}
+        ${d.notes ? `<div class="bg-surface rounded px-3 py-2 text-xs text-slate-400 mt-2"><span class="font-semibold text-slate-300">Submission note:</span> ${escapeHtml(d.notes)}</div>` : ''}
       </div>
     </details>`;
   }
