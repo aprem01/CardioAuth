@@ -1203,6 +1203,66 @@ def end_to_end_demo(req: E2EDemoRequest, user: AuthUser = Depends(get_current_us
     return timeline.to_dict()
 
 
+@app.post("/api/demo/end-to-end-pdf")
+async def end_to_end_demo_pdf(
+    file: UploadFile = File(...),
+    patient_id: str = "CUSTOM-PDF",
+    procedure_code: str = "78492",
+    procedure_name: str = "",
+    payer_name: str = "UnitedHealthcare",
+    scripted_outcome: str = "APPROVED",
+    approver_name: str = "Dr. Demo",
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Run the E2E pipeline on an uploaded PDF.
+
+    BAA IS NOT SIGNED with LlamaCloud yet. Callers MUST upload
+    deidentified PDFs only — the UI warns and the filename is
+    lightly sanity-checked here, but this endpoint does not do
+    deidentification. Treat it as demo input.
+    """
+    log_audit(user, "e2e_demo_pdf", f"file={file.filename or 'unknown'} cpt={procedure_code}")
+    from cardioauth.demo_e2e import run_end_to_end_demo
+    from cardioauth.pdf_parser import PdfParserError, parse_pdf_to_text
+
+    scripted = (scripted_outcome or "APPROVED").upper()
+    if scripted not in ("APPROVED", "DENIED", "PENDING"):
+        raise HTTPException(status_code=400, detail=f"scripted_outcome must be APPROVED|DENIED|PENDING, got {scripted}")
+
+    contents = await file.read()
+    try:
+        parsed = parse_pdf_to_text(contents, filename=file.filename or "upload.pdf")
+    except PdfParserError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.exception("PDF parse failed")
+        raise HTTPException(status_code=500, detail=f"PDF parse failed: {e}")
+
+    try:
+        timeline = run_end_to_end_demo(
+            patient_id=patient_id,
+            procedure_code=procedure_code,
+            procedure_name=procedure_name or "",
+            payer_name=payer_name,
+            scripted_outcome=scripted,  # type: ignore[arg-type]
+            approver_name=approver_name,
+            raw_note=parsed.text,
+        )
+    except Exception as e:
+        logging.exception("E2E demo (PDF) failed")
+        raise HTTPException(status_code=500, detail=f"Demo failed: {e}")
+
+    result = timeline.to_dict()
+    result["pdf_meta"] = {
+        "filename": file.filename,
+        "page_count": parsed.page_count,
+        "parser": parsed.parser,
+        "parse_duration_ms": parsed.duration_ms,
+        "text_preview": parsed.text[:400],
+    }
+    return result
+
+
 @app.get("/api/submissions/{submission_id}")
 def get_submission_record(submission_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Look up a persisted submission by ID (survives container restart)."""

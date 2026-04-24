@@ -828,10 +828,11 @@
           Uses real Claude + Pinecone. Every step's full output is inspectable below.
         </p>
 
-        <!-- Mode toggle: demo patient vs deidentified custom note -->
-        <div class="flex gap-2 mb-4">
+        <!-- Mode toggle: demo patient vs deidentified custom note vs PDF upload -->
+        <div class="flex gap-2 mb-4 flex-wrap">
           <button id="e2e-mode-demo" onclick="setE2EMode('demo')" class="px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-accent-cyan bg-accent-cyan/10 text-accent-cyan">Demo patient</button>
           <button id="e2e-mode-custom" onclick="setE2EMode('custom')" class="px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-surface-border bg-surface text-slate-400 hover:border-slate-500">Paste deidentified note</button>
+          <button id="e2e-mode-pdf" onclick="setE2EMode('pdf')" class="px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-surface-border bg-surface text-slate-400 hover:border-slate-500">Upload deidentified PDF</button>
         </div>
 
         <!-- Demo patient selector (default) -->
@@ -903,6 +904,40 @@
           <p class="text-xs text-slate-500 mt-2">Claude extracts structured ChartData from the note, then runs the full pipeline against it.</p>
         </div>
 
+        <!-- PDF upload (chart export, SPECT/PET reports, echo reports) -->
+        <div id="e2e-mode-pdf-panel" class="hidden">
+          <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2 mb-3 text-xs text-amber-200">
+            ⚠ The PDF is sent to LlamaCloud for parsing, then to Claude. <strong>Deidentify first</strong> — no names, DOBs, MRNs, facility identifiers. We don't have BAAs with LlamaCloud yet. Max 10 pages, 10 MB.
+          </div>
+          <div class="grid md:grid-cols-3 gap-3 mb-3">
+            <div>
+              <label class="text-xs uppercase text-slate-500 mb-1 block">Procedure (CPT)</label>
+              <input id="e2e-pdf-cpt" value="78492" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+            </div>
+            <div>
+              <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
+              <select id="e2e-pdf-payer" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200">
+                <option>UnitedHealthcare</option>
+                <option>Aetna</option>
+                <option>Anthem</option>
+                <option>Medicare</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs uppercase text-slate-500 mb-1 block">Scripted outcome</label>
+              <select id="e2e-pdf-outcome" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200">
+                <option>APPROVED</option>
+                <option>DENIED</option>
+                <option>PENDING</option>
+              </select>
+            </div>
+          </div>
+          <label class="text-xs uppercase text-slate-500 mb-1 block">Deidentified PDF</label>
+          <input id="e2e-pdf-file" type="file" accept="application/pdf,.pdf"
+            class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-accent-cyan/20 file:text-accent-cyan file:text-xs file:font-medium hover:file:bg-accent-cyan/30" />
+          <p id="e2e-pdf-fileinfo" class="text-xs text-slate-500 mt-2">LlamaParse converts the PDF to markdown, then Claude extracts ChartData from the markdown, then the full pipeline runs.</p>
+        </div>
+
         <button id="e2e-run-btn" onclick="runE2EDemo()"
           class="w-full mt-4 py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg hover:shadow-accent-blue/40 transition-all flex items-center justify-center gap-2">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -916,23 +951,22 @@
   }
 
   function setE2EMode(mode) {
-    const demoBtn = document.getElementById('e2e-mode-demo');
-    const customBtn = document.getElementById('e2e-mode-custom');
-    const demoPanel = document.getElementById('e2e-mode-demo-panel');
-    const customPanel = document.getElementById('e2e-mode-custom-panel');
-    if (!demoBtn || !customBtn) return;
-    const activeCls = 'border-accent-cyan bg-accent-cyan/10 text-accent-cyan';
-    const inactiveCls = 'border-surface-border bg-surface text-slate-400 hover:border-slate-500';
-    if (mode === 'demo') {
-      demoBtn.className = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 ' + activeCls;
-      customBtn.className = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 ' + inactiveCls;
-      demoPanel.classList.remove('hidden');
-      customPanel.classList.add('hidden');
-    } else {
-      customBtn.className = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 ' + activeCls;
-      demoBtn.className = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 ' + inactiveCls;
-      customPanel.classList.remove('hidden');
-      demoPanel.classList.add('hidden');
+    const btns = {
+      demo:   document.getElementById('e2e-mode-demo'),
+      custom: document.getElementById('e2e-mode-custom'),
+      pdf:    document.getElementById('e2e-mode-pdf'),
+    };
+    const panels = {
+      demo:   document.getElementById('e2e-mode-demo-panel'),
+      custom: document.getElementById('e2e-mode-custom-panel'),
+      pdf:    document.getElementById('e2e-mode-pdf-panel'),
+    };
+    if (!btns.demo || !btns.custom || !btns.pdf) return;
+    const activeCls = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-accent-cyan bg-accent-cyan/10 text-accent-cyan';
+    const inactiveCls = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-surface-border bg-surface text-slate-400 hover:border-slate-500';
+    for (const key of Object.keys(btns)) {
+      btns[key].className = (key === mode) ? activeCls : inactiveCls;
+      if (panels[key]) panels[key].classList.toggle('hidden', key !== mode);
     }
     window._e2eMode = mode;
   }
@@ -944,7 +978,8 @@
     if (!btn || !timeline) return;
 
     const mode = window._e2eMode || 'demo';
-    let payload;
+    let payload = null;
+    let pdfForm = null;  // FormData for PDF path
     if (mode === 'custom') {
       const note = (document.getElementById('e2e-custom-note').value || '').trim();
       if (note.length < 50) {
@@ -959,6 +994,24 @@
         approver_name: 'Dr. Demo',
         raw_note: note,
       };
+    } else if (mode === 'pdf') {
+      const fileInput = document.getElementById('e2e-pdf-file');
+      const file = fileInput && fileInput.files && fileInput.files[0];
+      if (!file) {
+        timeline.innerHTML = `<div class="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-amber-300">Pick a deidentified PDF to upload.</div>`;
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        timeline.innerHTML = `<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-300">PDF too large (${(file.size/1024/1024).toFixed(1)} MB). Max 10 MB — excerpt the relevant encounter.</div>`;
+        return;
+      }
+      pdfForm = new FormData();
+      pdfForm.append('file', file);
+      pdfForm.append('patient_id', 'CUSTOM-PDF');
+      pdfForm.append('procedure_code', document.getElementById('e2e-pdf-cpt').value || '78492');
+      pdfForm.append('payer_name', document.getElementById('e2e-pdf-payer').value);
+      pdfForm.append('scripted_outcome', document.getElementById('e2e-pdf-outcome').value);
+      pdfForm.append('approver_name', 'Dr. Demo');
     } else {
       payload = {
         patient_id: document.getElementById('e2e-patient').value,
@@ -970,16 +1023,24 @@
     }
 
     btn.disabled = true;
-    btn.innerHTML = `${spinnerSVG(5)} Running… (10–25 seconds for live reasoning)`;
+    btn.innerHTML = `${spinnerSVG(5)} Running… (${mode === 'pdf' ? '15–40 seconds for PDF parse + reasoning' : '10–25 seconds for live reasoning'})`;
     timeline.innerHTML = '';
     summary.innerHTML = '';
 
     try {
-      const res = await fetch('/api/demo/end-to-end', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      let res;
+      if (mode === 'pdf') {
+        res = await fetch('/api/demo/end-to-end-pdf', {
+          method: 'POST',
+          body: pdfForm,
+        });
+      } else {
+        res = await fetch('/api/demo/end-to-end', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
       if (!res.ok) {
         const err = await res.text();
         throw new Error(err);

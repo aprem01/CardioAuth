@@ -33,6 +33,15 @@ class Config:
     aws_region: str = field(default_factory=lambda: os.environ.get("AWS_REGION", "us-east-1"))
     use_comprehend_medical: bool = field(default_factory=lambda: os.environ.get("USE_COMPREHEND_MEDICAL", "").lower() in ("1", "true", "yes"))
 
+    # PDF parser for chart + policy ingest. "llamaparse" | "disabled".
+    # Real PHI requires a BAA with the provider — until signed, UI enforces
+    # deidentified-only uploads and server accepts them as demo input.
+    llamaparse_api_key: str = field(default_factory=lambda: os.environ.get("LLAMAPARSE_API_KEY", ""))
+    pdf_parser: str = field(default_factory=lambda: os.environ.get(
+        "PDF_PARSER",
+        "llamaparse" if os.environ.get("LLAMAPARSE_API_KEY") else "disabled",
+    ))
+
     # Thresholds
     chart_confidence_threshold: float = 0.8
     approval_likelihood_threshold: float = 0.6
