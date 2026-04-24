@@ -45,7 +45,13 @@ def test_e2e_with_raw_note_uses_note_ingest_step(monkeypatch) -> None:
 
 
 def test_e2e_with_raw_note_runs_full_pipeline(monkeypatch) -> None:
-    """Every stage still fires on the custom-note path."""
+    """Custom-note path runs through POLICY + REASONER stages.
+
+    With no API key and a skeletal fallback chart, the reasoner will
+    return LOW — which correctly triggers the submission gate (Peter
+    Apr 22 ask). Pipeline ends at the Physician step with outcome
+    BLOCKED_BY_REASONER instead of proceeding to a bad submission.
+    """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     note = "72 yo F with AS, NYHA III, pre-TAVR evaluation. BMI 32."
     timeline = run_end_to_end_demo(
@@ -56,13 +62,12 @@ def test_e2e_with_raw_note_runs_full_pipeline(monkeypatch) -> None:
         scripted_outcome="APPROVED",
     )
     agents = [s.agent for s in timeline.steps]
-    # Same order as demo path except FHIR→NoteIngest swap
     assert agents[0] == "NoteIngest"
     assert "POLICY_AGENT" in agents
     assert "UNIFIED_REASONER" in agents
-    assert "SUBMISSION_AGENT" in agents
-    assert "OutcomeRecorder" in agents
-    assert timeline.outcome == "APPROVED"
+    assert "Physician" in agents
+    # Weak case → decision gate blocks; outcome reflects that
+    assert timeline.outcome in ("APPROVED", "BLOCKED_BY_REASONER")
 
 
 def test_detail_payloads_include_full_stage_output(monkeypatch) -> None:

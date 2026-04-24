@@ -160,9 +160,27 @@ class ChartData(BaseModel):
     patient_id: str
     procedure_requested: str
     procedure_code: str = Field(description="CPT code")
+
+    # Patient demographics (Apr 22 — Peter feedback). Extraction was thin on
+    # these because they weren't model fields. Adding as optional-with-default
+    # so back-compat is preserved and the payer form's populated_from paths
+    # actually resolve.
+    patient_name: str = ""
+    date_of_birth: str = Field(default="", description="ISO 8601 or MM/DD/YYYY")
+    age: int | None = None
+    sex: str = ""                       # "M" | "F" | "Other" | ""
+
+    # Provider
     attending_physician: str = ""
+    attending_npi: str = Field(default="", description="10-digit NPI")
+
+    # Insurance
     insurance_id: str = ""
     payer_name: str = ""
+    # Medicare-specific fields (relevant when payer_name is "Medicare")
+    mac_jurisdiction: str = Field(default="", description="Medicare Administrative Contractor region")
+    secondary_payer: str = Field(default="", description="Secondary commercial payer name if any")
+    abn_signed: bool = Field(default=False, description="Advance Beneficiary Notice signed")
 
     # Diagnoses
     diagnosis_codes: list[str] = Field(default_factory=list, description="ICD-10 codes, primary first")

@@ -409,11 +409,58 @@ def run_end_to_end_demo(
         )
     timeline.steps.append(t.finish())
 
-    # ── Step 5: Physician approval (scripted) ──
-    t = _StepTimer(5, "Physician approval", "Physician")
+    # ── Step 5: Physician approval (scripted) with submission gate ──
+    # Peter Apr 22-23: "the system correctly identified that PET was not
+    # appropriate (low approval, fatal flags), but still proceeded with
+    # submission rather than blocking or suggesting the correct modality."
+    # Gate: if reasoner says DO NOT SUBMIT or score < 0.5, block here.
+    t = _StepTimer(5, "Physician approval + submission gate", "Physician")
+    score = reasoning.approval_likelihood_score
+    label = reasoning.approval_likelihood_label
+    should_block = (
+        label in ("DO NOT SUBMIT", "INSUFFICIENT")
+        or (score is not None and score < 0.5)
+    )
+    alternative_modality = _suggest_alternative_modality(chart, reasoning, procedure_code)
+
+    if should_block:
+        block_reason = (
+            f"Reasoner recommends against submission: {label} ({score:.0%}). "
+            "The chart lacks qualifying evidence for this procedure."
+        )
+        detail = {
+            "decision": "blocked",
+            "reason": block_reason,
+            "approval_score": score,
+            "approval_label": label,
+            "alternative_modality": alternative_modality,
+            "blocking_gaps": [
+                (g.criterion.split(":")[0].strip() if hasattr(g, "criterion") else (g.get("code") or ""))
+                for g in (reasoning.criteria_not_met or [])
+            ][:5],
+        }
+        t.set_result(
+            f"BLOCKED — {label}, score {score:.0%}. Submission halted."
+            + (f" Suggest: {alternative_modality['name']} (CPT {alternative_modality['cpt']})"
+               if alternative_modality else ""),
+            detail=detail,
+            status="fallback",
+        )
+        timeline.steps.append(t.finish())
+        # Skip remaining steps and return with blocked status
+        timeline.total_duration_ms = int((time.time() - overall_start) * 1000)
+        timeline.outcome = "BLOCKED_BY_REASONER"
+        return timeline
+
     t.set_result(
-        f"Approved by {approver_name}",
-        detail={"approved_by": approver_name, "approved_at": datetime.now(timezone.utc).isoformat()},
+        f"Approved by {approver_name} — proceeding to submission (reasoner: {label}, {score:.0%})",
+        detail={
+            "decision": "approved",
+            "approved_by": approver_name,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "approval_score": score,
+            "approval_label": label,
+        },
     )
     timeline.steps.append(t.finish())
 
@@ -608,6 +655,84 @@ def run_end_to_end_demo(
 
 
 # ────────────────────────────────────────────────────────────────────────
+# Alternative modality suggestion (Peter Apr 22-23)
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _suggest_alternative_modality(
+    chart: Any,
+    reasoning: Any,
+    current_cpt: str,
+) -> dict | None:
+    """Suggest a less expensive / less demanding modality when the current
+    request is likely to fail.
+
+    Peter's example: exercise SPECT case where PET was not appropriate —
+    system should have suggested the correct modality, not proceeded.
+
+    Simple rule-based today. Could become ML-driven when we have outcome
+    data correlating (rejected CPT, patient profile) → (successful CPT).
+    """
+    current = (current_cpt or "").strip()
+
+    # PET (78492) without strong justification → suggest SPECT (78452)
+    # Strong justification = BMI ≥ 35 or documented attenuation artifact
+    if current == "78492":
+        bmi = None
+        try:
+            haystack = " ".join(chart.active_comorbidities or []) + " " + (chart.additional_notes or "")
+            import re
+            m = re.search(r"bmi\s*(?:of)?[\s:]*(\d{1,2}(?:\.\d)?)", haystack.lower())
+            if m:
+                bmi = float(m.group(1))
+        except Exception:
+            pass
+        has_attenuation = any(
+            "attenuation" in (s.interpretation or "").lower()
+            or "attenuation" in (s.result_summary or "").lower()
+            for s in (chart.prior_stress_tests or [])
+        )
+        if (bmi is None or bmi < 35) and not has_attenuation:
+            return {
+                "name": "Lexiscan/Rest SPECT",
+                "cpt": "78452",
+                "rationale": (
+                    "PET is typically reserved for body habitus (BMI ≥ 35) or "
+                    "documented attenuation artifact on prior SPECT. Neither is "
+                    "clearly supported by this chart. SPECT is usually approved "
+                    "first and is less costly — reserve PET for cases where SPECT "
+                    "would be non-diagnostic."
+                ),
+            }
+
+    # SPECT (78452) without pharmacologic-stress justification → consider ETT-only
+    if current == "78452":
+        # Has LBBB / paced / exercise incapacity?
+        has_pharm_justification = False
+        for e in (chart.ecg_findings or []):
+            txt = ((e.conduction or "") + " " + (e.pacing or "") + " " + (e.summary or "")).lower()
+            if any(k in txt for k in ("lbbb", "paced", "wpw")):
+                has_pharm_justification = True
+                break
+        notes = (chart.additional_notes or "").lower()
+        if "unable to exercise" in notes or "cannot exercise" in notes:
+            has_pharm_justification = True
+        if not has_pharm_justification:
+            return {
+                "name": "Exercise stress ECG (ETT)",
+                "cpt": "93015",
+                "rationale": (
+                    "No qualifying indication for pharmacologic nuclear stress "
+                    "(no LBBB, paced rhythm, WPW, or documented exercise "
+                    "incapacity). Exercise ETT should be the first-line option "
+                    "unless the patient genuinely cannot exercise."
+                ),
+            }
+
+    return None
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Raw-note extraction (Peter's "run my own case" path)
 # ────────────────────────────────────────────────────────────────────────
 
@@ -616,17 +741,48 @@ _NOTE_EXTRACTION_PROMPT = """\
 You are CHART_AGENT, extracting structured clinical data from a free-text
 clinical note for prior authorization.
 
-Peter's Apr 22 feedback: "CHART_AGENT often showed limited or no structured
-output for symptoms, ECG findings, prior stress tests even though they were
-present in the note." Your job is to be THOROUGH. If the note mentions it,
-extract it into the correct v2 bucket.
+Peter's Apr 22-23 feedback: "Even with very explicit, well-formatted notes,
+key elements (symptoms, prior stress test, ECG, PMH) are not being populated
+into structured output, and even straightforward header fields like patient
+name, DOB, sex, member ID, ordering physician, NPI are not populated."
 
-You will receive a DEIDENTIFIED clinical note as plain text and must return
-a ChartData v2 object. Follow the same categorization rules you use for
-FHIR bundles — each field has one and only one kind of data.
+Your job is to be THOROUGH. Extract every field you can find. If the note
+mentions it, put it in the right v2 bucket.
 
 ═══════════════════════════════════════════════════════════════════════════
-CATEGORY RULES (each field has one kind of data)
+ALWAYS EXTRACT DEMOGRAPHICS FIRST (before clinical content)
+═══════════════════════════════════════════════════════════════════════════
+
+Top-level fields that belong at the root of the JSON, not nested:
+
+  patient_name        — full name as it appears (synthetic in test notes)
+  date_of_birth       — ISO 8601 (YYYY-MM-DD) preferred, else MM/DD/YYYY
+  age                 — integer years
+  sex                 — "M" | "F" | "Other"
+  insurance_id        — member / subscriber ID
+  payer_name          — e.g. "UnitedHealthcare", "Aetna", "Medicare"
+  attending_physician — ordering physician full name
+  attending_npi       — 10-digit National Provider Identifier
+  procedure_code      — CPT code being requested
+  procedure_requested — full procedure name
+  diagnosis_codes     — list of ICD-10 codes (primary first)
+
+These are NOT optional when the note contains them. Patterns to look for:
+
+  Patient name        — "Patient: Jane Doe", "Name:", "Pt:", "Mrs./Mr./Ms. X"
+  DOB                 — "DOB: 01/15/1958", "date of birth", "born"
+  Sex                 — "Sex: F", "67 yo M", "Gender:"
+  Member ID           — "Member ID:", "Policy #", "ID #", "Subscriber"
+  NPI                 — "NPI: 1234567890" (10 digits)
+  Ordering MD         — "Ordering:", "Attending:", "Physician:", "Dr."
+  CPT                 — "CPT 78492", "procedure code"
+  ICD-10              — "I25.10", codes starting with letter then digits
+
+If the note gives age but not DOB, leave date_of_birth="" — do NOT fabricate.
+If sex is written as "Male"/"Female", normalize to "M"/"F".
+
+═══════════════════════════════════════════════════════════════════════════
+THEN EXTRACT CLINICAL CONTENT (each field has one kind of data)
 ═══════════════════════════════════════════════════════════════════════════
 
   active_comorbidities     — chronic conditions (HTN, DM, CKD, CAD, COPD)
@@ -652,7 +808,7 @@ CATEGORY RULES (each field has one kind of data)
   relevant_medications     — name, dose, start_date or duration, indication
 
 ═══════════════════════════════════════════════════════════════════════════
-BE THOROUGH — EXTRACTION IS WHAT POPULATES THE PAYER FORM
+PER-CATEGORY EXTRACTION PATTERNS — EXTRACT AGGRESSIVELY
 ═══════════════════════════════════════════════════════════════════════════
 
 Typical patterns to extract aggressively:

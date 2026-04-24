@@ -1078,6 +1078,9 @@
     if (agent === 'PayerFormMapper') {
       return renderPayerFormDetail(d);
     }
+    if (agent === 'Physician') {
+      return renderPhysicianDetail(d);
+    }
     if (agent === 'NoteIngest') {
       return `<details class="mt-2" open><summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Note preview</summary>
         <pre class="text-xs text-slate-400 mt-1 bg-background rounded p-2 whitespace-pre-wrap">${escapeHtml(d.preview || '')}</pre>
@@ -1209,6 +1212,34 @@
         ${d.channel_notes ? `<div><p class="text-xs font-semibold text-slate-300 uppercase mb-1">Channel notes</p><p class="text-xs text-slate-400">${escapeHtml(d.channel_notes)}</p></div>` : ''}
         ${d.requires_human_action ? `<div><p class="text-xs font-semibold text-amber-400 uppercase mb-1">⚠ Requires human action</p><p class="text-xs text-amber-300">${escapeHtml(d.requires_human_action)}</p></div>` : ''}
         ${payload.audit_trail && payload.audit_trail.length ? `<details><summary class="text-xs cursor-pointer text-slate-500">Audit trail (${payload.audit_trail.length} entries)</summary><ul class="text-xs text-slate-400 ml-3">${payload.audit_trail.map(a => '<li><span class="font-mono">'+escapeHtml(a.timestamp || '')+'</span> · '+escapeHtml(a.action || '')+' · <span class="text-slate-500">'+escapeHtml(a.actor || '')+'</span></li>').join('')}</ul></details>` : ''}
+      </div>
+    </details>`;
+  }
+
+  function renderPhysicianDetail(d) {
+    // Block vs approve decision detail
+    if (d && d.decision === 'blocked') {
+      const alt = d.alternative_modality;
+      return `<details class="mt-2" open>
+        <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Submission BLOCKED by reasoner</summary>
+        <div class="mt-2 bg-red-500/5 border border-red-500/30 rounded p-3 text-xs space-y-2">
+          <p class="text-red-300">${escapeHtml(d.reason || '')}</p>
+          ${(d.blocking_gaps || []).length ? `<div><p class="text-xs font-semibold text-red-400 uppercase mb-1">Top blocking gaps</p><ul class="text-xs text-red-300 ml-3">${(d.blocking_gaps || []).slice(0,5).map(g => '<li>'+escapeHtml(String(g))+'</li>').join('')}</ul></div>` : ''}
+          ${alt ? `<div class="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+            <p class="text-xs font-semibold text-amber-300 uppercase mb-1">Suggested alternative</p>
+            <p class="text-sm text-amber-200"><strong>${escapeHtml(alt.name)}</strong> (CPT ${escapeHtml(alt.cpt)})</p>
+            <p class="text-xs text-amber-300/80 mt-1">${escapeHtml(alt.rationale)}</p>
+          </div>` : ''}
+        </div>
+      </details>`;
+    }
+    return `<details class="mt-2">
+      <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Physician decision</summary>
+      <div class="mt-2 bg-background rounded p-3 text-xs space-y-1">
+        <div><span class="text-slate-500">Decision:</span> <span class="text-emerald-300">${escapeHtml(d.decision || 'approved')}</span></div>
+        <div><span class="text-slate-500">Approved by:</span> ${escapeHtml(d.approved_by || '')}</div>
+        <div><span class="text-slate-500">At:</span> <span class="font-mono">${escapeHtml(d.approved_at || '')}</span></div>
+        ${d.approval_label ? `<div><span class="text-slate-500">Reasoner verdict:</span> ${escapeHtml(d.approval_label)} (${((d.approval_score || 0)*100).toFixed(0)}%)</div>` : ''}
       </div>
     </details>`;
   }

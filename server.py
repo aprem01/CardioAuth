@@ -498,6 +498,10 @@ def create_custom_pa_request(req: CustomPARequest, user: AuthUser = Depends(get_
         patient_id=f"CUSTOM-{uuid.uuid4().hex[:6].upper()}",
         procedure_requested=req.procedure_name,
         procedure_code=req.procedure_code,
+        # Apr 22 (Peter): demographics now flow through to the payer form
+        patient_name=req.patient_name or "",
+        age=req.age,
+        sex=req.sex or "",
         attending_physician="",
         insurance_id="",
         payer_name=req.payer_name,
