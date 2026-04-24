@@ -1253,11 +1253,13 @@
 
     const statusBadge = (s) => {
       const map = {
-        populated: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
-        missing:   'bg-red-500/10 text-red-300 border-red-500/30',
-        incomplete:'bg-amber-500/10 text-amber-300 border-amber-500/30',
+        populated:    'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+        missing:      'bg-red-500/10 text-red-300 border-red-500/30',
+        incomplete:   'bg-amber-500/10 text-amber-300 border-amber-500/30',
+        needs_verify: 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30',
       };
-      return `<span class="text-xs px-1.5 py-0.5 rounded border ${map[s] || 'bg-slate-500/10 text-slate-400 border-slate-500/30'}">${s}</span>`;
+      const label = s === 'needs_verify' ? 'verify' : s;
+      return `<span class="text-xs px-1.5 py-0.5 rounded border ${map[s] || 'bg-slate-500/10 text-slate-400 border-slate-500/30'}">${label}</span>`;
     };
     const categoryColor = (cat) => ({
       patient:  'text-accent-cyan',
@@ -1287,8 +1289,12 @@
                 ${f.help_text ? `<div class="text-xs text-slate-500 mt-0.5">${escapeHtml(f.help_text)}</div>` : ''}
               </td>
               <td class="py-1.5 pr-3 align-top" style="width:45%">
-                <div class="text-xs ${f.status === 'missing' ? 'text-slate-600 italic' : 'text-slate-300'}">${f.value ? escapeHtml(String(f.value).slice(0, 400)) : '<span class="italic">— empty —</span>'}</div>
-                ${f.missing_reason ? `<div class="text-xs text-red-400 mt-0.5">${escapeHtml(f.missing_reason)}</div>` : ''}
+                <div class="text-xs ${f.status === 'missing' ? 'text-slate-600 italic' : f.status === 'needs_verify' ? 'text-indigo-300 italic' : 'text-slate-300'}">${
+                  f.status === 'needs_verify'
+                    ? 'Manual attestation — confirm before submitting'
+                    : (f.value ? escapeHtml(String(f.value).slice(0, 400)) : '<span class="italic">— empty —</span>')
+                }</div>
+                ${f.missing_reason && f.status !== 'needs_verify' ? `<div class="text-xs text-red-400 mt-0.5">${escapeHtml(f.missing_reason)}</div>` : ''}
               </td>
               <td class="py-1.5 align-top">${statusBadge(f.status)}</td>
             </tr>`;
@@ -1310,6 +1316,7 @@
           <span class="text-emerald-300">● populated ${c.populated || 0}</span>
           <span class="text-red-300">● missing ${c.missing_required || 0}</span>
           <span class="text-amber-300">● incomplete ${c.incomplete || 0}</span>
+          <span class="text-indigo-300">● verify ${c.needs_verify || 0}</span>
           <span class="text-slate-500">● optional empty ${c.optional_empty || 0}</span>
         </div>
         ${readyBanner}

@@ -920,11 +920,11 @@ def _extract_chart_from_note(
                     case_id=patient_id or "CUSTOM")
 
         raw = response.content[0].text
-        import json as _json
-        import re as _re
-        # Strip any markdown fences
-        cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=_re.MULTILINE)
-        data = _json.loads(cleaned)
+        from cardioauth.agents.json_recovery import parse_llm_json
+        from cardioauth.extraction_normalize import normalize_claude_extraction
+
+        data = parse_llm_json(raw, fallback={})
+        data = normalize_claude_extraction(data)
 
         # Ensure required identity fields are set
         data.setdefault("patient_id", patient_id or "CUSTOM")
@@ -942,7 +942,31 @@ def _extract_chart_from_note(
         # Only pass fields ChartData knows about
         valid_keys = set(ChartData.model_fields.keys())
         filtered = {k: v for k, v in data.items() if k in valid_keys}
-        return ChartData(**filtered)
+        try:
+            return ChartData(**filtered)
+        except Exception as ve:
+            logger.warning(
+                "Note extraction: ChartData validation failed after normalize (%s); "
+                "retrying with lists stripped",
+                ve,
+            )
+            # Last-resort: strip the structured list fields that most commonly
+            # fail validation; keep demographics + ID + notes so the pipeline
+            # can still run with a thin chart rather than the raw-skeleton.
+            safe_keys = {
+                "patient_id", "procedure_requested", "procedure_code",
+                "patient_name", "date_of_birth", "age", "sex",
+                "attending_physician", "attending_npi",
+                "insurance_id", "payer_name",
+                "diagnosis_codes", "active_comorbidities",
+                "additional_notes", "confidence_score", "missing_fields",
+            }
+            safe = {k: v for k, v in filtered.items() if k in safe_keys}
+            safe["missing_fields"] = list(safe.get("missing_fields", [])) + [
+                f"Structured extraction dropped: {str(ve)[:120]}"
+            ]
+            safe["confidence_score"] = min(float(safe.get("confidence_score") or 0.5), 0.5)
+            return ChartData(**safe)
 
     except Exception as e:
         logger.warning("Note extraction: Claude call failed: %s — falling back to skeletal chart", e)

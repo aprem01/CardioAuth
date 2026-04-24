@@ -307,6 +307,25 @@ def get_payer_form(payer: str, cpt_code: str) -> PayerForm | None:
 # ────────────────────────────────────────────────────────────────────────
 
 
+# Sentinel for fields that can't be auto-populated and need manual attestation.
+class _NeedsVerifySentinel:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "<NEEDS_VERIFY>"
+
+
+NEEDS_VERIFY = _NeedsVerifySentinel()
+
+
 def populate_payer_form(
     form: PayerForm,
     *,
@@ -323,12 +342,16 @@ def populate_payer_form(
         "fields": [{key, label, category, required, value, status,
                     missing_reason, help_text}],
         "counts": {"populated": N, "missing_required": N,
-                   "incomplete": N, "optional_empty": N, "total": N},
+                   "incomplete": N, "optional_empty": N,
+                   "needs_verify": N, "total": N},
         "ready_to_submit": bool,
       }
     """
     populated_rows: list[dict] = []
-    counts = {"populated": 0, "missing_required": 0, "incomplete": 0, "optional_empty": 0}
+    counts = {
+        "populated": 0, "missing_required": 0, "incomplete": 0,
+        "optional_empty": 0, "needs_verify": 0,
+    }
 
     for f in form.fields:
         value = _resolve_value(f, chart_data, policy_data, reasoning)
@@ -349,6 +372,8 @@ def populate_payer_form(
         })
         if status == "populated":
             counts["populated"] += 1
+        elif status == "needs_verify":
+            counts["needs_verify"] += 1
         elif status == "missing":
             if f.required:
                 counts["missing_required"] += 1
@@ -358,6 +383,7 @@ def populate_payer_form(
             counts["incomplete"] += 1
 
     counts["total"] = len(form.fields)
+    # needs_verify doesn't block ready_to_submit — the user just has to attest.
     ready = counts["missing_required"] == 0 and counts["incomplete"] == 0
 
     return {
@@ -382,6 +408,8 @@ def _resolve_value(f: FormField, chart_data, policy_data, reasoning) -> Any:
         except Exception as e:
             logger.debug("payer_forms: callable for %s failed: %s", f.key, e)
             return ""
+    if src == "flagged_requires_verify":
+        return NEEDS_VERIFY
     if isinstance(src, str) and "." in src:
         root_name, _, path = src.partition(".")
         root = {"chart_data": chart_data, "policy_data": policy_data, "reasoning": reasoning}.get(root_name)
@@ -394,14 +422,13 @@ def _resolve_value(f: FormField, chart_data, policy_data, reasoning) -> Any:
             return val
         except Exception:
             return ""
-    # Sentinel that requires manual attestation verification
-    if src == "flagged_requires_verify":
-        return None
     return ""
 
 
 def _to_string(value: Any) -> str:
     if value is None:
+        return ""
+    if isinstance(value, _NeedsVerifySentinel):
         return ""
     if isinstance(value, bool):
         return "yes" if value else "no"
@@ -411,6 +438,8 @@ def _to_string(value: Any) -> str:
 
 
 def _classify_field(f: FormField, value: Any, str_value: str) -> tuple[str, str]:
+    if isinstance(value, _NeedsVerifySentinel):
+        return "needs_verify", "Manual attestation — confirm before submitting"
     empty = (value is None) or (str_value.strip() == "")
     if empty:
         if f.required:

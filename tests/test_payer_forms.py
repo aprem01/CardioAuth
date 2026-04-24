@@ -151,7 +151,10 @@ def test_counts_add_up_to_total() -> None:
     reasoning = ReasoningResult(approval_likelihood_score=0.0, approval_likelihood_label="LOW", pa_narrative_draft="")
     result = populate_payer_form(form, chart_data=chart, policy_data=None, reasoning=reasoning)
     c = result["counts"]
-    assert (c["populated"] + c["missing_required"] + c["incomplete"] + c["optional_empty"]) == c["total"]
+    assert (
+        c["populated"] + c["missing_required"] + c["incomplete"]
+        + c["optional_empty"] + c.get("needs_verify", 0)
+    ) == c["total"]
 
 
 def test_ready_to_submit_requires_all_required_populated() -> None:
