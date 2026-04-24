@@ -413,43 +413,62 @@ def run_end_to_end_demo(
     # Peter Apr 22-23: "the system correctly identified that PET was not
     # appropriate (low approval, fatal flags), but still proceeded with
     # submission rather than blocking or suggesting the correct modality."
-    # Gate: if reasoner says DO NOT SUBMIT or score < 0.5, block here.
+    # Peter Apr 24: "distinguish between truly critical fields (e.g.,
+    # patient identifiers, primary symptoms, CPT code) and less essential
+    # ones. Only the key clinical and identification fields would need to
+    # trigger a submission block."
+    # Gate now checks BOTH: reasoner recommendation + critical-field presence.
     t = _StepTimer(5, "Physician approval + submission gate", "Physician")
     score = reasoning.approval_likelihood_score
     label = reasoning.approval_likelihood_label
-    should_block = (
+    reasoner_blocks = (
         label in ("DO NOT SUBMIT", "INSUFFICIENT")
         or (score is not None and score < 0.5)
     )
+    critical_missing = _critical_field_gaps(chart)
+    should_block = reasoner_blocks or bool(critical_missing)
     alternative_modality = _suggest_alternative_modality(chart, reasoning, procedure_code)
 
     if should_block:
-        block_reason = (
-            f"Reasoner recommends against submission: {label} ({score:.0%}). "
-            "The chart lacks qualifying evidence for this procedure."
-        )
+        if reasoner_blocks:
+            block_reason = (
+                f"Reasoner recommends against submission: {label} ({score:.0%}). "
+                "The chart lacks qualifying evidence for this procedure."
+            )
+            outcome_label = "BLOCKED_BY_REASONER"
+            short_msg = f"BLOCKED — {label}, score {score:.0%}. Submission halted."
+        else:
+            block_reason = (
+                "Critical identification / clinical fields missing — cannot submit "
+                "without: " + ", ".join(critical_missing) + ". "
+                "Non-critical gaps are not treated as blockers."
+            )
+            outcome_label = "BLOCKED_MISSING_CRITICAL"
+            short_msg = (
+                f"BLOCKED — {len(critical_missing)} critical field(s) missing: "
+                + ", ".join(critical_missing)
+            )
         detail = {
             "decision": "blocked",
             "reason": block_reason,
             "approval_score": score,
             "approval_label": label,
             "alternative_modality": alternative_modality,
+            "critical_fields_missing": critical_missing,
             "blocking_gaps": [
                 (g.criterion.split(":")[0].strip() if hasattr(g, "criterion") else (g.get("code") or ""))
                 for g in (reasoning.criteria_not_met or [])
             ][:5],
         }
-        t.set_result(
-            f"BLOCKED — {label}, score {score:.0%}. Submission halted."
-            + (f" Suggest: {alternative_modality['name']} (CPT {alternative_modality['cpt']})"
-               if alternative_modality else ""),
-            detail=detail,
-            status="fallback",
-        )
+        if alternative_modality:
+            short_msg += (
+                f" Suggest: {alternative_modality['name']} "
+                f"(CPT {alternative_modality['cpt']})"
+            )
+        t.set_result(short_msg, detail=detail, status="fallback")
         timeline.steps.append(t.finish())
-        # Skip remaining steps and return with blocked status
         timeline.total_duration_ms = int((time.time() - overall_start) * 1000)
-        timeline.outcome = "BLOCKED_BY_REASONER"
+        timeline.outcome = outcome_label
         return timeline
 
     t.set_result(
@@ -659,6 +678,38 @@ def run_end_to_end_demo(
 # ────────────────────────────────────────────────────────────────────────
 
 
+def _critical_field_gaps(chart: Any) -> list[str]:
+    """Return the labels of critical fields that are missing from the chart.
+
+    Peter Apr 24: only truly critical fields should block submission.
+    Other missing fields are surfaced on the payer form for completeness
+    but don't halt the pipeline.
+
+    Critical set (patient identification + clinical + procedure):
+      - Patient name
+      - Date of birth
+      - Member ID (insurance_id)
+      - Ordering physician
+      - CPT code
+      - At least one current symptom (named)
+    """
+    gaps: list[str] = []
+    if not (getattr(chart, "patient_name", "") or "").strip():
+        gaps.append("Patient name")
+    if not (getattr(chart, "date_of_birth", "") or "").strip():
+        gaps.append("Date of birth")
+    if not (getattr(chart, "insurance_id", "") or "").strip():
+        gaps.append("Member ID")
+    if not (getattr(chart, "attending_physician", "") or "").strip():
+        gaps.append("Ordering physician")
+    if not (getattr(chart, "procedure_code", "") or "").strip():
+        gaps.append("CPT code")
+    symptoms = getattr(chart, "current_symptoms", []) or []
+    if not any(getattr(s, "name", "") for s in symptoms):
+        gaps.append("Primary symptom")
+    return gaps
+
+
 def _suggest_alternative_modality(
     chart: Any,
     reasoning: Any,
@@ -820,6 +871,32 @@ Typical patterns to extract aggressively:
   ("3 weeks ago", "since March"), frequency ("daily", "weekly"),
   change_vs_baseline ("new", "worsening", "stable"), severity.
 
+  ★ CRITICAL: current_symptoms MUST be a list of OBJECTS, never bare
+    strings. Missing or empty current_symptoms blocks the payer form.
+    Example HPI → expected JSON:
+
+    HPI: "67F presents with new-onset dyspnea on exertion x 3 weeks,
+     progressively worse. Also intermittent chest tightness with activity,
+     no rest pain. Denies syncope, palpitations."
+
+    current_symptoms: [
+      {
+        "name": "dyspnea on exertion",
+        "onset": "3 weeks ago",
+        "character": "exertional",
+        "change_vs_baseline": "new",
+        "severity": ""
+      },
+      {
+        "name": "chest tightness",
+        "character": "exertional",
+        "change_vs_baseline": "new",
+        "frequency": "intermittent"
+      }
+    ]
+
+    Note the denials (syncope, palpitations) are NOT included.
+
   ECG: Any mention of rhythm (sinus, AF, paced), conduction
   (LBBB, RBBB, LAFB, first-degree block), LVH with strain, ischemic
   changes, pacing. Break into the structured sub-fields. "ECG: NSR, LBBB"
@@ -922,9 +999,14 @@ def _extract_chart_from_note(
         raw = response.content[0].text
         from cardioauth.agents.json_recovery import parse_llm_json
         from cardioauth.extraction_normalize import normalize_claude_extraction
+        from cardioauth.symptom_fallback import backfill_symptoms_if_missing
 
         data = parse_llm_json(raw, fallback={})
         data = normalize_claude_extraction(data)
+        # Peter Apr 24: symptoms recognized by reasoner but not landing in
+        # current_symptoms. Rule-based backstop runs only when Claude left
+        # the bucket empty — Claude still wins when it produces anything.
+        data = backfill_symptoms_if_missing(data, raw_note)
 
         # Ensure required identity fields are set
         data.setdefault("patient_id", patient_id or "CUSTOM")

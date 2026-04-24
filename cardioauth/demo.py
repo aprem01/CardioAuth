@@ -1322,17 +1322,29 @@ def get_demo_chart(patient_id: str, procedure_code: str) -> ChartData:
     """
     pt = DEMO_PATIENTS[patient_id]
 
+    from cardioauth.models.chart import Symptom
     return ChartData(
         patient_id=pt["mrn"],
         procedure_requested=pt["procedure"],
         procedure_code=pt["cpt"],
+        patient_name=pt.get("name", ""),
+        date_of_birth=pt.get("dob", ""),
+        age=pt.get("age"),
+        sex=pt.get("sex", ""),
         diagnosis_codes=[d["code"] for d in pt["diagnoses"]],
         relevant_labs=[LabResult(**lab) for lab in pt["labs"]],
         relevant_imaging=[ImagingResult(**img) for img in pt["imaging"]],
         relevant_medications=[Medication(**med) for med in pt["medications"]],
         prior_treatments=pt["prior_treatments"],
         comorbidities=pt["comorbidities"],
+        # At least one symptom so the critical-fields gate doesn't block
+        # the demo patient (real patients come through note extraction).
+        current_symptoms=[
+            Symptom(name="chest pain", character="typical",
+                    change_vs_baseline="new or worsening"),
+        ],
         attending_physician=pt["attending"],
+        attending_npi=pt.get("attending_npi", ""),
         insurance_id=pt["insurance_id"],
         payer_name=pt["payer"],
         confidence_score=0.98,
