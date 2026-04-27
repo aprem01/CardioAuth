@@ -1098,7 +1098,11 @@
 
     const outcomeColor = (data.outcome === 'APPROVED') ? 'text-emerald-400' :
                          (data.outcome === 'DENIED') ? 'text-red-400' :
-                         (data.outcome === 'PENDING') ? 'text-amber-400' : 'text-slate-400';
+                         (data.outcome === 'PENDING') ? 'text-amber-400' :
+                         (data.outcome === 'BLOCKED_BY_REASONER') ? 'text-red-400' :
+                         (data.outcome === 'BLOCKED_MISSING_CRITICAL') ? 'text-red-400' :
+                         (data.outcome === 'DEFERRED_TO_PHYSICIAN') ? 'text-indigo-400' :
+                         'text-slate-400';
     summary.innerHTML = `
       <div class="bg-surface rounded-xl border border-surface-border p-5 mt-4">
         <div class="flex items-center justify-between">
@@ -1278,13 +1282,35 @@
   }
 
   function renderPhysicianDetail(d) {
-    // Block vs approve decision detail
-    if (d && d.decision === 'blocked') {
-      const alt = d.alternative_modality;
+    if (!d) return '';
+    const alt = d.alternative_modality;
+    const capLine = d.approval_score_capped_by_extraction
+      ? `<div class="text-xs text-amber-300/90">Note: reasoner score capped from ${(((d.approval_score_raw)||0)*100).toFixed(0)}% to ${((d.approval_score||0)*100).toFixed(0)}% by extraction confidence ${((d.chart_confidence||0)*100).toFixed(0)}%.</div>`
+      : '';
+
+    if (d.decision === 'deferred') {
       return `<details class="mt-2" open>
-        <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Submission BLOCKED by reasoner</summary>
+        <summary class="text-xs cursor-pointer text-indigo-400 hover:text-indigo-300">Submission DEFERRED — physician review required</summary>
+        <div class="mt-2 bg-indigo-500/5 border border-indigo-500/30 rounded p-3 text-xs space-y-2">
+          <p class="text-indigo-300">${escapeHtml(d.reason || '')}</p>
+          ${capLine}
+          ${(d.blocking_gaps || []).length ? `<div><p class="text-xs font-semibold text-indigo-300 uppercase mb-1">Criteria not met</p><ul class="text-xs text-indigo-200/80 ml-3">${(d.blocking_gaps || []).slice(0,5).map(g => '<li>'+escapeHtml(String(g))+'</li>').join('')}</ul></div>` : ''}
+          ${alt ? `<div class="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+            <p class="text-xs font-semibold text-amber-300 uppercase mb-1">Possible alternative</p>
+            <p class="text-sm text-amber-200"><strong>${escapeHtml(alt.name)}</strong> (CPT ${escapeHtml(alt.cpt)})</p>
+            <p class="text-xs text-amber-300/80 mt-1">${escapeHtml(alt.rationale)}</p>
+          </div>` : ''}
+        </div>
+      </details>`;
+    }
+
+    if (d.decision === 'blocked') {
+      return `<details class="mt-2" open>
+        <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Submission BLOCKED</summary>
         <div class="mt-2 bg-red-500/5 border border-red-500/30 rounded p-3 text-xs space-y-2">
           <p class="text-red-300">${escapeHtml(d.reason || '')}</p>
+          ${capLine}
+          ${(d.critical_fields_missing || []).length ? `<div><p class="text-xs font-semibold text-red-400 uppercase mb-1">Critical fields missing</p><ul class="text-xs text-red-300 ml-3">${(d.critical_fields_missing || []).map(g => '<li>'+escapeHtml(String(g))+'</li>').join('')}</ul></div>` : ''}
           ${(d.blocking_gaps || []).length ? `<div><p class="text-xs font-semibold text-red-400 uppercase mb-1">Top blocking gaps</p><ul class="text-xs text-red-300 ml-3">${(d.blocking_gaps || []).slice(0,5).map(g => '<li>'+escapeHtml(String(g))+'</li>').join('')}</ul></div>` : ''}
           ${alt ? `<div class="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
             <p class="text-xs font-semibold text-amber-300 uppercase mb-1">Suggested alternative</p>
@@ -1301,6 +1327,7 @@
         <div><span class="text-slate-500">Approved by:</span> ${escapeHtml(d.approved_by || '')}</div>
         <div><span class="text-slate-500">At:</span> <span class="font-mono">${escapeHtml(d.approved_at || '')}</span></div>
         ${d.approval_label ? `<div><span class="text-slate-500">Reasoner verdict:</span> ${escapeHtml(d.approval_label)} (${((d.approval_score || 0)*100).toFixed(0)}%)</div>` : ''}
+        ${capLine}
       </div>
     </details>`;
   }

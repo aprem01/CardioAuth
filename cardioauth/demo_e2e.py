@@ -410,23 +410,31 @@ def run_end_to_end_demo(
     timeline.steps.append(t.finish())
 
     # ── Step 5: Physician approval (scripted) with submission gate ──
-    # Peter Apr 22-23: "the system correctly identified that PET was not
-    # appropriate (low approval, fatal flags), but still proceeded with
-    # submission rather than blocking or suggesting the correct modality."
-    # Peter Apr 24: "distinguish between truly critical fields (e.g.,
-    # patient identifiers, primary symptoms, CPT code) and less essential
-    # ones. Only the key clinical and identification fields would need to
-    # trigger a submission block."
-    # Gate now checks BOTH: reasoner recommendation + critical-field presence.
+    # Apr 22-23 (Peter): block when reasoner says PET inappropriate.
+    # Apr 24 (Peter): differentiate critical vs non-critical missing fields.
+    # Apr 25 (failure-aware AI review): two more bands —
+    #   (1) cap reasoner certainty by extraction confidence — garbage in
+    #       shouldn't license confident out
+    #   (2) middle band 0.5-0.65 = uncertain → DEFER to physician, don't
+    #       autonomously submit. Three-pathway gate (block / defer / proceed).
     t = _StepTimer(5, "Physician approval + submission gate", "Physician")
-    score = reasoning.approval_likelihood_score
+    raw_score = reasoning.approval_likelihood_score
+    chart_conf = getattr(chart, "confidence_score", None)
+    score = _propagate_extraction_confidence(raw_score, chart_conf)
     label = reasoning.approval_likelihood_label
+    capped = score is not None and raw_score is not None and score < raw_score - 1e-6
+
     reasoner_blocks = (
         label in ("DO NOT SUBMIT", "INSUFFICIENT")
         or (score is not None and score < 0.5)
     )
+    is_uncertain = (
+        not reasoner_blocks
+        and score is not None
+        and 0.5 <= score < 0.65
+    )
     critical_missing = _critical_field_gaps(chart)
-    should_block = reasoner_blocks or bool(critical_missing)
+    should_block = reasoner_blocks or bool(critical_missing) or is_uncertain
     alternative_modality = _suggest_alternative_modality(chart, reasoning, procedure_code)
 
     if should_block:
@@ -437,7 +445,7 @@ def run_end_to_end_demo(
             )
             outcome_label = "BLOCKED_BY_REASONER"
             short_msg = f"BLOCKED — {label}, score {score:.0%}. Submission halted."
-        else:
+        elif critical_missing:
             block_reason = (
                 "Critical identification / clinical fields missing — cannot submit "
                 "without: " + ", ".join(critical_missing) + ". "
@@ -448,10 +456,26 @@ def run_end_to_end_demo(
                 f"BLOCKED — {len(critical_missing)} critical field(s) missing: "
                 + ", ".join(critical_missing)
             )
+        else:  # is_uncertain
+            block_reason = (
+                f"Score in uncertainty band: {score:.0%} ({label}). "
+                "Auto-submission halted — recommend full physician review of "
+                "the criterion-level breakdown before deciding to submit, "
+                "request additional documentation, or pivot to an alternative "
+                "modality."
+            )
+            outcome_label = "DEFERRED_TO_PHYSICIAN"
+            short_msg = (
+                f"DEFER — score {score:.0%} in uncertainty band (50-65%). "
+                "Manual physician review required before submission."
+            )
         detail = {
-            "decision": "blocked",
+            "decision": "deferred" if is_uncertain else "blocked",
             "reason": block_reason,
             "approval_score": score,
+            "approval_score_raw": raw_score,
+            "approval_score_capped_by_extraction": capped,
+            "chart_confidence": chart_conf,
             "approval_label": label,
             "alternative_modality": alternative_modality,
             "critical_fields_missing": critical_missing,
@@ -471,13 +495,21 @@ def run_end_to_end_demo(
         timeline.outcome = outcome_label
         return timeline
 
+    cap_note = (
+        f" (capped from {raw_score:.0%} by extraction confidence {chart_conf:.0%})"
+        if capped and raw_score is not None and chart_conf is not None
+        else ""
+    )
     t.set_result(
-        f"Approved by {approver_name} — proceeding to submission (reasoner: {label}, {score:.0%})",
+        f"Approved by {approver_name} — proceeding to submission (reasoner: {label}, {score:.0%}){cap_note}",
         detail={
             "decision": "approved",
             "approved_by": approver_name,
             "approved_at": datetime.now(timezone.utc).isoformat(),
             "approval_score": score,
+            "approval_score_raw": raw_score,
+            "approval_score_capped_by_extraction": capped,
+            "chart_confidence": chart_conf,
             "approval_label": label,
         },
     )
@@ -676,6 +708,31 @@ def run_end_to_end_demo(
 # ────────────────────────────────────────────────────────────────────────
 # Alternative modality suggestion (Peter Apr 22-23)
 # ────────────────────────────────────────────────────────────────────────
+
+
+def _propagate_extraction_confidence(
+    reasoning_score: float | None,
+    chart_confidence: float | None,
+) -> float | None:
+    """Cap the reasoner score by the chart's extraction confidence.
+
+    Failure-aware AI review (Apr 25): the reasoner is conditional on
+    the extracted facts being correct. If extraction was uncertain
+    (chart_confidence=0.5), licensing a 0.9 final approval is silent
+    failure — high-confidence wrong.
+
+    Cap function: max_allowed = 0.5 + 0.5 * chart_confidence
+      chart_conf=1.0 → cap=1.0  (no effect when extraction is solid)
+      chart_conf=0.7 → cap=0.85 (mild cap)
+      chart_conf=0.5 → cap=0.75 (notable cap, often pulls into DEFER band)
+      chart_conf=0.0 → cap=0.5  (forces a block by reasoner gate)
+
+    Returns the capped score; passes through when either input is None.
+    """
+    if reasoning_score is None or chart_confidence is None:
+        return reasoning_score
+    cap = 0.5 + 0.5 * float(chart_confidence)
+    return min(float(reasoning_score), cap)
 
 
 def _critical_field_gaps(chart: Any) -> list[str]:
