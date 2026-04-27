@@ -1622,6 +1622,35 @@ def cost_summary(
     return get_store().summarize_cost(window_hours=window_hours, agent=agent)
 
 
+@app.get("/api/stats/calibration")
+def calibration_stats(
+    payer: str = "",
+    cpt_code: str = "",
+    n_bins: int = 10,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Reliability dashboard: predicted approval likelihood vs actual rate.
+
+    Failure-aware AI review (Apr 25): we needed to actually measure
+    whether approval_likelihood_score=0.85 corresponds to ~85% approval.
+    Now we do.
+
+    Returns reliability bins + Brier + ECE + an over_confident_score
+    (positive = the system over-promises). Below 20 decisive outcomes
+    a reliability warning is included so the dashboard can render the
+    appropriate caveat.
+    """
+    log_audit(user, "calibration_stats", f"payer={payer} cpt={cpt_code}")
+    from cardioauth.calibration import (
+        collect_rows_from_store,
+        compute_calibration,
+        report_to_dict,
+    )
+    rows = collect_rows_from_store(payer=payer, cpt_code=cpt_code)
+    report = compute_calibration(rows, n_bins=n_bins)
+    return report_to_dict(report)
+
+
 @app.get("/api/stats/criterion-outcome-correlation")
 def criterion_outcome_correlation(
     payer: str = "",
