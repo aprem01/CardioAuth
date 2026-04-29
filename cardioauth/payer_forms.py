@@ -550,37 +550,141 @@ def _fmt_bmi(chart) -> str:
     return ""
 
 
+_EX_CAP_NEGATIVE_PATTERNS = (
+    # Direct inability statements
+    r"\b(?:unable|cannot|can'?t)\s+(?:to\s+)?(?:exercise|walk|ambulate|perform)",
+    # "Treadmill testing cannot be performed"
+    r"\btreadmill[^.]{0,40}?cannot\b",
+    r"\b(?:cannot|unable to)\s+perform\s+treadmill\b",
+    # Functional descriptors
+    r"\bdeconditioned\b",
+    r"\bwheelchair[\s-]?bound\b",
+    r"\bnon[\s-]?ambulatory\b",
+    r"\bbed[\s-]?bound\b",
+    r"\bsevere(?:ly)?\s+limited\s+exercise\s+tolerance\b",
+    r"\bpoor\s+exercise\s+tolerance\b",
+    r"\bexercise[\s-]+limit(?:ing|ed|ation)\b",
+    # Specific physical disqualifiers
+    r"\bsevere(?:ly)?\s+arthrit",   # arthritis preventing exercise
+    r"\bbilateral\s+(?:knee|hip)\s+(?:arthritis|replacement)\b",
+)
+_EX_CAP_POSITIVE_PATTERNS = (
+    r"\bcan\s+(?:walk|exercise|ambulate)\s+on\s+(?:a\s+)?treadmill\b",
+    r"\bcompleted\s+(?:a\s+)?treadmill\b",
+    r"\bachieved?\s+target\s+heart\s+rate\b",
+    r"\bachieved?\s+\d+\s*METs?\b",
+    r"\b(?:exercises?|walks?)\s+\d+\s*(?:miles?|km)\b",
+    r"\bgood\s+exercise\s+tolerance\b",
+    r"\bable\s+to\s+exercise\b",
+    r"\bwalks?\s+(?:without|w/o)\s+limitation\b",
+)
+# Pharmacologic agents — their use is itself evidence the patient can't exercise.
+_PHARM_STRESS_AGENTS = (
+    "regadenoson", "lexiscan", "dipyridamole", "persantine",
+    "dobutamine", "adenosine",
+)
+
+
 def _fmt_exercise_capacity(chart) -> str:
+    """Yes / No / Unknown / "" — does the patient have adequate exercise capacity?
+
+    Apr 28 (Peter): rewritten to detect both directions instead of only negatives,
+    and to widen the negative lexicon ('treadmill testing cannot be performed',
+    'deconditioned', 'wheelchair-bound', etc.) plus pharmacologic-agent inference.
+    """
+    import re
+    notes = (getattr(chart, "additional_notes", "") or "").lower()
+
+    # Symptom-level negative signal
     syms = getattr(chart, "current_symptoms", []) or []
     for s in syms:
-        text = (s.name + " " + (s.character or "")).lower()
-        if "unable" in text or "cannot" in text or "limit" in text:
-            return "No — see functional limitation"
-    notes = (getattr(chart, "additional_notes", "") or "").lower()
-    if "unable to exercise" in notes or "cannot exercise" in notes:
-        return "No — see functional limitation"
-    if "exercise" in notes or "ambulat" in notes:
+        text = " ".join(filter(None, [
+            getattr(s, "name", ""),
+            getattr(s, "character", ""),
+            getattr(s, "severity", ""),
+        ])).lower()
+        for pat in _EX_CAP_NEGATIVE_PATTERNS:
+            if re.search(pat, text):
+                return "No — functional limitation documented"
+
+    # Note-level negative signal
+    for pat in _EX_CAP_NEGATIVE_PATTERNS:
+        if re.search(pat, notes):
+            return "No — functional limitation documented"
+
+    # Pharmacologic agent in note OR prior stress test → patient couldn't exercise
+    for agent in _PHARM_STRESS_AGENTS:
+        if agent in notes:
+            return "No — pharmacologic stress agent indicated"
+    for st in (getattr(chart, "prior_stress_tests", []) or []):
+        modality = (getattr(st, "modality", "") or "").lower()
+        interp = (getattr(st, "interpretation", "") or "").lower()
+        if any(agent in modality or agent in interp for agent in _PHARM_STRESS_AGENTS):
+            return "No — pharmacologic stress agent on prior testing"
+
+    # Note-level positive signal
+    for pat in _EX_CAP_POSITIVE_PATTERNS:
+        if re.search(pat, notes):
+            return "Yes — adequate exercise tolerance documented"
+
+    # Mentioned but ambiguous
+    if "exercise" in notes or "ambulat" in notes or "treadmill" in notes:
         return "Unknown"
     return ""
 
 
 def _fmt_exercise_limitation(chart) -> str:
+    """Free-text excerpt of the limitation phrase, for the form's text field."""
     notes = getattr(chart, "additional_notes", "") or ""
     import re
-    m = re.search(r"(unable to[^.]+\.|cannot[^.]+\.|exercise limit[^.]+\.)", notes, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
+    # Try several phrasings. Pick the first sentence that mentions the limit.
+    patterns = [
+        r"((?:unable|cannot|can'?t)[^.]+\.)",
+        r"(treadmill[^.]{0,80}?cannot[^.]+\.)",
+        r"(deconditioned[^.]+\.)",
+        r"(wheelchair[\s-]?bound[^.]+\.)",
+        r"(exercise[\s-]+limit[^.]+\.)",
+        r"(poor\s+exercise\s+tolerance[^.]+\.)",
+    ]
+    for p in patterns:
+        m = re.search(p, notes, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
     return ""
 
 
 def _fmt_meds(chart) -> str:
+    """Med list with duration. When start_date is empty, scan the note for
+    common phrasings ('metoprolol since 2024', 'started 2 years ago', etc.)
+    and fold those into the display."""
+    import re
     meds = getattr(chart, "relevant_medications", []) or []
     if not meds:
         return ""
-    return "; ".join(
-        " ".join(filter(None, [m.name, m.dose, f"(since {m.start_date})" if m.start_date else ""]))
-        for m in meds
-    )
+    notes = getattr(chart, "additional_notes", "") or ""
+    out: list[str] = []
+    for m in meds:
+        name = getattr(m, "name", "") or ""
+        dose = getattr(m, "dose", "") or ""
+        duration = getattr(m, "start_date", "") or ""
+        if not duration and name:
+            # Try note patterns. Scan for "<name>... since X" or "<name>... started X"
+            esc = re.escape(name.split()[0]) if name else ""
+            if esc:
+                pat = (
+                    rf"\b{esc}[^.\n]{{0,80}}?"
+                    r"(?:since|started|on|x|for)\s+"
+                    r"(\d{4}|\d+\s*(?:years?|yrs?|months?|mos?|weeks?)|"
+                    r"[A-Z][a-z]+\s+\d{4})"
+                )
+                m_match = re.search(pat, notes, re.IGNORECASE)
+                if m_match:
+                    duration = m_match.group(1)
+        bits = [name, dose]
+        if duration:
+            bits.append(f"(since {duration})")
+        out.append(" ".join(filter(None, bits)))
+    return "; ".join(out)
 
 
 def _fmt_imaging(chart) -> str:
@@ -616,14 +720,86 @@ def _fmt_risk_factors(chart) -> str:
 
 
 def _check_freq_compliance(chart, reasoning) -> str:
-    """Returns 'yes' when FREQ-001 is met or not_applicable. 'no' otherwise."""
-    if reasoning is None:
-        return ""
-    matches = getattr(reasoning, "__dict__", {}).get("_unified_matches", [])
-    for m in matches:
-        if m.get("code") == "FREQ-001":
-            return "yes" if m.get("status") == "met" else "no"
-    return ""
+    """No similar imaging within 12 months OR new/worsening symptoms documented.
+
+    Apr 28 (Peter): the previous version only consulted the FREQ-001
+    reasoner verdict, which returned empty when FREQ-001 wasn't in the
+    criterion set. This rewritten version computes the OR directly from
+    the chart so the field populates whenever EITHER condition holds.
+
+    Returns "yes" when the field would attest as compliant, "no" when
+    there's a clear disqualifier, "" when there's no evidence either way.
+    """
+    from datetime import date, datetime, timedelta
+
+    # Branch A: any new/worsening symptoms documented?
+    syms = getattr(chart, "current_symptoms", []) or []
+    for s in syms:
+        cb = (getattr(s, "change_vs_baseline", "") or "").lower()
+        if "new" in cb or "wors" in cb or "progress" in cb:
+            return "yes"
+
+    # Note-level fallback for change_vs_baseline (not always extracted)
+    notes = (getattr(chart, "additional_notes", "") or "").lower()
+    if any(p in notes for p in (
+        "new onset", "new-onset", "newly developed",
+        "worsening", "progressive", "increasing in",
+        "more frequent", "more severe",
+    )):
+        return "yes"
+
+    # Branch B: no similar imaging in last 12 months?
+    procedure_code = (getattr(chart, "procedure_code", "") or "").strip()
+    imaging = getattr(chart, "relevant_imaging", []) or []
+    prior_stress = getattr(chart, "prior_stress_tests", []) or []
+    today = date.today()
+    cutoff = today - timedelta(days=365)
+
+    similar_recent = False
+    # Cross-check imaging studies
+    for img in imaging:
+        idate_str = getattr(img, "date", "") or ""
+        try:
+            idate = datetime.fromisoformat(idate_str.replace("Z", "+00:00")).date()
+        except (ValueError, AttributeError):
+            continue
+        if idate < cutoff:
+            continue
+        # Heuristic: same modality family
+        itype = (getattr(img, "type", "") or "").lower()
+        if procedure_code.startswith("78") and ("pet" in itype or "spect" in itype or "perfusion" in itype):
+            similar_recent = True
+            break
+        if procedure_code.startswith("75") and ("mri" in itype or "ct " in itype or "ccta" in itype):
+            similar_recent = True
+            break
+        if procedure_code.startswith("9335") and ("echo" in itype):
+            similar_recent = True
+            break
+    # Stress tests count as imaging for repeat-frequency rules
+    if not similar_recent and procedure_code.startswith("78"):
+        for st in prior_stress:
+            sdate = getattr(st, "date", "") or ""
+            try:
+                sd = datetime.fromisoformat(sdate.replace("Z", "+00:00")).date()
+            except (ValueError, AttributeError):
+                continue
+            if sd >= cutoff:
+                similar_recent = True
+                break
+
+    if not similar_recent:
+        return "yes"
+
+    # Branch C: fall back to reasoner verdict if it has FREQ-001 explicitly
+    if reasoning is not None:
+        matches = getattr(reasoning, "__dict__", {}).get("_unified_matches", []) or []
+        for m in matches:
+            if m.get("code") == "FREQ-001":
+                return "yes" if m.get("status") == "met" else "no"
+
+    # Similar imaging exists within 12 months and no new/worsening symptoms
+    return "no"
 
 
 def _check_ncd_criteria(reasoning) -> str:
