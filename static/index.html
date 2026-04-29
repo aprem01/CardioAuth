@@ -1101,7 +1101,9 @@
                          (data.outcome === 'PENDING') ? 'text-amber-400' :
                          (data.outcome === 'BLOCKED_BY_REASONER') ? 'text-red-400' :
                          (data.outcome === 'BLOCKED_MISSING_CRITICAL') ? 'text-red-400' :
+                         (data.outcome === 'BLOCKED_MISSING_ESSENTIALS') ? 'text-red-400' :
                          (data.outcome === 'DEFERRED_TO_PHYSICIAN') ? 'text-indigo-400' :
+                         (data.outcome === 'HELD_FOR_REVIEW') ? 'text-indigo-400' :
                          'text-slate-400';
     summary.innerHTML = `
       <div class="bg-surface rounded-xl border border-surface-border p-5 mt-4">
@@ -1288,6 +1290,35 @@
       ? `<div class="text-xs text-amber-300/90">Note: reasoner score capped from ${(((d.approval_score_raw)||0)*100).toFixed(0)}% to ${((d.approval_score||0)*100).toFixed(0)}% by extraction confidence ${((d.chart_confidence||0)*100).toFixed(0)}%.</div>`
       : '';
 
+    const warningSeverityClass = (sev) => ({
+      high:   'text-red-300 border-red-500/40 bg-red-500/5',
+      medium: 'text-amber-300 border-amber-500/40 bg-amber-500/5',
+      low:    'text-slate-300 border-slate-500/40 bg-slate-500/5',
+    }[sev] || 'text-slate-300 border-slate-500/40 bg-slate-500/5');
+    const warningsBlock = (warnings) => {
+      if (!warnings || !warnings.length) return '';
+      return `<div><p class="text-xs font-semibold text-indigo-300 uppercase mb-1">Warnings (${warnings.length})</p>
+        <ul class="space-y-1">
+          ${warnings.map(w => `<li class="text-xs px-2 py-1 rounded border ${warningSeverityClass(w.severity)}"><strong>[${escapeHtml(w.severity || 'info')}]</strong> ${escapeHtml(w.message || '')}</li>`).join('')}
+        </ul></div>`;
+    };
+
+    if (d.held_for_review) {
+      return `<details class="mt-2" open>
+        <summary class="text-xs cursor-pointer text-indigo-400 hover:text-indigo-300">HELD FOR REVIEW — submission package built, awaiting decision</summary>
+        <div class="mt-2 bg-indigo-500/5 border border-indigo-500/30 rounded p-3 text-xs space-y-2">
+          <p class="text-indigo-300">Essential identification fields are present, but the system flagged warnings the physician/back office should review before submitting. The submission package is built and ready — accept the warnings to submit, or fix the underlying gaps and resubmit.</p>
+          ${capLine}
+          ${warningsBlock(d.warnings)}
+          ${alt ? `<div class="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+            <p class="text-xs font-semibold text-amber-300 uppercase mb-1">Possible alternative modality</p>
+            <p class="text-sm text-amber-200"><strong>${escapeHtml(alt.name)}</strong> (CPT ${escapeHtml(alt.cpt)})</p>
+            <p class="text-xs text-amber-300/80 mt-1">${escapeHtml(alt.rationale || '')}</p>
+          </div>` : ''}
+        </div>
+      </details>`;
+    }
+
     if (d.decision === 'deferred') {
       return `<details class="mt-2" open>
         <summary class="text-xs cursor-pointer text-indigo-400 hover:text-indigo-300">Submission DEFERRED — physician review required</summary>
@@ -1328,6 +1359,7 @@
         <div><span class="text-slate-500">At:</span> <span class="font-mono">${escapeHtml(d.approved_at || '')}</span></div>
         ${d.approval_label ? `<div><span class="text-slate-500">Reasoner verdict:</span> ${escapeHtml(d.approval_label)} (${((d.approval_score || 0)*100).toFixed(0)}%)</div>` : ''}
         ${capLine}
+        ${warningsBlock(d.warnings)}
       </div>
     </details>`;
   }

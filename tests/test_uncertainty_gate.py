@@ -71,7 +71,7 @@ def _patched_reasoner(monkeypatch, score: float, label: str):
 
 
 def test_defer_band_outcome(monkeypatch) -> None:
-    """0.55 / MEDIUM → DEFERRED_TO_PHYSICIAN, not submitted."""
+    """0.55 / MEDIUM → HELD_FOR_REVIEW, not submitted."""
     _patched_reasoner(monkeypatch, score=0.55, label="MEDIUM")
     from cardioauth.demo_e2e import run_end_to_end_demo
 
@@ -81,28 +81,32 @@ def test_defer_band_outcome(monkeypatch) -> None:
         payer_name="UnitedHealthcare",
         scripted_outcome="APPROVED",
     )
-    assert timeline.outcome == "DEFERRED_TO_PHYSICIAN", \
-        f"Expected DEFERRED_TO_PHYSICIAN, got {timeline.outcome}"
+    assert timeline.outcome == "HELD_FOR_REVIEW", \
+        f"Expected HELD_FOR_REVIEW, got {timeline.outcome}"
 
 
 def test_high_score_still_approves(monkeypatch) -> None:
-    """0.85 / HIGH → not deferred, not blocked."""
+    """0.85 / HIGH on DEMO-001 native CPT → not deferred, not blocked.
+
+    Use 93458 (DEMO-001's configured procedure); using 78492 here would
+    correctly trigger the alt-modality warning → HELD_FOR_REVIEW.
+    """
     _patched_reasoner(monkeypatch, score=0.85, label="HIGH")
     from cardioauth.demo_e2e import run_end_to_end_demo
 
     timeline = run_end_to_end_demo(
         patient_id="DEMO-001",
-        procedure_code="78492",
+        procedure_code="93458",
         payer_name="UnitedHealthcare",
         scripted_outcome="APPROVED",
     )
     assert timeline.outcome not in (
-        "DEFERRED_TO_PHYSICIAN", "BLOCKED_BY_REASONER", "BLOCKED_MISSING_CRITICAL",
+        "HELD_FOR_REVIEW", "BLOCKED_MISSING_ESSENTIALS", "BLOCKED_MISSING_CRITICAL",
     ), f"Expected approval-track outcome, got {timeline.outcome}"
 
 
 def test_low_score_still_blocks(monkeypatch) -> None:
-    """0.30 / LOW → BLOCKED_BY_REASONER (not deferred)."""
+    """0.30 / LOW → HELD_FOR_REVIEW (not deferred)."""
     _patched_reasoner(monkeypatch, score=0.30, label="LOW")
     from cardioauth.demo_e2e import run_end_to_end_demo
 
@@ -112,24 +116,28 @@ def test_low_score_still_blocks(monkeypatch) -> None:
         payer_name="UnitedHealthcare",
         scripted_outcome="APPROVED",
     )
-    assert timeline.outcome == "BLOCKED_BY_REASONER", \
-        f"Expected BLOCKED_BY_REASONER, got {timeline.outcome}"
+    assert timeline.outcome == "HELD_FOR_REVIEW", \
+        f"Expected HELD_FOR_REVIEW, got {timeline.outcome}"
 
 
 def test_score_at_band_edges(monkeypatch) -> None:
-    """0.65 should NOT defer (band is half-open [0.5, 0.65)). 0.5 SHOULD defer."""
+    """0.65 should NOT defer (band is half-open [0.5, 0.65)). 0.5 SHOULD defer.
+
+    Use 93458 (DEMO-001's native CPT) so the alt-modality suggester doesn't
+    independently trigger HELD_FOR_REVIEW.
+    """
     _patched_reasoner(monkeypatch, score=0.65, label="MEDIUM")
     from cardioauth.demo_e2e import run_end_to_end_demo
 
     t1 = run_end_to_end_demo(
-        patient_id="DEMO-001", procedure_code="78492",
+        patient_id="DEMO-001", procedure_code="93458",
         payer_name="UnitedHealthcare", scripted_outcome="APPROVED",
     )
-    assert t1.outcome != "DEFERRED_TO_PHYSICIAN"
+    assert t1.outcome != "HELD_FOR_REVIEW"
 
     _patched_reasoner(monkeypatch, score=0.50, label="MEDIUM")
     t2 = run_end_to_end_demo(
-        patient_id="DEMO-001", procedure_code="78492",
+        patient_id="DEMO-001", procedure_code="93458",
         payer_name="UnitedHealthcare", scripted_outcome="APPROVED",
     )
-    assert t2.outcome == "DEFERRED_TO_PHYSICIAN"
+    assert t2.outcome == "HELD_FOR_REVIEW"

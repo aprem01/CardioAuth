@@ -47,10 +47,9 @@ def test_e2e_with_raw_note_uses_note_ingest_step(monkeypatch) -> None:
 def test_e2e_with_raw_note_runs_full_pipeline(monkeypatch) -> None:
     """Custom-note path runs through POLICY + REASONER stages.
 
-    With no API key and a skeletal fallback chart, the reasoner will
-    return LOW — which correctly triggers the submission gate (Peter
-    Apr 22 ask). Pipeline ends at the Physician step with outcome
-    BLOCKED_BY_REASONER instead of proceeding to a bad submission.
+    Apr 28: weak cases now route to HELD_FOR_REVIEW (was BLOCKED_BY_REASONER).
+    Cases with missing essentials (no patient name etc.) still hard-block as
+    BLOCKED_MISSING_ESSENTIALS.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     note = "72 yo F with AS, NYHA III, pre-TAVR evaluation. BMI 32."
@@ -66,8 +65,11 @@ def test_e2e_with_raw_note_runs_full_pipeline(monkeypatch) -> None:
     assert "POLICY_AGENT" in agents
     assert "UNIFIED_REASONER" in agents
     assert "Physician" in agents
-    # Weak case → decision gate blocks; outcome reflects that
-    assert timeline.outcome in ("APPROVED", "BLOCKED_BY_REASONER")
+    # Custom note with no patient identifiers → BLOCKED_MISSING_ESSENTIALS;
+    # if essentials happen to be present, weak case → HELD_FOR_REVIEW.
+    assert timeline.outcome in (
+        "APPROVED", "HELD_FOR_REVIEW", "BLOCKED_MISSING_ESSENTIALS",
+    )
 
 
 def test_detail_payloads_include_full_stage_output(monkeypatch) -> None:
@@ -87,7 +89,11 @@ def test_detail_payloads_include_full_stage_output(monkeypatch) -> None:
     policy_step = next(s for s in timeline.steps if s.agent == "POLICY_AGENT")
     assert "clinical_criteria" in (policy_step.detail or {})
 
-    # SUBMISSION detail exposes the full submission payload
+    # SUBMISSION detail exposes the full submission payload (when the case
+    # actually transmits — held-for-review cases short-circuit with
+    # status="skipped" and only carry warnings).
     sub_step = next(s for s in timeline.steps if s.agent == "SUBMISSION_AGENT")
-    if sub_step.status != "failed":
+    if sub_step.status == "ok":
         assert "submission_payload" in (sub_step.detail or {})
+    elif sub_step.status == "skipped":
+        assert (sub_step.detail or {}).get("held_for_review") is True

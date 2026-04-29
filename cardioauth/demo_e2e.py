@@ -317,12 +317,17 @@ def run_end_to_end_demo(
             from cardioauth.agents.unified_reasoner import reason_with_unified_agent
             from cardioauth.case_context import CaseContext
 
+            # Apr 28: pass raw_note into the context so the narrative
+            # composer can include both the parsed buckets AND the original
+            # prose. Pre-fix, the reasoner saw only the v1-fields composition
+            # and missed all v2 data — Peter's Cases 3/4 bug.
             unified_ctx = CaseContext(
                 case_id=case_id,
                 procedure_code=procedure_code,
                 procedure_name=chart.procedure_requested or procedure_code,
                 payer_name=payer_name,
                 user_id="demo-e2e",
+                raw_note=raw_note or chart.additional_notes or "",
                 chart_data=chart.model_dump(),
                 policy_data=policy_data.model_dump() if policy_data else {},
             )
@@ -409,14 +414,13 @@ def run_end_to_end_demo(
         )
     timeline.steps.append(t.finish())
 
-    # ── Step 5: Physician approval (scripted) with submission gate ──
-    # Apr 22-23 (Peter): block when reasoner says PET inappropriate.
-    # Apr 24 (Peter): differentiate critical vs non-critical missing fields.
-    # Apr 25 (failure-aware AI review): two more bands —
-    #   (1) cap reasoner certainty by extraction confidence — garbage in
-    #       shouldn't license confident out
-    #   (2) middle band 0.5-0.65 = uncertain → DEFER to physician, don't
-    #       autonomously submit. Three-pathway gate (block / defer / proceed).
+    # ── Step 5: Physician approval + submission gate ──
+    # Apr 28 (Peter MVP-workflow email): mirror the real office process.
+    # Hard-block ONLY on missing essentials (patient name, DOB, member ID,
+    # payer, CPT, ordering MD). Reasoner concerns and clinical gaps go to
+    # the holding queue with warnings — the physician/back office reviews
+    # and decides whether to submit anyway. The reasoner is advisory, not
+    # authoritative.
     t = _StepTimer(5, "Physician approval + submission gate", "Physician")
     raw_score = reasoning.approval_likelihood_score
     chart_conf = getattr(chart, "confidence_score", None)
@@ -424,53 +428,58 @@ def run_end_to_end_demo(
     label = reasoning.approval_likelihood_label
     capped = score is not None and raw_score is not None and score < raw_score - 1e-6
 
-    reasoner_blocks = (
-        label in ("DO NOT SUBMIT", "INSUFFICIENT")
-        or (score is not None and score < 0.5)
-    )
-    is_uncertain = (
-        not reasoner_blocks
-        and score is not None
-        and 0.5 <= score < 0.65
-    )
     critical_missing = _critical_field_gaps(chart)
-    should_block = reasoner_blocks or bool(critical_missing) or is_uncertain
     alternative_modality = _suggest_alternative_modality(chart, reasoning, procedure_code)
 
-    if should_block:
-        if reasoner_blocks:
-            block_reason = (
-                f"Reasoner recommends against submission: {label} ({score:.0%}). "
-                "The chart lacks qualifying evidence for this procedure."
-            )
-            outcome_label = "BLOCKED_BY_REASONER"
-            short_msg = f"BLOCKED — {label}, score {score:.0%}. Submission halted."
-        elif critical_missing:
-            block_reason = (
-                "Critical identification / clinical fields missing — cannot submit "
-                "without: " + ", ".join(critical_missing) + ". "
-                "Non-critical gaps are not treated as blockers."
-            )
-            outcome_label = "BLOCKED_MISSING_CRITICAL"
-            short_msg = (
-                f"BLOCKED — {len(critical_missing)} critical field(s) missing: "
-                + ", ".join(critical_missing)
-            )
-        else:  # is_uncertain
-            block_reason = (
-                f"Score in uncertainty band: {score:.0%} ({label}). "
-                "Auto-submission halted — recommend full physician review of "
-                "the criterion-level breakdown before deciding to submit, "
-                "request additional documentation, or pivot to an alternative "
-                "modality."
-            )
-            outcome_label = "DEFERRED_TO_PHYSICIAN"
-            short_msg = (
-                f"DEFER — score {score:.0%} in uncertainty band (50-65%). "
-                "Manual physician review required before submission."
-            )
+    # Build the warnings list — anything the office should review before
+    # the submission goes out. None of these block on their own.
+    warnings: list[dict] = []
+    if label in ("DO NOT SUBMIT", "INSUFFICIENT"):
+        warnings.append({
+            "kind": "reasoner_low_confidence",
+            "severity": "high",
+            "message": f"Reasoner recommends against submission ({label}, {score:.0%}). "
+                       "Documentation may not support this procedure under payer policy.",
+        })
+    elif score is not None and score < 0.5:
+        warnings.append({
+            "kind": "reasoner_low_score",
+            "severity": "high",
+            "message": f"Reasoner approval score is low ({score:.0%}). "
+                       "Review criterion gaps before submitting.",
+        })
+    elif score is not None and 0.5 <= score < 0.65:
+        warnings.append({
+            "kind": "reasoner_uncertain",
+            "severity": "medium",
+            "message": f"Reasoner score in uncertain band ({score:.0%}). "
+                       "Borderline case — physician review recommended.",
+        })
+    if alternative_modality:
+        warnings.append({
+            "kind": "alternative_modality",
+            "severity": "medium",
+            "message": f"An alternative modality may be more appropriate: "
+                       f"{alternative_modality['name']} (CPT {alternative_modality['cpt']}). "
+                       f"{alternative_modality.get('rationale', '')}",
+        })
+    if capped:
+        warnings.append({
+            "kind": "extraction_thin",
+            "severity": "low",
+            "message": f"Reasoner score capped from {raw_score:.0%} to {score:.0%} by "
+                       f"extraction confidence ({chart_conf:.0%}). Strengthen the note "
+                       "or chart inputs to license higher certainty.",
+        })
+
+    # ── Hard block: missing essentials only ──
+    if critical_missing:
+        block_reason = (
+            "Submission cannot proceed without: " + ", ".join(critical_missing) + ". "
+            "These are required by every payer and cannot be inferred."
+        )
         detail = {
-            "decision": "deferred" if is_uncertain else "blocked",
+            "decision": "blocked",
             "reason": block_reason,
             "approval_score": score,
             "approval_score_raw": raw_score,
@@ -479,31 +488,50 @@ def run_end_to_end_demo(
             "approval_label": label,
             "alternative_modality": alternative_modality,
             "critical_fields_missing": critical_missing,
+            "warnings": warnings,
             "blocking_gaps": [
                 (g.criterion.split(":")[0].strip() if hasattr(g, "criterion") else (g.get("code") or ""))
                 for g in (reasoning.criteria_not_met or [])
             ][:5],
         }
-        if alternative_modality:
-            short_msg += (
-                f" Suggest: {alternative_modality['name']} "
-                f"(CPT {alternative_modality['cpt']})"
-            )
-        t.set_result(short_msg, detail=detail, status="fallback")
+        t.set_result(
+            f"BLOCKED — {len(critical_missing)} essential field(s) missing: "
+            + ", ".join(critical_missing),
+            detail=detail, status="fallback",
+        )
         timeline.steps.append(t.finish())
         timeline.total_duration_ms = int((time.time() - overall_start) * 1000)
-        timeline.outcome = outcome_label
+        timeline.outcome = "BLOCKED_MISSING_ESSENTIALS"
         return timeline
 
+    # ── Holding queue: warnings exist but essentials are present ──
+    # Pipeline still runs through to produce the submission package; the
+    # physician/back office sees the warnings and decides whether to submit.
+    held_for_review = bool(warnings) and any(
+        w["severity"] in ("high", "medium") for w in warnings
+    )
     cap_note = (
         f" (capped from {raw_score:.0%} by extraction confidence {chart_conf:.0%})"
         if capped and raw_score is not None and chart_conf is not None
         else ""
     )
+    if held_for_review:
+        result_msg = (
+            f"HELD FOR REVIEW — submission package built, "
+            f"{len(warnings)} warning(s) flagged. Physician decides "
+            f"(reasoner: {label}, {score:.0%}){cap_note}"
+        )
+        decision = "held_for_review"
+    else:
+        result_msg = (
+            f"Approved by {approver_name} — proceeding to submission "
+            f"(reasoner: {label}, {score:.0%}){cap_note}"
+        )
+        decision = "approved"
     t.set_result(
-        f"Approved by {approver_name} — proceeding to submission (reasoner: {label}, {score:.0%}){cap_note}",
+        result_msg,
         detail={
-            "decision": "approved",
+            "decision": decision,
             "approved_by": approver_name,
             "approved_at": datetime.now(timezone.utc).isoformat(),
             "approval_score": score,
@@ -511,9 +539,52 @@ def run_end_to_end_demo(
             "approval_score_capped_by_extraction": capped,
             "chart_confidence": chart_conf,
             "approval_label": label,
+            "alternative_modality": alternative_modality,
+            "warnings": warnings,
+            "held_for_review": held_for_review,
         },
+        status="fallback" if held_for_review else "ok",
     )
     timeline.steps.append(t.finish())
+
+    # If held for review, run the form preview so the physician can see what
+    # the submission package looks like, then short-circuit before the actual
+    # transmit + payer response. The case sits in the holding queue.
+    if held_for_review:
+        t = _StepTimer(6, "SUBMISSION_AGENT — held for review", "SUBMISSION_AGENT")
+        t.set_result(
+            "Submission HELD — package not transmitted. "
+            "Awaiting physician/back-office review of warnings.",
+            detail={"held_for_review": True, "warnings": warnings},
+            status="skipped",
+        )
+        timeline.steps.append(t.finish())
+
+        # Step 7 (payer form preview) so the holding-queue card shows what
+        # the form would look like.
+        t = _StepTimer(7, "Payer form preview", "PayerFormMapper")
+        try:
+            from cardioauth.payer_forms import get_payer_form, populate_payer_form
+            form = get_payer_form(payer_name, procedure_code)
+            if form is not None:
+                populated = populate_payer_form(
+                    form, chart_data=chart, policy_data=policy_data, reasoning=reasoning,
+                )
+                counts = populated["counts"]
+                t.set_result(
+                    f"{form.vendor} / {form.name} — "
+                    f"{counts['populated']}/{counts['total']} populated",
+                    detail=populated, status="ok",
+                )
+            else:
+                t.set_result(f"No form template for {payer_name}", status="fallback")
+        except Exception as e:
+            t.set_result(f"Form preview error: {e}", status="failed")
+        timeline.steps.append(t.finish())
+
+        timeline.total_duration_ms = int((time.time() - overall_start) * 1000)
+        timeline.outcome = "HELD_FOR_REVIEW"
+        return timeline
 
     # ── Step 6: SUBMISSION_AGENT via MockChannel ──
     t = _StepTimer(6, "SUBMISSION_AGENT — transmit to payer", "SUBMISSION_AGENT")
@@ -736,19 +807,22 @@ def _propagate_extraction_confidence(
 
 
 def _critical_field_gaps(chart: Any) -> list[str]:
-    """Return the labels of critical fields that are missing from the chart.
+    """Return the labels of essential identification fields that are missing.
 
-    Peter Apr 24: only truly critical fields should block submission.
-    Other missing fields are surfaced on the payer form for completeness
-    but don't halt the pipeline.
+    Apr 28 refinement (Peter MVP-workflow email): the only fields that
+    should HARD-BLOCK submission are the ones that cannot be inferred and
+    are required by every payer for the submission to be accepted at all.
+    Clinical content (symptoms, ECG, prior testing, etc.) is the
+    physician's call to fix or accept — those become warnings on the
+    holding queue, not blocks.
 
-    Critical set (patient identification + clinical + procedure):
+    Essentials (block submission):
       - Patient name
       - Date of birth
       - Member ID (insurance_id)
+      - Payer name
+      - CPT code (procedure_code)
       - Ordering physician
-      - CPT code
-      - At least one current symptom (named)
     """
     gaps: list[str] = []
     if not (getattr(chart, "patient_name", "") or "").strip():
@@ -757,13 +831,12 @@ def _critical_field_gaps(chart: Any) -> list[str]:
         gaps.append("Date of birth")
     if not (getattr(chart, "insurance_id", "") or "").strip():
         gaps.append("Member ID")
-    if not (getattr(chart, "attending_physician", "") or "").strip():
-        gaps.append("Ordering physician")
+    if not (getattr(chart, "payer_name", "") or "").strip():
+        gaps.append("Payer")
     if not (getattr(chart, "procedure_code", "") or "").strip():
         gaps.append("CPT code")
-    symptoms = getattr(chart, "current_symptoms", []) or []
-    if not any(getattr(s, "name", "") for s in symptoms):
-        gaps.append("Primary symptom")
+    if not (getattr(chart, "attending_physician", "") or "").strip():
+        gaps.append("Ordering physician")
     return gaps
 
 

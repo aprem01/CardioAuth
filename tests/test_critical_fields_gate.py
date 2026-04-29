@@ -59,9 +59,18 @@ def test_missing_ordering_md_blocks() -> None:
     assert "Ordering physician" in _critical_field_gaps(chart)
 
 
-def test_missing_primary_symptom_blocks() -> None:
+def test_missing_primary_symptom_no_longer_blocks() -> None:
+    """Apr 28: primary symptom moved out of essentials. Clinical content
+    is the physician's call to fix on the holding queue, not a hard block.
+    """
     chart = _complete_chart(current_symptoms=[])
-    assert "Primary symptom" in _critical_field_gaps(chart)
+    assert "Primary symptom" not in _critical_field_gaps(chart)
+
+
+def test_missing_payer_blocks() -> None:
+    """Apr 28: payer_name added to essentials."""
+    chart = _complete_chart(payer_name="")
+    assert "Payer" in _critical_field_gaps(chart)
 
 
 def test_missing_multiple_critical_lists_all() -> None:
@@ -69,11 +78,11 @@ def test_missing_multiple_critical_lists_all() -> None:
         patient_name="",
         date_of_birth="",
         insurance_id="",
-        current_symptoms=[],
+        payer_name="",
     )
     gaps = _critical_field_gaps(chart)
     assert set(gaps) == {
-        "Patient name", "Date of birth", "Member ID", "Primary symptom",
+        "Patient name", "Date of birth", "Member ID", "Payer",
     }
 
 
