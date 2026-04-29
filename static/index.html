@@ -587,6 +587,10 @@
 
       <!-- Analytics -->
       <div class="sidebar-group-label mt-4">Analytics</div>
+      <a href="#recall-queue" class="sidebar-link" data-route="recall-queue">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        Recall Queue
+      </a>
       <a href="#analytics" class="sidebar-link" data-route="analytics">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
         Retrospective Analytics
@@ -700,6 +704,7 @@
     else if (hash === '#pre-check') { app.innerHTML = renderLoading('Pre-Procedure Check'); loadPreCheck(); }
     else if (hash === '#modifiers') app.innerHTML = renderModifierChecker();
     else if (hash === '#train') { app.innerHTML = renderLoading('Training Room'); loadTrainingRoom(); }
+    else if (hash === '#recall-queue') { app.innerHTML = renderLoading('Recall Queue'); loadRecallQueue(); }
     else if (hash === '#analytics') { app.innerHTML = renderLoading('Retrospective Analytics'); loadRetroAnalytics(); }
     else if (hash === '#denials') { app.innerHTML = renderLoading('Denial Analytics'); loadDenials(); }
     else if (hash === '#taxonomy') { app.innerHTML = renderLoading('Criterion Taxonomy'); loadTaxonomy(); }
@@ -5810,6 +5815,179 @@ This procedure is essential for determining whether percutaneous coronary interv
       `;
     } catch(e) {
       results.innerHTML = `<div class="text-sm" style="color: #dc2626;">Evaluation failed: ${e.message}</div>`;
+    }
+  }
+
+  // ──────────────────────────── Recall Queue (#recall-queue) ────────────────────────────
+  let _recallFilter = { status: '', procedure_code: '', payer: '' };
+
+  async function loadRecallQueue() {
+    const app = document.getElementById('app');
+    try {
+      const qs = new URLSearchParams(
+        Object.entries(_recallFilter).filter(([_,v]) => !!v)
+      ).toString();
+      const data = await apiFetch('/api/recall-queue' + (qs ? '?' + qs : ''));
+      app.innerHTML = renderRecallQueuePage(data);
+    } catch (e) {
+      app.innerHTML = renderError('Recall Queue', e.message);
+    }
+  }
+
+  function renderRecallQueuePage(data) {
+    const entries = data.entries || [];
+    const k = data.kpis || {};
+    const byStatus = k.by_status || {};
+    const fmtUSD = (n) => '$' + (Number(n)||0).toLocaleString(undefined, {maximumFractionDigits: 0});
+    const statusBadge = (s) => {
+      const map = {
+        pending:           ['#94a3b8', '#f1f5f9'],
+        due:               ['#d97706', '#fef3c7'],
+        overdue:           ['#dc2626', '#fee2e2'],
+        outreach_attempted:['#7c3aed', '#ede9fe'],
+        scheduled:         ['#059669', '#d1fae5'],
+        removed:           ['#64748b', '#e2e8f0'],
+      };
+      const [fg, bg] = map[s] || ['#64748b', '#e2e8f0'];
+      return `<span style="background: ${bg}; color: ${fg}; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;">${s.replace(/_/g, ' ')}</span>`;
+    };
+
+    const filterPill = (label, value, current) => {
+      const active = current === value;
+      const cls = active
+        ? 'bg-indigo-600 text-white'
+        : 'bg-slate-100 text-slate-600 hover:bg-slate-200';
+      return `<button onclick="setRecallStatusFilter('${value}')" class="px-3 py-1 rounded-full text-xs font-medium transition ${cls}">${label}</button>`;
+    };
+
+    return `
+    <div class="fade-in space-y-6">
+      <div>
+        <button onclick="navigate('#dashboard')" class="btn-ghost -ml-3 mb-4">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Dashboard
+        </button>
+      </div>
+
+      <div class="rounded-3xl p-8" style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #312e81 100%);">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold mb-3" style="background: rgba(124,58,237,0.2); color: #c4b5fd; border: 1px solid rgba(124,58,237,0.3);">Tier 1 — manual encounter dates</div>
+        <h1 class="text-4xl font-extrabold mb-2" style="color: white;">Recall Queue</h1>
+        <p class="text-base max-w-2xl" style="color: rgba(203,213,225,0.9);">Patients with prior cardiac procedures who are due or overdue for a follow-up encounter. Triage outreach, mark contacted, or remove patients who don't need recall.</p>
+      </div>
+
+      <!-- KPIs -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="card-elevated p-5">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color: #64748b;">Actionable</div>
+          <div class="text-3xl font-black" style="color: #dc2626;">${k.actionable || 0}</div>
+          <div class="text-xs mt-1" style="color: #94a3b8;">due + overdue</div>
+        </div>
+        <div class="card-elevated p-5">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color: #64748b;">Revenue at risk</div>
+          <div class="text-3xl font-black" style="color: #d97706;">${fmtUSD(k.revenue_at_risk_usd)}</div>
+          <div class="text-xs mt-1" style="color: #94a3b8;">est. across actionable cases</div>
+        </div>
+        <div class="card-elevated p-5">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color: #64748b;">Outreach attempted</div>
+          <div class="text-3xl font-black" style="color: #7c3aed;">${byStatus.outreach_attempted || 0}</div>
+          <div class="text-xs mt-1" style="color: #94a3b8;">awaiting response</div>
+        </div>
+        <div class="card-elevated p-5">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color: #64748b;">Scheduled</div>
+          <div class="text-3xl font-black" style="color: #059669;">${byStatus.scheduled || 0}</div>
+          <div class="text-xs mt-1" style="color: #94a3b8;">follow-up booked</div>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="card-elevated p-5">
+        <div class="flex flex-wrap gap-2 items-center">
+          <span class="text-xs font-semibold uppercase tracking-wider" style="color: #64748b;">Filter:</span>
+          ${filterPill('All', '', _recallFilter.status)}
+          ${filterPill('Overdue', 'overdue', _recallFilter.status)}
+          ${filterPill('Due', 'due', _recallFilter.status)}
+          ${filterPill('Pending', 'pending', _recallFilter.status)}
+          ${filterPill('Outreach attempted', 'outreach_attempted', _recallFilter.status)}
+          ${filterPill('Scheduled', 'scheduled', _recallFilter.status)}
+          ${filterPill('Removed', 'removed', _recallFilter.status)}
+        </div>
+      </div>
+
+      <!-- Table -->
+      <div class="card-elevated overflow-hidden">
+        <table class="w-full text-sm">
+          <thead style="background: #f8fafc;">
+            <tr>
+              <th class="text-left p-3 text-xs uppercase tracking-wider" style="color: #64748b;">Patient</th>
+              <th class="text-left p-3 text-xs uppercase tracking-wider" style="color: #64748b;">Last test</th>
+              <th class="text-left p-3 text-xs uppercase tracking-wider" style="color: #64748b;">Payer</th>
+              <th class="text-left p-3 text-xs uppercase tracking-wider" style="color: #64748b;">Days overdue</th>
+              <th class="text-right p-3 text-xs uppercase tracking-wider" style="color: #64748b;">Est. value</th>
+              <th class="text-left p-3 text-xs uppercase tracking-wider" style="color: #64748b;">Status</th>
+              <th class="text-right p-3 text-xs uppercase tracking-wider" style="color: #64748b;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entries.length ? entries.map(e => `
+              <tr class="border-t" style="border-color: #e2e8f0;">
+                <td class="p-3">
+                  <div class="font-medium" style="color: #0b1437;">${escapeHtml(e.patient_name || e.patient_id)}</div>
+                  <div class="text-xs" style="color: #94a3b8;">${escapeHtml(e.patient_id)}</div>
+                </td>
+                <td class="p-3">
+                  <div style="color: #0b1437;">${escapeHtml(e.procedure_name || e.procedure_code)}</div>
+                  <div class="text-xs" style="color: #94a3b8;">${escapeHtml(e.procedure_code)} · ${escapeHtml(e.submission_date.slice(0,10))}</div>
+                </td>
+                <td class="p-3" style="color: #475569;">${escapeHtml(e.payer || '—')}</td>
+                <td class="p-3">
+                  <span style="color: ${e.days_overdue > 30 ? '#dc2626' : e.days_overdue > 0 ? '#d97706' : '#94a3b8'}; font-weight: 600;">
+                    ${e.days_overdue > 0 ? e.days_overdue + 'd' : 'on time'}
+                  </span>
+                </td>
+                <td class="p-3 text-right font-medium" style="color: #0b1437;">${fmtUSD(e.practice_value_estimate)}</td>
+                <td class="p-3">${statusBadge(e.recall_status)}</td>
+                <td class="p-3 text-right">
+                  ${e.recall_status !== 'scheduled' && e.recall_status !== 'removed' ? `
+                    <button onclick="recallAction('${e.submission_id}', 'mark_outreach')" class="text-xs px-2 py-1 rounded border border-indigo-200 text-indigo-600 hover:bg-indigo-50 mr-1">Outreach</button>
+                    <button onclick="recallAction('${e.submission_id}', 'mark_scheduled')" class="text-xs px-2 py-1 rounded border border-emerald-200 text-emerald-600 hover:bg-emerald-50 mr-1">Scheduled</button>
+                    <button onclick="recallAction('${e.submission_id}', 'remove')" class="text-xs px-2 py-1 rounded border border-slate-200 text-slate-500 hover:bg-slate-50">Remove</button>
+                  ` : `<span class="text-xs" style="color: #94a3b8;">—</span>`}
+                </td>
+              </tr>
+            `).join('') : `<tr><td colspan="7" class="text-center p-12" style="color: #94a3b8;">No recall entries match your filters.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+
+      <p class="text-xs text-center pt-2" style="color: #94a3b8;">
+        Tier 1: last-encounter dates are maintained manually by the back office.
+        Tier 2 will sync these from Epic FHIR Encounters automatically.
+      </p>
+    </div>`;
+  }
+
+  function setRecallStatusFilter(status) {
+    _recallFilter.status = status;
+    loadRecallQueue();
+  }
+
+  async function recallAction(submissionId, action) {
+    const noteMap = {
+      mark_outreach: 'Mark as outreach attempted (call left, message sent, etc.)',
+      mark_scheduled: 'Mark as scheduled (appointment booked)',
+      remove: 'Remove from queue (reason — patient declined, deceased, transferred care, etc.)',
+    };
+    const note = prompt(noteMap[action] || 'Add a note (optional):');
+    if (note === null) return; // user cancelled
+    try {
+      await apiFetch(`/api/recall-queue/${encodeURIComponent(submissionId)}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, note: note || '' }),
+      });
+      await loadRecallQueue();
+    } catch (e) {
+      alert('Action failed: ' + (e.message || e));
     }
   }
 

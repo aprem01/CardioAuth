@@ -193,6 +193,31 @@ CREATE TABLE IF NOT EXISTS response_cache (
     expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_response_cache_expiry ON response_cache(expires_at);
+
+-- Recall queue: patients who had a procedure and may need follow-up.
+-- Computed from approved submissions + procedure-specific follow-up windows
+-- + (Tier 1) manually maintained encounter dates. Tier 2 will replace
+-- last_encounter_date with Epic FHIR Encounter sync.
+CREATE TABLE IF NOT EXISTS recall_queue (
+    submission_id TEXT PRIMARY KEY,
+    patient_id TEXT NOT NULL,
+    patient_name TEXT,
+    procedure_code TEXT NOT NULL,
+    procedure_name TEXT,
+    payer TEXT,
+    submission_date TEXT NOT NULL,
+    expected_followup_date TEXT NOT NULL,
+    last_encounter_date TEXT,
+    recall_status TEXT NOT NULL DEFAULT 'pending',
+    practice_value_estimate REAL DEFAULT 0,
+    notes TEXT,
+    last_action_at TEXT,
+    last_action_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recall_status ON recall_queue(recall_status, expected_followup_date);
+CREATE INDEX IF NOT EXISTS idx_recall_patient ON recall_queue(patient_id, expected_followup_date DESC);
 """
 
 

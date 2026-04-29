@@ -1622,6 +1622,68 @@ def cost_summary(
     return get_store().summarize_cost(window_hours=window_hours, agent=agent)
 
 
+@app.get("/api/recall-queue")
+def recall_queue_list(
+    status: str = "",
+    procedure_code: str = "",
+    payer: str = "",
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """List recall-queue entries with optional filters and KPIs.
+
+    Tier 1: derived from approved submissions; last_encounter_date is
+    the back-office's manual record (defaults to submission date).
+    Tier 2 (later): replaced by Epic FHIR Encounter sync.
+    """
+    log_audit(user, "recall_queue_list", f"status={status} cpt={procedure_code} payer={payer}")
+    from cardioauth.recall_queue import (
+        list_recall_queue, queue_kpis, seed_demo_recalls,
+    )
+    seed_demo_recalls()  # idempotent — only seeds when queue is empty
+    entries = list_recall_queue(status=status, procedure_code=procedure_code, payer=payer)
+    return {
+        "entries": [e.to_dict() for e in entries],
+        "kpis": queue_kpis(entries),
+    }
+
+
+class RecallActionRequest(BaseModel):
+    action: str   # mark_outreach | mark_scheduled | mark_seen | remove | reset
+    note: str = ""
+    new_encounter_date: str = ""
+
+
+@app.post("/api/recall-queue/{submission_id}/action")
+def recall_queue_action(
+    submission_id: str,
+    req: RecallActionRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Apply a back-office action to a recall row."""
+    log_audit(user, f"recall_action_{req.action}", submission_id)
+    from cardioauth.recall_queue import apply_action
+    try:
+        updated = apply_action(
+            submission_id, req.action,
+            actor=getattr(user, "user_id", None) or "office",
+            note=req.note,
+            new_encounter_date=req.new_encounter_date,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"No recall entry for {submission_id}")
+    return {"entry": updated.to_dict()}
+
+
+@app.post("/api/recall-queue/backfill")
+def recall_queue_backfill(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Backfill recall_queue from existing approved submissions."""
+    log_audit(user, "recall_queue_backfill", "")
+    from cardioauth.recall_queue import backfill_from_submissions
+    return backfill_from_submissions()
+
+
 @app.get("/api/stats/calibration")
 def calibration_stats(
     payer: str = "",
