@@ -162,6 +162,20 @@ def build_submission_packet(
         evidence_graph=evidence_graph,
     )
 
+    # Reasoner summary snapshot for the verification pipeline
+    reasoner_summary: dict = {}
+    if reasoning is not None:
+        reasoner_summary = {
+            "approval_score": getattr(reasoning, "approval_likelihood_score", None),
+            "approval_label": getattr(reasoning, "approval_likelihood_label", ""),
+            "approval_score_raw": getattr(reasoning, "_approval_score_raw", None),
+            "score_capped_by_extraction": getattr(reasoning, "_score_capped_by_extraction", False),
+            "chart_confidence": getattr(chart, "confidence_score", None),
+            "alternative_modality": getattr(reasoning, "_alternative_modality", None),
+            "criteria_met_count": len(getattr(reasoning, "criteria_met", []) or []),
+            "criteria_not_met_count": len(getattr(reasoning, "criteria_not_met", []) or []),
+        }
+
     # Narrative attestation
     narrative = build_narrative_attestation(
         reasoning=reasoning, raw_note=raw_note,
@@ -199,6 +213,7 @@ def build_submission_packet(
         form_fields=form_entries,
         narrative=narrative,
         evidence_graph=evidence_graph,
+        reasoner_summary=reasoner_summary,
         taxonomy_version=taxonomy_version,
         form_schema_version=form_schema_version,
         model_version=model_version,

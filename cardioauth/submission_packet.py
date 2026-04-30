@@ -289,6 +289,11 @@ class SubmissionPacket:
     # Lineage
     evidence_graph: EvidenceGraph
 
+    # Reasoner snapshot: score, label, agreement, alternative-modality,
+    # capped-from / capped-to fields. Populated by the packet builder
+    # so checkers don't need a live reasoning object.
+    reasoner_summary: dict[str, Any] = field(default_factory=dict)
+
     # Versioning (so we can replay verdicts later)
     taxonomy_version: str = ""
     form_schema_version: str = ""
@@ -315,6 +320,7 @@ class SubmissionPacket:
         form_fields: list[FormFieldEntry],
         narrative: NarrativeAttestation,
         evidence_graph: EvidenceGraph,
+        reasoner_summary: dict | None = None,
         taxonomy_version: str = "",
         form_schema_version: str = "",
         model_version: str = "",
@@ -330,6 +336,7 @@ class SubmissionPacket:
             payer=payer,
             form_fields=form_fields,
             narrative=narrative,
+            reasoner_summary=reasoner_summary or {},
             evidence_graph=evidence_graph,
             taxonomy_version=taxonomy_version,
             form_schema_version=form_schema_version,
@@ -409,6 +416,7 @@ class SubmissionPacket:
             "payer": self.payer,
             "form_fields": [f.to_dict() for f in self.form_fields],
             "narrative": self.narrative.to_dict(),
+            "reasoner_summary": self.reasoner_summary,
             "evidence_graph": self.evidence_graph.to_dict(),
             "taxonomy_version": self.taxonomy_version,
             "form_schema_version": self.form_schema_version,
