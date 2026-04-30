@@ -472,6 +472,19 @@ def run_end_to_end_demo(
                        "or chart inputs to license higher certainty.",
         })
 
+    # Apr 30 (Peter): packet coherence reviewer — CPT mismatch, narrative
+    # references different procedure than form, etc. Deterministic pass
+    # over the assembled artifacts; emits high-severity warnings on
+    # internal inconsistency.
+    try:
+        from cardioauth.packet_coherence import check_packet_coherence
+        coherence_warnings = check_packet_coherence(
+            chart=chart, reasoning=reasoning, raw_note=raw_note or "",
+        )
+        warnings.extend(coherence_warnings)
+    except Exception as e:
+        logger.warning("Packet coherence check failed (continuing): %s", e)
+
     # ── Hard block: missing essentials only ──
     if critical_missing:
         block_reason = (

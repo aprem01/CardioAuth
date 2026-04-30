@@ -326,6 +326,49 @@ class _NeedsVerifySentinel:
 NEEDS_VERIFY = _NeedsVerifySentinel()
 
 
+def _normalize_to_options(value: str, options: list[str]) -> tuple[str, str]:
+    """Snap a rich mapper output to the closest payer-allowed option.
+
+    Apr 30 (Peter): mappers were outputting clinically rich strings like
+    "No — functional limitation documented" but the payer's allowed list
+    has the exact string "No — see functional limitation". The form
+    field was correctly populated semantically and incorrectly
+    populated structurally. This snaps the value to the canonical
+    option while preserving the rich string as evidence so the
+    physician can still see WHY the field reads No.
+
+    Returns (normalized_value, evidence_string).
+      - If `value` is already an exact allowed option, returns (value, "").
+      - Otherwise tries head-prefix match on the part before — / · / : .
+      - Otherwise tries substring containment.
+      - On no match, returns (value, "") so the field classifies as
+        incomplete and the office can decide.
+    """
+    if not value or not options:
+        return value, ""
+    if value in options:
+        return value, ""
+
+    def _head(s: str) -> str:
+        # Take the part before the first em-dash, hyphen-with-space,
+        # middle-dot, or colon — the canonical lead-in.
+        for sep in ("—", " - ", " – ", "·", ":"):
+            if sep in s:
+                return s.split(sep, 1)[0].strip()
+        return s.strip()
+
+    val_head = _head(value).lower()
+    for opt in options:
+        if _head(opt).lower() == val_head:
+            return opt, value
+    for opt in options:
+        if val_head and val_head in opt.lower():
+            return opt, value
+        if opt.lower() in value.lower():
+            return opt, value
+    return value, ""
+
+
 def populate_payer_form(
     form: PayerForm,
     *,
@@ -339,13 +382,18 @@ def populate_payer_form(
       {
         "form_name": "...",
         "payer": "...", "vendor": "...",
-        "fields": [{key, label, category, required, value, status,
-                    missing_reason, help_text}],
+        "fields": [{key, label, category, required, value, evidence,
+                    status, missing_reason, help_text}],
         "counts": {"populated": N, "missing_required": N,
                    "incomplete": N, "optional_empty": N,
                    "needs_verify": N, "total": N},
         "ready_to_submit": bool,
       }
+
+    Apr 30: rows now carry an `evidence` field — the rich pre-normalized
+    output the mapper produced — separate from `value` (the payer-allowed
+    option). The form sends `value` to the payer and the UI shows
+    `evidence` to the physician.
     """
     populated_rows: list[dict] = []
     counts = {
@@ -356,6 +404,12 @@ def populate_payer_form(
     for f in form.fields:
         value = _resolve_value(f, chart_data, policy_data, reasoning)
         str_value = _to_string(value)
+        evidence = ""
+        # For select fields with allowed options, snap to the canonical
+        # value and preserve the rich version as evidence.
+        if f.format == "select" and f.options and not isinstance(value, _NeedsVerifySentinel):
+            snapped, evidence = _normalize_to_options(str_value, f.options)
+            str_value = snapped
         status, reason = _classify_field(f, value, str_value)
 
         populated_rows.append({
@@ -366,6 +420,7 @@ def populate_payer_form(
             "format": f.format,
             "options": f.options,
             "value": str_value,
+            "evidence": evidence,
             "status": status,
             "missing_reason": reason,
             "help_text": f.help_text,

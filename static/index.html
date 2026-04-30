@@ -1419,6 +1419,7 @@
                     ? 'Manual attestation — confirm before submitting'
                     : (f.value ? escapeHtml(String(f.value).slice(0, 400)) : '<span class="italic">— empty —</span>')
                 }</div>
+                ${f.evidence ? `<div class="text-xs text-slate-500 mt-0.5 italic" title="Pre-normalized evidence from extraction">evidence: ${escapeHtml(String(f.evidence).slice(0, 240))}</div>` : ''}
                 ${f.missing_reason && f.status !== 'needs_verify' ? `<div class="text-xs text-red-400 mt-0.5">${escapeHtml(f.missing_reason)}</div>` : ''}
               </td>
               <td class="py-1.5 align-top">${statusBadge(f.status)}</td>
