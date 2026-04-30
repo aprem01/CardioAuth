@@ -172,13 +172,18 @@ def run_end_to_end_demo(
 
         # Step 2: Extract structured ChartData from the note via Claude
         t = _StepTimer(2, "CHART_AGENT — extract from note", "CHART_AGENT")
-        chart = _extract_chart_from_note(
+        extraction_result = _extract_chart_with_evidence(
             raw_note=raw_note,
             procedure_code=procedure_code,
             procedure_name=procedure_name or "",
             payer_name=payer_name,
             patient_id=patient_id,
         )
+        chart = extraction_result.chart
+        # Phase A.3: evidence graph carries one span per extracted field.
+        # Stashed on the timeline so Phase A.5 (typed SubmissionPacket
+        # construction) can pick it up; today it's surfaced in step detail.
+        timeline.evidence_graph = extraction_result.evidence_graph  # type: ignore[attr-defined]
         from cardioauth.models.chart_migration import migrate_legacy_chart, validate_lab_source_anchoring
         chart = migrate_legacy_chart(chart)
         chart, lab_warnings = validate_lab_source_anchoring(chart, strict=False)
@@ -188,9 +193,12 @@ def run_end_to_end_demo(
             f"{len(chart.prior_stress_tests)} stress tests, "
             f"{len(chart.relevant_labs)} labs, "
             f"{len(chart.past_medical_history)} PMH"
-            + (f" (dropped {len(lab_warnings)} suspect labs)" if lab_warnings else ""),
+            + (f" (dropped {len(lab_warnings)} suspect labs)" if lab_warnings else "")
+            + f" · {len(extraction_result.evidence_graph)} evidence spans recorded",
             detail={
                 "chart_data": chart.model_dump(mode="json"),
+                "evidence_graph": extraction_result.evidence_graph.to_dict(),
+                "evidence_span_count": len(extraction_result.evidence_graph),
                 "lab_warnings": lab_warnings,
                 "extraction_source": "raw_note",
             },
@@ -1090,20 +1098,54 @@ def _extract_chart_from_note(
     payer_name: str = "",
     patient_id: str = "",
 ) -> Any:
-    """Run Claude over a deidentified note to build a ChartData v2.
+    """Backwards-compat shim — returns the ChartData object only.
+
+    New code should call `_extract_chart_with_evidence` to receive
+    both the chart and the EvidenceGraph atomically.
+    """
+    return _extract_chart_with_evidence(
+        raw_note=raw_note,
+        procedure_code=procedure_code,
+        procedure_name=procedure_name,
+        payer_name=payer_name,
+        patient_id=patient_id,
+    ).chart
+
+
+def _extract_chart_with_evidence(
+    *,
+    raw_note: str,
+    procedure_code: str,
+    procedure_name: str = "",
+    payer_name: str = "",
+    patient_id: str = "",
+):
+    """Run Claude over a deidentified note → (ChartData v2, EvidenceGraph).
+
+    Phase A.3: every populated field on the returned chart has at
+    least one EvidenceSpan in the graph with field_path pointing at
+    the chart bucket the value lives in. Symptoms produced by the
+    rule-based backstop carry precise char offsets; Claude-extracted
+    fields are located by best-effort substring match.
 
     Falls back to a minimal ChartData with raw_note stashed in
     additional_notes when Anthropic is unavailable so the rest of
     the pipeline can still run.
     """
     from cardioauth.config import Config
+    from cardioauth.evidence import EvidenceGraph
+    from cardioauth.evidence_extraction import (
+        ChartExtractionResult,
+        emit_spans_for_chart_dict,
+    )
     from cardioauth.models.chart import ChartData
 
     cfg = Config()
+    graph = EvidenceGraph()
 
     if not cfg.anthropic_api_key:
         logger.warning("Note extraction: no API key, skeletal chart only")
-        return ChartData(
+        chart = ChartData(
             patient_id=patient_id or "CUSTOM",
             procedure_requested=procedure_name or procedure_code,
             procedure_code=procedure_code,
@@ -1113,6 +1155,17 @@ def _extract_chart_from_note(
             confidence_score=0.5,
             missing_fields=["Anthropic API unavailable; only raw note preserved"],
         )
+        # Even in the skeleton path, the procedure code + payer carry
+        # spans — they came from the request, not the note.
+        emit_spans_for_chart_dict(
+            chart_dict=chart.model_dump(mode="json"),
+            raw_note=raw_note,
+            graph=graph,
+            extractor="request_pass_through",
+            extractor_version="v1",
+            base_confidence=1.0,
+        )
+        return ChartExtractionResult(chart=chart, evidence_graph=graph)
 
     try:
         import anthropic
@@ -1148,8 +1201,8 @@ def _extract_chart_from_note(
         data = normalize_claude_extraction(data)
         # Peter Apr 24: symptoms recognized by reasoner but not landing in
         # current_symptoms. Rule-based backstop runs only when Claude left
-        # the bucket empty — Claude still wins when it produces anything.
-        data = backfill_symptoms_if_missing(data, raw_note)
+        # the bucket empty. The backstop emits its own spans into `graph`.
+        data = backfill_symptoms_if_missing(data, raw_note, evidence_graph=graph)
 
         # Ensure required identity fields are set
         data.setdefault("patient_id", patient_id or "CUSTOM")
@@ -1164,11 +1217,25 @@ def _extract_chart_from_note(
         if raw_note and raw_note not in existing_notes:
             data["additional_notes"] = (existing_notes + "\n\n" + raw_note).strip()
 
+        # Phase A.3: walk the parsed dict and emit one span per Claude-
+        # extracted top-level field and list item. Done BEFORE Pydantic
+        # validation so even if validation strips a field we still know
+        # Claude saw it.
+        emit_spans_for_chart_dict(
+            chart_dict=data,
+            raw_note=raw_note,
+            graph=graph,
+            extractor="claude_chart_extraction",
+            extractor_version=cfg.model,
+            base_confidence=0.85,
+        )
+
         # Only pass fields ChartData knows about
         valid_keys = set(ChartData.model_fields.keys())
         filtered = {k: v for k, v in data.items() if k in valid_keys}
         try:
-            return ChartData(**filtered)
+            chart = ChartData(**filtered)
+            return ChartExtractionResult(chart=chart, evidence_graph=graph)
         except Exception as ve:
             logger.warning(
                 "Note extraction: ChartData validation failed after normalize (%s); "
@@ -1191,11 +1258,12 @@ def _extract_chart_from_note(
                 f"Structured extraction dropped: {str(ve)[:120]}"
             ]
             safe["confidence_score"] = min(float(safe.get("confidence_score") or 0.5), 0.5)
-            return ChartData(**safe)
+            chart = ChartData(**safe)
+            return ChartExtractionResult(chart=chart, evidence_graph=graph)
 
     except Exception as e:
         logger.warning("Note extraction: Claude call failed: %s — falling back to skeletal chart", e)
-        return ChartData(
+        chart = ChartData(
             patient_id=patient_id or "CUSTOM",
             procedure_requested=procedure_name or procedure_code,
             procedure_code=procedure_code,
@@ -1205,3 +1273,4 @@ def _extract_chart_from_note(
             confidence_score=0.5,
             missing_fields=[f"Note extraction failed: {str(e)[:120]}"],
         )
+        return ChartExtractionResult(chart=chart, evidence_graph=graph)

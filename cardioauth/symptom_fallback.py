@@ -95,11 +95,19 @@ def extract_symptoms_from_text(text: str) -> list[dict]:
     Only returns symptoms we're reasonably sure of — matches that are
     explicitly denied in the note are skipped.
     """
+    return [s for s, _ in extract_symptoms_with_spans(text)]
+
+
+def extract_symptoms_with_spans(text: str) -> list[tuple[dict, tuple[int, int]]]:
+    """Phase A.3: same as extract_symptoms_from_text but returns the
+    char-span where each symptom was detected so the caller can emit
+    EvidenceSpans with precise offsets.
+    """
     if not text or not text.strip():
         return []
 
     seen: set[str] = set()
-    out: list[dict] = []
+    out: list[tuple[dict, tuple[int, int]]] = []
     for name, pat in _SYMPTOM_PATTERNS:
         m = pat.search(text)
         if not m:
@@ -127,16 +135,20 @@ def extract_symptoms_from_text(text: str) -> list[dict]:
         if onset_m:
             entry["onset"] = onset_m.group(0).strip()
 
-        out.append(entry)
+        out.append((entry, m.span()))
 
     # Dedupe: if we extracted both "dyspnea on exertion" AND "dyspnea",
     # keep only the more specific one.
-    if any(s["name"] == "dyspnea on exertion" for s in out):
-        out = [s for s in out if s["name"] != "dyspnea"]
+    if any(s["name"] == "dyspnea on exertion" for s, _ in out):
+        out = [(s, sp) for s, sp in out if s["name"] != "dyspnea"]
     return out
 
 
-def backfill_symptoms_if_missing(chart_dict: dict, raw_note: str) -> dict:
+def backfill_symptoms_if_missing(
+    chart_dict: dict,
+    raw_note: str,
+    evidence_graph: "EvidenceGraph | None" = None,  # type: ignore[name-defined]
+) -> dict:
     """Augment a normalized chart dict with rule-based symptoms.
 
     Only fills in when `current_symptoms` is empty or contains no name —
@@ -144,6 +156,11 @@ def backfill_symptoms_if_missing(chart_dict: dict, raw_note: str) -> dict:
     The augmented entry is flagged via missing_fields so the physician
     sees that the symptom came from a heuristic, not the primary
     extraction.
+
+    Phase A.3: when `evidence_graph` is provided, emit one EvidenceSpan
+    per backfilled symptom with precise char offsets from the regex
+    match — so downstream coherence checks can verify each symptom is
+    grounded in a real source span.
     """
     existing = chart_dict.get("current_symptoms") or []
     has_named = any(
@@ -159,10 +176,11 @@ def backfill_symptoms_if_missing(chart_dict: dict, raw_note: str) -> dict:
         probes.append(str(chart_dict["additional_notes"]))
     text = "\n".join(probes)
 
-    symptoms = extract_symptoms_from_text(text)
-    if not symptoms:
+    pairs = extract_symptoms_with_spans(text)
+    if not pairs:
         return chart_dict
 
+    symptoms = [s for s, _ in pairs]
     chart_dict["current_symptoms"] = symptoms
     mf = list(chart_dict.get("missing_fields", []) or [])
     mf.append(
@@ -170,4 +188,18 @@ def backfill_symptoms_if_missing(chart_dict: dict, raw_note: str) -> dict:
         f"{', '.join(s['name'] for s in symptoms)}"
     )
     chart_dict["missing_fields"] = mf
+
+    if evidence_graph is not None:
+        from cardioauth.evidence_extraction import make_span
+        for i, (sym, span_offsets) in enumerate(pairs):
+            evidence_graph.add(make_span(
+                source_text=text,
+                extracted_value=sym["name"],
+                field_path=f"chart.current_symptoms[{i}]",
+                extractor="symptom_fallback",
+                extractor_version="v1",
+                confidence=0.7,  # rule-based, lower than Claude
+                explicit_offsets=span_offsets,
+            ))
+
     return chart_dict
