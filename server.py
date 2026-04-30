@@ -1274,6 +1274,48 @@ def get_submission_record(submission_id: str, user: AuthUser = Depends(get_curre
     return {"submission": submission, "outcome": outcome}
 
 
+@app.get("/api/packets/{case_id}")
+def get_archived_packet(
+    case_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Phase C.2 — replay: return the frozen SubmissionPacket for a case.
+
+    The full typed packet (form fields, evidence graph, findings,
+    reviewer verdict) is reconstructed from persisted state alone.
+    Verdicts are reproducible: the taxonomy / form-schema / model
+    versions are stamped on each row so a replay six months later
+    runs against the same logic the original case was decided under.
+    """
+    log_audit(user, "packet_replay", case_id)
+    from cardioauth.packet_archive import load_packet
+    packet = load_packet(case_id)
+    if packet is None:
+        raise HTTPException(status_code=404, detail=f"Packet {case_id} not found")
+    return packet.to_dict()
+
+
+@app.get("/api/packets")
+def list_archived_packets_endpoint(
+    payer: str = "",
+    resolved_cpt: str = "",
+    decision: str = "",
+    limit: int = 50,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Index of frozen packets — payer, CPT, decision, severity counts.
+
+    The full packet is fetched per case via /api/packets/{case_id}.
+    """
+    log_audit(user, "packet_list", f"payer={payer} cpt={resolved_cpt} decision={decision}")
+    from cardioauth.packet_archive import list_archived_packets
+    rows = list_archived_packets(
+        payer=payer, resolved_cpt=resolved_cpt,
+        decision=decision, limit=max(1, min(limit, 200)),
+    )
+    return {"packets": rows, "count": len(rows)}
+
+
 class ModifierCheckRequest(BaseModel):
     cpt_codes: list[str]
     modifiers: list[str] = []

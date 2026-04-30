@@ -106,6 +106,25 @@ class Store(ABC):
     @abstractmethod
     def cache_set(self, cache_key: str, value: dict, ttl_seconds: int) -> None: ...
 
+    # ── Phase C.1: SubmissionPacket archive ──
+
+    @abstractmethod
+    def save_packet(self, case_id: str, packet_json: dict, *,
+                    payer: str = "", resolved_cpt: str = "",
+                    decision: str = "", reviewer_recommendation: str = "",
+                    finding_count: int = 0,
+                    highest_finding_severity: str = "",
+                    taxonomy_version: str = "",
+                    form_schema_version: str = "",
+                    model_version: str = "") -> None: ...
+
+    @abstractmethod
+    def get_packet(self, case_id: str) -> dict | None: ...
+
+    @abstractmethod
+    def list_packets(self, *, payer: str = "", resolved_cpt: str = "",
+                     decision: str = "", limit: int = 50) -> list[dict]: ...
+
 
 # ────────────────────────────────────────────────────────────────────────
 # SQLite backend (default)
@@ -218,6 +237,30 @@ CREATE TABLE IF NOT EXISTS recall_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_recall_status ON recall_queue(recall_status, expected_followup_date);
 CREATE INDEX IF NOT EXISTS idx_recall_patient ON recall_queue(patient_id, expected_followup_date DESC);
+
+-- Frozen submission packets: one row per assembled SubmissionPacket.
+-- Phase C.1 — every verdict is reproducible from this row alone.
+-- The full typed packet (including evidence graph, form fields, findings,
+-- reviewer verdict) lives in packet_json. Indexed columns are projected
+-- out for query speed.
+CREATE TABLE IF NOT EXISTS submission_packets (
+    case_id TEXT PRIMARY KEY,
+    packet_json TEXT NOT NULL,
+    payer TEXT,
+    resolved_cpt TEXT,
+    decision TEXT,                       -- transmit | hold_for_review | block
+    reviewer_recommendation TEXT,        -- transmit | hold | block | "" (empty when reviewer skipped)
+    finding_count INTEGER NOT NULL DEFAULT 0,
+    highest_finding_severity TEXT,       -- info | low | medium | high | blocking
+    taxonomy_version TEXT,
+    form_schema_version TEXT,
+    model_version TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_packets_payer_cpt ON submission_packets(payer, resolved_cpt, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_packets_decision ON submission_packets(decision, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_packets_severity ON submission_packets(highest_finding_severity);
 """
 
 
@@ -533,6 +576,99 @@ class SQLiteStore(Store):
                      expires_at = excluded.expires_at""",
                 (cache_key, json.dumps(value, default=str), now_dt.isoformat(), expires),
             )
+
+    # ── Phase C.1: SubmissionPacket archive ──
+
+    def save_packet(
+        self, case_id: str, packet_json: dict, *,
+        payer: str = "", resolved_cpt: str = "",
+        decision: str = "", reviewer_recommendation: str = "",
+        finding_count: int = 0,
+        highest_finding_severity: str = "",
+        taxonomy_version: str = "",
+        form_schema_version: str = "",
+        model_version: str = "",
+    ) -> None:
+        """Freeze a SubmissionPacket. Indexed projections are derived
+        once at write time; the full packet lives in packet_json."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO submission_packets (
+                       case_id, packet_json, payer, resolved_cpt, decision,
+                       reviewer_recommendation, finding_count,
+                       highest_finding_severity, taxonomy_version,
+                       form_schema_version, model_version,
+                       created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(case_id) DO UPDATE SET
+                       packet_json = excluded.packet_json,
+                       payer = excluded.payer,
+                       resolved_cpt = excluded.resolved_cpt,
+                       decision = excluded.decision,
+                       reviewer_recommendation = excluded.reviewer_recommendation,
+                       finding_count = excluded.finding_count,
+                       highest_finding_severity = excluded.highest_finding_severity,
+                       taxonomy_version = excluded.taxonomy_version,
+                       form_schema_version = excluded.form_schema_version,
+                       model_version = excluded.model_version,
+                       updated_at = excluded.updated_at""",
+                (
+                    case_id, json.dumps(packet_json, default=str),
+                    payer, resolved_cpt, decision, reviewer_recommendation,
+                    finding_count, highest_finding_severity,
+                    taxonomy_version, form_schema_version, model_version,
+                    now_iso, now_iso,
+                ),
+            )
+
+    def get_packet(self, case_id: str) -> dict | None:
+        """Return the frozen packet (full JSON + indexed columns) or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM submission_packets WHERE case_id = ?",
+                (case_id,),
+            ).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        try:
+            out["packet"] = json.loads(out.pop("packet_json"))
+        except (json.JSONDecodeError, TypeError):
+            out["packet"] = None
+        return out
+
+    def list_packets(
+        self, *, payer: str = "", resolved_cpt: str = "",
+        decision: str = "", limit: int = 50,
+    ) -> list[dict]:
+        """List frozen packets, most-recent first. Returns the indexed
+        projections + a small preview (first 200 chars of packet_json);
+        callers fetch the full packet via get_packet(case_id)."""
+        sql = "SELECT * FROM submission_packets"
+        conditions: list[str] = []
+        params: list[Any] = []
+        if payer:
+            conditions.append("payer = ?")
+            params.append(payer)
+        if resolved_cpt:
+            conditions.append("resolved_cpt = ?")
+            params.append(resolved_cpt)
+        if decision:
+            conditions.append("decision = ?")
+            params.append(decision)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            d = dict(row)
+            d.pop("packet_json", None)  # don't ship the full payload in list views
+            out.append(d)
+        return out
 
     def iter_submissions_with_outcomes(
         self,
