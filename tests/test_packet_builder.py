@@ -62,7 +62,7 @@ def test_modality_empty_when_unspecified() -> None:
 # ── build_resolved_cpt ─────────────────────────────────────────────────
 
 def test_build_resolved_cpt_uses_request_canonical() -> None:
-    r = build_resolved_cpt(
+    r, findings = build_resolved_cpt(
         chart_procedure_code="78492",
         chart_procedure_requested="Cardiac PET",
         raw_note="",
@@ -70,18 +70,21 @@ def test_build_resolved_cpt_uses_request_canonical() -> None:
     assert r.cpt == "78492"
     assert r.source == "request"
     assert r.procedure == "Cardiac PET"
+    assert findings == []
 
 
 def test_build_resolved_cpt_flags_note_divergence_in_rationale() -> None:
-    """Today's policy: request canonical, but note divergence is recorded
-    in rationale so the reviewer can flag it."""
-    r = build_resolved_cpt(
+    """B.1: note-vs-request divergence emits a typed Finding (was just
+    recorded in rationale before)."""
+    r, findings = build_resolved_cpt(
         chart_procedure_code="78492",
         chart_procedure_requested="Cardiac PET",
         raw_note="Ordering: CPT 78452 (Exercise SPECT)",
     )
-    assert r.cpt == "78492"  # still request-canonical
+    assert r.cpt == "78492"
     assert "78452" in r.rationale
+    kinds = {f.kind for f in findings}
+    assert "cpt_family_mismatch" in kinds
 
 
 def test_build_resolved_cpt_with_evidence_graph() -> None:
@@ -93,7 +96,7 @@ def test_build_resolved_cpt_with_evidence_graph() -> None:
         raw_note="CPT 78492 ordered.",
         graph=g,
     )
-    r = build_resolved_cpt(
+    r, _ = build_resolved_cpt(
         chart_procedure_code="78492",
         chart_procedure_requested="Cardiac PET",
         raw_note="CPT 78492 ordered.",

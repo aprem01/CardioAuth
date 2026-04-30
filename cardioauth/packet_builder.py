@@ -1,19 +1,14 @@
-"""Phase A.5 — typed SubmissionPacket builder.
+"""Phase A.5 + B.1 — typed SubmissionPacket builder.
 
 Single entry point that takes the artifacts the existing pipeline
 already produces (chart, raw note, evidence graph, policy data,
 reasoning result, payer form) and assembles them into a validated
 SubmissionPacket.
 
-This is the bridge between the loose runtime state of demo_e2e and
-the typed packet model. Phases B.1–B.4 will read from the packet
-instead of from the loose state; eventually demo_e2e becomes a thin
-orchestrator that delegates verification + reviewer to a packet-
-oriented pipeline.
-
-Today: the builder still uses chart.procedure_code as the
-ResolvedCPT.source="request" — Phase B.1 adds the resolution step
-that reconciles request vs note vs reasoner-recommended CPTs.
+Phase B.1 adds the proper CPT reconciler — see cpt_resolver.py.
+Disagreements between request, note, and reasoner-recommended CPTs
+emit Findings on the packet rather than being recorded only in
+ResolvedCPT.rationale.
 """
 
 from __future__ import annotations
@@ -63,39 +58,22 @@ def build_resolved_cpt(
     chart_procedure_code: str,
     chart_procedure_requested: str,
     raw_note: str = "",
+    reasoning: Any = None,
     evidence_graph: EvidenceGraph | None = None,
-) -> ResolvedCPT:
-    """Build the canonical ResolvedCPT for a case.
+):
+    """Phase B.1: delegates to the proper CPT resolver.
 
-    Today's resolution policy: the request CPT (chart.procedure_code)
-    is canonical. If the note explicitly references a different CPT
-    we still trust the request — Phase B.1 introduces the reconciler.
-    The note's CPT is captured in `rationale` so the reviewer can
-    still flag the divergence.
+    Returns (ResolvedCPT, findings). Callers that don't need the
+    findings list can ignore it; build_submission_packet stacks them
+    onto the packet so the reviewer + UI surface them.
     """
-    cpt = (chart_procedure_code or "").strip()
-    proc = (chart_procedure_requested or "").strip()
-
-    rationale = "ResolvedCPT taken from the chart's request CPT"
-    note_cpt = _extract_cpt_from_text(raw_note)
-    if note_cpt and note_cpt != cpt:
-        rationale = (
-            f"Request CPT {cpt} taken canonical; note also references CPT "
-            f"{note_cpt} — flagged for reviewer"
-        )
-
-    # Build an evidence reference if the graph has a span at chart.procedure_code
-    ref = EMPTY_REFERENCE
-    if evidence_graph is not None:
-        spans = evidence_graph.spans_for_field_path("chart.procedure_code")
-        if spans:
-            ref = EvidenceReference.from_spans(
-                spans, rationale="request CPT", derivation="direct",
-            )
-
-    return ResolvedCPT(
-        cpt=cpt, procedure=proc, source="request",
-        evidence=ref, rationale=rationale,
+    from cardioauth.cpt_resolver import resolve_cpt
+    return resolve_cpt(
+        chart_procedure_code=chart_procedure_code,
+        chart_procedure_requested=chart_procedure_requested,
+        raw_note=raw_note,
+        reasoning=reasoning,
+        evidence_graph=evidence_graph,
     )
 
 
@@ -175,11 +153,12 @@ def build_submission_packet(
     if ontology is None:
         ontology = get_default_ontology()
 
-    # Resolved CPT (today's resolver: request-canonical)
-    resolved = build_resolved_cpt(
+    # Resolved CPT — request canonical, reconciled against note + reasoner
+    resolved, cpt_findings = build_resolved_cpt(
         chart_procedure_code=getattr(chart, "procedure_code", ""),
         chart_procedure_requested=getattr(chart, "procedure_requested", ""),
         raw_note=raw_note,
+        reasoning=reasoning,
         evidence_graph=evidence_graph,
     )
 
@@ -210,7 +189,7 @@ def build_submission_packet(
         except Exception:
             taxonomy_version = "unknown"
 
-    return SubmissionPacket.build(
+    packet = SubmissionPacket.build(
         case_id=case_id,
         raw_note=raw_note,
         chart_data=chart.model_dump(mode="json") if hasattr(chart, "model_dump") else dict(chart),
@@ -224,3 +203,8 @@ def build_submission_packet(
         form_schema_version=form_schema_version,
         model_version=model_version,
     )
+    # Phase B.1: stack the CPT-reconciler findings onto the packet so
+    # the gate, reviewer, and UI all surface them.
+    if cpt_findings:
+        packet.add_findings(cpt_findings)
+    return packet
