@@ -369,12 +369,142 @@ def _normalize_to_options(value: str, options: list[str]) -> tuple[str, str]:
     return value, ""
 
 
+def _evidence_reference_for_form_field(
+    field: "FormField",
+    *,
+    ontology,                # cardioauth.ontology.SubmissionPacketOntology
+    graph,                   # cardioauth.evidence.EvidenceGraph
+) -> "EvidenceReference":     # type: ignore[name-defined]
+    """Build an EvidenceReference for a form field by querying the ontology.
+
+    Two sources of evidence are unioned:
+      1. Direct `chart_data.X` path match — for identification fields
+         like patient_name whose `populated_from` points straight at a
+         chart bucket.
+      2. Ontology traversal — for clinical fields that bind to one or
+         more criteria via CriterionFormBinding. The criterion's
+         evidence_type maps to chart paths; spans on those paths
+         become this field's supporting evidence.
+    """
+    from cardioauth.evidence import EvidenceReference
+
+    span_ids: list[str] = []
+
+    # 1. Direct path match
+    src = field.populated_from
+    if isinstance(src, str) and src.startswith("chart_data."):
+        chart_path = "chart." + src[len("chart_data."):]
+        for s in graph.spans_for_field_path(chart_path):
+            if s.span_id not in span_ids:
+                span_ids.append(s.span_id)
+
+    # 2. Ontology-driven match
+    criteria = ontology.criteria_for_form_field(field.key)
+    if criteria:
+        seen_paths: set[str] = set()
+        for code in criteria:
+            evidence_type = ontology.evidence_type_for_criterion(code)
+            for path in ontology.chart_paths_for_evidence_type(evidence_type):
+                seen_paths.add(path)
+        for s in graph.all_spans():
+            if s.field_path in seen_paths:
+                if s.span_id not in span_ids:
+                    span_ids.append(s.span_id)
+                continue
+            # List items: span field_path "chart.current_symptoms[0]"
+            # matches base "chart.current_symptoms"
+            for base in seen_paths:
+                if s.field_path.startswith(base + "["):
+                    if s.span_id not in span_ids:
+                        span_ids.append(s.span_id)
+                    break
+
+    return EvidenceReference(
+        span_ids=tuple(span_ids),
+        rationale=(
+            f"Form field {field.key} bound to "
+            f"{len(span_ids)} chart span(s) via ontology"
+            if span_ids else ""
+        ),
+        derivation="ontology" if span_ids else "direct",
+    )
+
+
+def populate_payer_form_entries(
+    form: PayerForm,
+    *,
+    chart_data: Any,
+    policy_data: Any,
+    reasoning: Any,
+    evidence_graph=None,    # cardioauth.evidence.EvidenceGraph | None
+    ontology=None,          # cardioauth.ontology.SubmissionPacketOntology | None
+) -> "list[FormFieldEntry]":  # type: ignore[name-defined]
+    """Phase A.4: typed form-field population.
+
+    Returns a list of FormFieldEntry objects with normalized values,
+    evidence references back into the EvidenceGraph, and status/
+    missing_reason/help_text metadata. Replaces the dict-based shape
+    in `populate_payer_form` for typed callers; the dict version
+    delegates here.
+
+    When `evidence_graph` is None or empty, FormFieldEntry.evidence is
+    EMPTY_REFERENCE and the field still classifies normally — the
+    typed pipeline degrades to the same shape as the legacy one.
+    """
+    from cardioauth.evidence import EMPTY_REFERENCE, EvidenceGraph
+    from cardioauth.submission_packet import FormFieldEntry
+
+    if evidence_graph is None:
+        evidence_graph = EvidenceGraph()
+    if ontology is None:
+        from cardioauth.ontology import get_default_ontology
+        ontology = get_default_ontology()
+
+    entries: list[FormFieldEntry] = []
+    for f in form.fields:
+        value = _resolve_value(f, chart_data, policy_data, reasoning)
+        str_value = _to_string(value)
+        evidence_text = ""
+        # Snap select fields to the canonical allowed option
+        if f.format == "select" and f.options and not isinstance(value, _NeedsVerifySentinel):
+            snapped, evidence_text = _normalize_to_options(str_value, f.options)
+            str_value = snapped
+        status, reason = _classify_field(f, value, str_value)
+
+        # Build the evidence reference (only when populated/incomplete —
+        # missing/needs_verify don't claim to be supported by source spans)
+        if status in ("populated", "incomplete") and len(evidence_graph) > 0:
+            evidence_ref = _evidence_reference_for_form_field(
+                f, ontology=ontology, graph=evidence_graph,
+            )
+        else:
+            evidence_ref = EMPTY_REFERENCE
+
+        entries.append(FormFieldEntry(
+            key=f.key,
+            label=f.label,
+            category=f.category,
+            required=f.required,
+            format=f.format,
+            options=list(f.options),
+            value=str_value,
+            evidence_text=evidence_text,
+            evidence=evidence_ref,
+            status=status,                     # type: ignore[arg-type]
+            missing_reason=reason,
+            help_text=f.help_text,
+        ))
+    return entries
+
+
 def populate_payer_form(
     form: PayerForm,
     *,
     chart_data: Any,
     policy_data: Any,
     reasoning: Any,
+    evidence_graph=None,
+    ontology=None,
 ) -> dict[str, Any]:
     """Walk the form schema and return per-field population status.
 
@@ -383,62 +513,58 @@ def populate_payer_form(
         "form_name": "...",
         "payer": "...", "vendor": "...",
         "fields": [{key, label, category, required, value, evidence,
-                    status, missing_reason, help_text}],
+                    status, missing_reason, help_text, ...}],
         "counts": {"populated": N, "missing_required": N,
                    "incomplete": N, "optional_empty": N,
                    "needs_verify": N, "total": N},
         "ready_to_submit": bool,
       }
 
-    Apr 30: rows now carry an `evidence` field — the rich pre-normalized
-    output the mapper produced — separate from `value` (the payer-allowed
-    option). The form sends `value` to the payer and the UI shows
-    `evidence` to the physician.
+    Apr 30: rows carry an `evidence` field (rich pre-normalized text)
+    separate from `value` (payer-allowed option).
+    Phase A.4: rows additionally carry `evidence_ref` — a structured
+    reference into the EvidenceGraph when one is supplied. Internally
+    delegates to `populate_payer_form_entries` for typed construction.
     """
+    entries = populate_payer_form_entries(
+        form,
+        chart_data=chart_data, policy_data=policy_data, reasoning=reasoning,
+        evidence_graph=evidence_graph, ontology=ontology,
+    )
+
     populated_rows: list[dict] = []
     counts = {
         "populated": 0, "missing_required": 0, "incomplete": 0,
         "optional_empty": 0, "needs_verify": 0,
     }
-
-    for f in form.fields:
-        value = _resolve_value(f, chart_data, policy_data, reasoning)
-        str_value = _to_string(value)
-        evidence = ""
-        # For select fields with allowed options, snap to the canonical
-        # value and preserve the rich version as evidence.
-        if f.format == "select" and f.options and not isinstance(value, _NeedsVerifySentinel):
-            snapped, evidence = _normalize_to_options(str_value, f.options)
-            str_value = snapped
-        status, reason = _classify_field(f, value, str_value)
-
+    for entry in entries:
         populated_rows.append({
-            "key": f.key,
-            "label": f.label,
-            "category": f.category,
-            "required": f.required,
-            "format": f.format,
-            "options": f.options,
-            "value": str_value,
-            "evidence": evidence,
-            "status": status,
-            "missing_reason": reason,
-            "help_text": f.help_text,
+            "key": entry.key,
+            "label": entry.label,
+            "category": entry.category,
+            "required": entry.required,
+            "format": entry.format,
+            "options": entry.options,
+            "value": entry.value,
+            "evidence": entry.evidence_text,    # legacy key — rich pre-norm text
+            "evidence_ref": entry.evidence.to_dict(),  # Phase A.4 — structured
+            "status": entry.status,
+            "missing_reason": entry.missing_reason,
+            "help_text": entry.help_text,
         })
-        if status == "populated":
+        if entry.status == "populated":
             counts["populated"] += 1
-        elif status == "needs_verify":
+        elif entry.status == "needs_verify":
             counts["needs_verify"] += 1
-        elif status == "missing":
-            if f.required:
+        elif entry.status == "missing":
+            if entry.required:
                 counts["missing_required"] += 1
             else:
                 counts["optional_empty"] += 1
-        elif status == "incomplete":
+        elif entry.status == "incomplete":
             counts["incomplete"] += 1
 
     counts["total"] = len(form.fields)
-    # needs_verify doesn't block ready_to_submit — the user just has to attest.
     ready = counts["missing_required"] == 0 and counts["incomplete"] == 0
 
     return {

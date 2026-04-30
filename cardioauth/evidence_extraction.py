@@ -157,19 +157,22 @@ _DEMOGRAPHIC_FIELDS: tuple[str, ...] = (
 )
 
 
-# v2 list buckets and the dict key inside each item that names the
-# extracted concept. Items with no recognizable name are skipped.
-_LIST_FIELD_NAME_KEY: dict[str, str] = {
-    "current_symptoms": "name",
-    "exam_findings": "finding",
-    "past_medical_history": "condition",
-    "family_history": "condition",
-    "prior_procedures": "name",
-    "prior_stress_tests": "modality",
-    "ecg_findings": "summary",       # ECG also has rhythm/conduction; we emit one span per dict
-    "relevant_imaging": "type",
-    "relevant_medications": "name",
-    "relevant_labs": "name",
+# v2 list buckets and the dict keys to try (in order) for the label
+# that names the extracted concept. The first non-empty value wins.
+# Items with no recognizable label are skipped.
+_LIST_FIELD_NAME_KEYS: dict[str, tuple[str, ...]] = {
+    "current_symptoms": ("name",),
+    "exam_findings": ("finding",),
+    "past_medical_history": ("condition",),
+    "family_history": ("condition", "relation"),
+    "prior_procedures": ("name",),
+    "prior_stress_tests": ("modality",),
+    # ECG has multiple structured sub-fields — any one populated suffices
+    "ecg_findings": ("summary", "conduction", "rhythm",
+                     "hypertrophy_or_strain", "ischemic_changes", "pacing"),
+    "relevant_imaging": ("type",),
+    "relevant_medications": ("name",),
+    "relevant_labs": ("name",),
 }
 
 
@@ -230,19 +233,23 @@ def emit_spans_for_chart_dict(
         ))
 
     # Structured list buckets
-    for bucket, name_key in _LIST_FIELD_NAME_KEY.items():
+    for bucket, name_keys in _LIST_FIELD_NAME_KEYS.items():
         items = chart_dict.get(bucket) or []
         if not isinstance(items, list):
             continue
         for i, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
-            label = (
-                item.get(name_key)
-                or item.get("description")
-                or item.get("text")
-                or ""
-            )
+            # Pick the first non-empty label across the candidate keys,
+            # then fall back to generic description/text fields.
+            label = ""
+            for key in name_keys:
+                v = item.get(key)
+                if v:
+                    label = str(v)
+                    break
+            if not label:
+                label = item.get("description") or item.get("text") or ""
             if not label:
                 continue
             graph.add(make_span(
