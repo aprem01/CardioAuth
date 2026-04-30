@@ -1274,6 +1274,23 @@ def get_submission_record(submission_id: str, user: AuthUser = Depends(get_curre
     return {"submission": submission, "outcome": outcome}
 
 
+@app.get("/api/stats/packet-correlation")
+def packet_correlation_endpoint(
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Phase C.3 — outcome correlation across resolved CPT / reviewer
+    recommendation / decision / finding kinds / taxonomy + model version.
+
+    Joins frozen packets (submission_packets) with outcomes and
+    reports approval/denial rates per dimension. Becomes meaningful
+    once 20+ decisive outcomes accumulate; below that, the `notes`
+    field flags the report as directional.
+    """
+    log_audit(user, "packet_correlation", "")
+    from cardioauth.packet_correlation import correlate_outcomes
+    return correlate_outcomes().to_dict()
+
+
 @app.get("/api/packets/{case_id}")
 def get_archived_packet(
     case_id: str,
