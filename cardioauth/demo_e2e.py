@@ -678,13 +678,20 @@ def run_end_to_end_demo(
         timeline.outcome = "ERROR"
         return timeline
 
-    # ── Step 7 (was 7, now inserted before payer response): Payer form preview ──
+    # ── Step 7: Payer form preview + typed SubmissionPacket assembly ──
     # Peter's Apr 22 ask: map extracted data into the actual payer form
-    # structure so we can see which fields are populated vs missing.
-    t = _StepTimer(7, "Payer form preview", "PayerFormMapper")
+    # structure. Phase A.5: in addition to the legacy dict-shaped form
+    # preview, build a typed SubmissionPacket from all assembled
+    # artifacts (chart, raw note, evidence graph, policy, reasoning,
+    # form, narrative) and stash it on the timeline so subsequent
+    # phases (B.1–B.4) can attach Findings + ReviewerVerdict.
+    t = _StepTimer(7, "Payer form preview + typed packet", "PayerFormMapper")
     try:
+        from cardioauth.packet_builder import build_submission_packet
         from cardioauth.payer_forms import get_payer_form, populate_payer_form
         form = get_payer_form(payer_name, procedure_code)
+        evidence_graph_for_packet = getattr(timeline, "evidence_graph", None)
+
         if form is None:
             t.set_result(
                 f"No form template for {payer_name} — using generic UHC shape as fallback",
@@ -697,6 +704,7 @@ def run_end_to_end_demo(
                 chart_data=chart,
                 policy_data=policy_data,
                 reasoning=reasoning,
+                evidence_graph=evidence_graph_for_packet,
             )
             counts = populated["counts"]
             summary_str = (
@@ -710,9 +718,44 @@ def run_end_to_end_demo(
             if populated["ready_to_submit"]:
                 summary_str += " — ready to submit"
 
+            # Build the typed SubmissionPacket from artifacts. Validation
+            # raises on broken referential integrity; we catch and log
+            # (without aborting the demo) — A.5 is additive.
+            packet_summary: dict[str, Any] = {}
+            if evidence_graph_for_packet is not None:
+                try:
+                    packet = build_submission_packet(
+                        case_id=case_id,
+                        raw_note=raw_note or "",
+                        chart=chart,
+                        policy_data=policy_data,
+                        reasoning=reasoning,
+                        evidence_graph=evidence_graph_for_packet,
+                        payer_form=form,
+                        payer=payer_name,
+                        model_version=cfg.model,
+                        form_schema_version=f"{form.payer}-{form.vendor}-{form.name}",
+                    )
+                    timeline.submission_packet = packet  # type: ignore[attr-defined]
+                    summary_str += f" · typed packet: {len(packet.form_fields)} fields, "
+                    summary_str += f"{len(packet.evidence_graph)} evidence spans"
+                    packet_summary = {
+                        "packet_built": True,
+                        "case_id": packet.case_id,
+                        "resolved_cpt": packet.resolved_cpt.to_dict(),
+                        "form_field_count": len(packet.form_fields),
+                        "evidence_span_count": len(packet.evidence_graph),
+                        "narrative_cpt_referenced": packet.narrative.cpt_referenced,
+                        "narrative_procedure_referenced": packet.narrative.procedure_referenced,
+                        "taxonomy_version": packet.taxonomy_version,
+                    }
+                except Exception as pe:
+                    logger.warning("SubmissionPacket build failed (non-fatal): %s", pe)
+                    packet_summary = {"packet_built": False, "packet_error": str(pe)[:240]}
+
             t.set_result(
                 summary_str,
-                detail=populated,
+                detail={**populated, **({"submission_packet": packet_summary} if packet_summary else {})},
                 status=("ok" if populated["ready_to_submit"] else "fallback"),
             )
     except Exception as e:
