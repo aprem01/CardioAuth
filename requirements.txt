@@ -11,3 +11,4 @@ pypdf==5.1.0
 boto3==1.38.11
 psycopg2-binary==2.9.11
 llama-parse==0.6.2
+networkx==3.4.2
