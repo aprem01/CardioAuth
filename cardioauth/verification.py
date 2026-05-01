@@ -355,6 +355,11 @@ class SafetyVerifierChecker(Checker):
                         "is likely wrong on this case."
                     ),
                     auto_fixable=False,
+                    fix_suggestion=(
+                        f"Re-emphasize {cmp.fact.label} in the note assessment so "
+                        f"the reasoner credits the matching criterion ("
+                        f"{', '.join(cmp.relevant_criteria)})."
+                    ),
                 ))
             # Chart-extraction-missed: note has it, chart doesn't. Even if
             # the criterion didn't apply or wasn't evaluated, this is a
@@ -368,6 +373,10 @@ class SafetyVerifierChecker(Checker):
                         f"note (\"{cmp.fact.quote[:120].strip()}\"), but the chart "
                         f"extractor did not capture it. Downstream stages may have "
                         "judged the case without this signal."
+                    ),
+                    fix_suggestion=(
+                        f"Restate {cmp.fact.label} in clinical-summary form so the "
+                        "chart extractor picks it up on the next pass."
                     ),
                 ))
 
@@ -383,6 +392,11 @@ class SafetyVerifierChecker(Checker):
                     f"{', '.join(audit.cpts_in_note)} but the chart's "
                     f"procedure_code is {audit.cpt_in_chart}. The submission "
                     "would carry an inconsistent CPT across the package."
+                ),
+                fix_suggestion=(
+                    f"Decide whether the correct CPT is "
+                    f"{', '.join(audit.cpts_in_note)} or {audit.cpt_in_chart}, "
+                    "then update the note (and the request) so they agree."
                 ),
             ))
 

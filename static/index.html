@@ -1052,12 +1052,20 @@
       }
       const data = await res.json();
       renderE2ETimeline(data);
+      // On iterations 2+ scroll to the outcome so the physician can
+      // immediately see what changed.
+      if ((window._e2eState || {}).attempts && window._e2eState.attempts.length > 1) {
+        const summaryEl = document.getElementById('e2e-summary');
+        if (summaryEl) summaryEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     } catch (e) {
       timeline.innerHTML = `<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-300">E2E run failed: ${escapeHtml(String(e))}</div>`;
     }
 
     btn.disabled = false;
-    btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> Run again`;
+    const attemptsSoFar = ((window._e2eState || {}).attempts || []).length;
+    const btnLabel = attemptsSoFar > 0 ? `Run again (attempt ${attemptsSoFar + 1})` : 'Run end-to-end pipeline';
+    btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> ${btnLabel}`;
   }
 
   function renderE2ETimeline(data) {
@@ -1110,12 +1118,35 @@
                          (data.outcome === 'DEFERRED_TO_PHYSICIAN') ? 'text-indigo-400' :
                          (data.outcome === 'HELD_FOR_REVIEW') ? 'text-indigo-400' :
                          'text-slate-400';
+    // Pull the physician step out for score/decision context — drives the
+    // attempt-history bar and the "Adjust and re-run" panel.
+    const physicianStep = (data.steps || []).find(s => s.agent === 'Physician');
+    const phys = (physicianStep && physicianStep.detail) || {};
+    const scorePct = phys.approval_score != null ? Math.round(phys.approval_score * 100) : null;
+    const isApproved = data.outcome === 'APPROVED';
+    const needsAdjust = !isApproved && data.outcome !== 'PENDING';
+
+    // Push this attempt into the attempt history (used by the iteration
+    // panel + history bar).
+    window._e2eState = window._e2eState || { attempts: [] };
+    window._e2eState.attempts.push({
+      attempt: window._e2eState.attempts.length + 1,
+      outcome: data.outcome,
+      decision: phys.decision,
+      score: phys.approval_score,
+      label: phys.approval_label,
+      finding_count: (phys.warnings || []).length + (phys.typed_pipeline_findings || []).length,
+      time: Date.now(),
+    });
+
     summary.innerHTML = `
+      ${attemptHistoryBar()}
       <div class="bg-surface rounded-xl border border-surface-border p-5 mt-4">
         <div class="flex items-center justify-between">
           <div>
             <p class="text-xs uppercase text-slate-500">Final outcome</p>
             <p class="text-2xl font-bold ${outcomeColor}">${escapeHtml(data.outcome || '—')}</p>
+            ${scorePct != null ? `<p class="text-xs text-slate-400 mt-1">Reasoner score: ${scorePct}% (${escapeHtml(phys.approval_label || '')})</p>` : ''}
           </div>
           <div class="text-right">
             <p class="text-xs uppercase text-slate-500">Total time</p>
@@ -1123,8 +1154,218 @@
           </div>
         </div>
         <p class="text-xs text-slate-500 mt-3">Case ID: <span class="font-mono">${escapeHtml(data.case_id || '')}</span> · Patient: ${escapeHtml(data.patient_id || '')} · CPT: ${escapeHtml(data.procedure_code || '')} · Payer: ${escapeHtml(data.payer || '')}</p>
-      </div>`;
+      </div>
+      ${needsAdjust ? renderAdjustPanel(data, phys) : ''}
+      ${isApproved && (window._e2eState.attempts.length > 1) ? renderApprovedAfterIterationBanner() : ''}`;
   }
+
+  // ─────────────────────── Iteration / re-run UX ───────────────────────
+
+  // Tiny bar showing the score progression across attempts. Lets the
+  // physician see "I went from 38% to 71% by adding the LBBB line."
+  function attemptHistoryBar() {
+    const state = window._e2eState || { attempts: [] };
+    if (state.attempts.length < 2) return '';
+    const rows = state.attempts.map((a, i) => {
+      const pct = a.score != null ? Math.round(a.score * 100) : null;
+      const color = a.outcome === 'APPROVED' ? 'text-emerald-400'
+                  : a.decision === 'blocked' ? 'text-red-400'
+                  : a.decision === 'held_for_review' ? 'text-amber-300'
+                  : 'text-slate-300';
+      const arrow = i === state.attempts.length - 1 ? '◀ current' : '';
+      return `<div class="flex items-center gap-3 text-xs">
+        <span class="text-slate-500 font-mono w-16">Attempt ${a.attempt}</span>
+        <span class="${color} font-semibold w-20">${pct != null ? pct + '%' : '—'}</span>
+        <span class="text-slate-400 flex-1">${escapeHtml(a.outcome || '')} · ${a.finding_count} flag(s)</span>
+        <span class="text-accent-cyan/80 text-xs">${arrow}</span>
+      </div>`;
+    }).join('');
+    const first = state.attempts[0];
+    const last = state.attempts[state.attempts.length - 1];
+    let delta = '';
+    if (first.score != null && last.score != null) {
+      const d = Math.round((last.score - first.score) * 100);
+      const sign = d > 0 ? '+' : '';
+      const cls = d > 0 ? 'text-emerald-400' : d < 0 ? 'text-red-400' : 'text-slate-400';
+      delta = `<span class="${cls} font-semibold ml-2">${sign}${d}% since attempt 1</span>`;
+    }
+    return `<div class="bg-surface rounded-xl border border-surface-border p-4 mt-4">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold text-slate-200">🔁 Attempt history</div>
+        ${delta}
+      </div>
+      <div class="space-y-1">${rows}</div>
+    </div>`;
+  }
+
+  function renderApprovedAfterIterationBanner() {
+    const state = window._e2eState || { attempts: [] };
+    const n = state.attempts.length;
+    return `<div class="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4 mt-4">
+      <div class="flex items-center gap-2">
+        <span class="text-2xl">🎉</span>
+        <div>
+          <div class="text-base font-bold text-emerald-300">Approved after ${n} attempts</div>
+          <div class="text-xs text-emerald-200/80">Your edits closed the gaps that were holding the case. The package is ready to send.</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // The main "fix and re-run" panel. Renders an editable copy of the
+  // note (when in custom-note mode), a collapsed list of suggested
+  // additions distilled from the findings, and a single "Re-run with
+  // my edits" button. Demo-mode and PDF-mode get a lighter affordance.
+  function renderAdjustPanel(data, phys) {
+    const mode = window._e2eMode || 'demo';
+    const findings = [...(phys.warnings || []), ...(phys.typed_pipeline_findings || [])];
+    const snippets = [];
+    const seen = new Set();
+    findings.forEach(f => {
+      const s = suggestedSnippetFor(f);
+      if (s && !seen.has(s)) { seen.add(s); snippets.push({ kind: f.kind, snippet: s, severity: f.severity }); }
+    });
+
+    if (mode === 'custom') {
+      const noteEl = document.getElementById('e2e-custom-note');
+      const currentNote = noteEl ? noteEl.value : '';
+      const snippetChips = snippets.length
+        ? `<div class="mb-3">
+            <div class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">One-click additions to the note</div>
+            <div class="flex flex-wrap gap-1.5">
+              ${snippets.map(s => `<button onclick="insertSnippetInline(${JSON.stringify(s.snippet).replace(/"/g, '&quot;')})"
+                class="text-xs px-2.5 py-1.5 rounded-full border border-accent-cyan/40 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition text-left max-w-md truncate" title="${escapeHtml(s.snippet)}">
+                + ${escapeHtml(s.snippet.length > 60 ? s.snippet.slice(0, 57) + '…' : s.snippet)}
+              </button>`).join('')}
+            </div>
+          </div>`
+        : '';
+      return `<div class="bg-surface rounded-xl border border-accent-cyan/30 p-5 mt-4">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-2xl">🔁</span>
+          <div>
+            <div class="text-base font-bold text-slate-100">Adjust and re-run</div>
+            <div class="text-xs text-slate-400">Edit the note below to address the issues, then re-run the pipeline.</div>
+          </div>
+        </div>
+        ${snippetChips}
+        <label class="text-xs uppercase text-slate-500 mb-1 block">Clinical note (editable)</label>
+        <textarea id="e2e-rerun-note" rows="14"
+          class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono leading-relaxed">${escapeHtml(currentNote)}</textarea>
+        <div class="flex items-center gap-3 mt-3">
+          <button onclick="rerunWithEditedNote()"
+            class="px-5 py-2.5 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg hover:shadow-accent-blue/40 transition flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Re-run with my edits
+          </button>
+          <button onclick="resetIteration()" class="text-xs text-slate-400 hover:text-slate-200">Start over</button>
+        </div>
+      </div>`;
+    }
+
+    if (mode === 'demo') {
+      // Demo charts are server-side and we can't edit them — but the
+      // physician can layer a supplemental note on top. Offer that path.
+      return `<div class="bg-surface rounded-xl border border-amber-500/30 p-5 mt-4">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-2xl">🔁</span>
+          <div>
+            <div class="text-base font-bold text-slate-100">Strengthen this case</div>
+            <div class="text-xs text-slate-400">Demo charts are fixed. Switch to "Paste deidentified note" to add supplemental documentation, or pick a different patient/CPT and re-run.</div>
+          </div>
+        </div>
+        ${snippets.length ? `<div class="mb-3">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">What would help (paste into a note)</div>
+          <ul class="text-xs text-slate-300 space-y-1">
+            ${snippets.map(s => `<li class="flex gap-2"><span class="text-accent-cyan">+</span> <span class="italic">${escapeHtml(s.snippet)}</span></li>`).join('')}
+          </ul>
+        </div>` : ''}
+        <div class="flex items-center gap-3 mt-3">
+          <button onclick="switchToCustomMode()" class="px-4 py-2 rounded-lg border border-accent-cyan/40 bg-accent-cyan/10 text-accent-cyan text-sm hover:bg-accent-cyan/20 transition">
+            ⤴ Move to note mode (with suggestions pre-loaded)
+          </button>
+          <button onclick="runE2EDemo()" class="px-4 py-2 rounded-lg border border-surface-border bg-background text-slate-200 text-sm hover:border-slate-500 transition">
+            Re-run as-is
+          </button>
+        </div>
+      </div>`;
+    }
+
+    // PDF mode — fewer edit options, but offer rerun + suggestions.
+    return `<div class="bg-surface rounded-xl border border-amber-500/30 p-5 mt-4">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-2xl">🔁</span>
+        <div>
+          <div class="text-base font-bold text-slate-100">Adjust and re-run</div>
+          <div class="text-xs text-slate-400">PDFs aren't editable here. Re-export with the suggested additions or switch to note mode to paste corrections.</div>
+        </div>
+      </div>
+      ${snippets.length ? `<div class="mb-3">
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">What would help</div>
+        <ul class="text-xs text-slate-300 space-y-1">
+          ${snippets.map(s => `<li class="flex gap-2"><span class="text-accent-cyan">+</span> <span class="italic">${escapeHtml(s.snippet)}</span></li>`).join('')}
+        </ul>
+      </div>` : ''}
+      <button onclick="switchToCustomMode()" class="px-4 py-2 rounded-lg border border-accent-cyan/40 bg-accent-cyan/10 text-accent-cyan text-sm hover:bg-accent-cyan/20 transition">
+        ⤴ Move to note mode
+      </button>
+    </div>`;
+  }
+
+  // Inserts a suggested snippet at the end of the editable rerun textarea
+  // (preferred) or the original custom-note textarea (fallback).
+  window.insertSnippetInline = function(text) {
+    const target = document.getElementById('e2e-rerun-note') || document.getElementById('e2e-custom-note');
+    if (!target) return;
+    const sep = target.value && !target.value.endsWith('\n') ? '\n\n' : '';
+    target.value = target.value + sep + text;
+    target.focus();
+    target.scrollTop = target.scrollHeight;
+  };
+
+  // Issue-card variant — same behavior, kept under the older name to
+  // avoid breaking the per-issue button generated above.
+  window.insertSnippetIntoNote = window.insertSnippetInline;
+
+  // Re-runs the pipeline with the edited note. Re-uses the run path so
+  // attempt history accumulates across iterations.
+  window.rerunWithEditedNote = async function() {
+    const noteEl = document.getElementById('e2e-rerun-note');
+    if (!noteEl) return;
+    const newNote = noteEl.value.trim();
+    if (newNote.length < 50) { alert('Note is too short — keep the full encounter text.'); return; }
+    // Mirror the edit back into the original textarea so subsequent
+    // iterations stay in sync.
+    const orig = document.getElementById('e2e-custom-note');
+    if (orig) orig.value = newNote;
+    await runE2EDemo();
+  };
+
+  // Resets the attempt history (e.g., when starting a fundamentally
+  // different case). Doesn't clear the note — the physician may still
+  // want to keep it.
+  window.resetIteration = function() {
+    window._e2eState = { attempts: [] };
+    const summary = document.getElementById('e2e-summary');
+    if (summary) summary.innerHTML = '';
+    const timeline = document.getElementById('e2e-timeline');
+    if (timeline) timeline.innerHTML = '';
+  };
+
+  // From demo or PDF mode, pivot into note mode with suggestions
+  // pre-injected so the physician doesn't have to retype the case.
+  window.switchToCustomMode = function() {
+    setE2EMode('custom');
+    const state = window._e2eState || { attempts: [] };
+    const last = state.attempts[state.attempts.length - 1];
+    // No raw_note carried back from the server — the physician will need
+    // to paste the note text. Scroll to the textarea so it's obvious.
+    const noteEl = document.getElementById('e2e-custom-note');
+    if (noteEl) {
+      noteEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      noteEl.focus();
+    }
+  };
 
   function renderStepDetail(step) {
     // Per-agent bespoke renderers — structured, not raw JSON. Peter wants
@@ -1341,7 +1582,70 @@
     form_field_unsupported:           { what: "A form field is filled in but we can't trace where it came from",
                                         why:  "The value might be right, but if asked, we can't point to the source quote.",
                                         do:   "Glance at the field; if it matches the chart, you can accept it." },
+    safety_reasoner_missed_signal:    { what: "Independent re-read found a signal the AI didn't credit",
+                                        why:  "The note clearly documents this finding, but the AI returned not-met for the matching criterion. The verdict may be wrong.",
+                                        do:   "Make the finding more prominent in the note (move it to the top of the HPI or assessment) and re-run." },
+    safety_chart_extraction_gap:      { what: "A finding in the note didn't make it into the structured chart",
+                                        why:  "The chart extractor missed it. Downstream stages may have judged the case without this signal.",
+                                        do:   "Restate the finding using clinical language (e.g., 'ECG: LBBB' rather than buried prose) and re-run." },
+    safety_note_chart_cpt_mismatch:   { what: "The note and chart reference different CPT codes",
+                                        why:  "The submission would carry an inconsistent CPT across the package — payer would reject.",
+                                        do:   "Decide which CPT is correct, edit the note to match, and re-run." },
   };
+
+  // Concrete text the user can paste into the note to address each finding.
+  // Used by the "Adjust and re-run" panel to power one-click snippet inserts.
+  // Keep these short, clinical, and copy-paste-ready — physician will refine.
+  const SUGGESTED_SNIPPETS = {
+    missing_essential: (f) => {
+      const field = (f.related_field_keys || [])[0] || '';
+      const map = {
+        patient_name:        "Patient: [Name redacted, MRN on file]",
+        date_of_birth:       "DOB: [redacted — see chart header]",
+        insurance_id:        "Insurance: [Member ID on file]",
+        payer_name:          "Payer: [name on file]",
+        procedure_code:      "Requesting CPT [code]",
+        attending_physician: "Ordering: Dr. [name]",
+      };
+      return map[field] || "Add the required identifier to the note.";
+    },
+    safety_reasoner_missed_signal: (f) => {
+      const m = (f.message || '').match(/found ([^"]+) in the note \("([^"]+)"\)/);
+      const label = m ? m[1] : "the documented finding";
+      return `IMPORTANT — re-emphasize: ${label} is documented in this case (see HPI/ECG/exam). Please re-evaluate the relevant criterion.`;
+    },
+    safety_chart_extraction_gap: (f) => {
+      const m = (f.message || '').match(/found ([^"]+) in the note/);
+      const label = m ? m[1] : "the finding";
+      return `Clinical summary: ${label} present on this encounter.`;
+    },
+    safety_note_chart_cpt_mismatch: () =>
+      "CPT clarification: please confirm the requested code matches the procedure described above and update the note if needed.",
+    reasoner_low_score: () =>
+      "Additional clinical justification: [add documentation supporting the unmet criteria — e.g., prior imaging results, symptom progression, exercise capacity, comorbidities].",
+    reasoner_uncertain: () =>
+      "Borderline-case rationale: [briefly state why this procedure is the most appropriate next step despite mixed evidence].",
+    extraction_thin: () =>
+      "[Paste the full encounter note — HPI, ROS, exam, ECG, prior imaging, assessment & plan — so the extractor has enough signal.]",
+    cpt_attestation_vs_resolved: () =>
+      "CPT correction: this request is for CPT [resolved-code]. The narrative attestation should be updated to reference the same code.",
+    cpt_note_mismatch: () =>
+      "CPT correction: [decide which code is correct, then edit the order line and the cover paragraph to agree].",
+    procedure_name_drift: () =>
+      "Procedure-name correction: [restate the requested procedure consistently across the order, cover letter, and attestation].",
+    form_field_unsupported: (f) => {
+      const field = (f.related_field_keys || [])[0] || 'this field';
+      return `Clarification for ${field}: [paste the verbatim chart sentence that supports this answer].`;
+    },
+    alternative_modality: () =>
+      "Why this modality (not the alternative): [briefly state the clinical reason — e.g., prior nondiagnostic SPECT, attenuation artifact, BMI ≥ 35].",
+  };
+
+  function suggestedSnippetFor(finding) {
+    const fn = SUGGESTED_SNIPPETS[finding.kind];
+    if (!fn) return '';
+    try { return fn(finding) || ''; } catch (e) { return ''; }
+  }
 
   function plainLabel(kind) {
     return KIND_LABELS[kind] || {
@@ -1395,6 +1699,17 @@
       low:      'border-slate-500/30 bg-slate-500/5',
       info:     'border-slate-500/30 bg-slate-500/5',
     })[sev] || 'border-slate-500/30 bg-slate-500/5';
+    const snippet = suggestedSnippetFor(item);
+    const snippetBlock = snippet
+      ? `<div class="mt-2 rounded border border-accent-cyan/30 bg-accent-cyan/5 p-2">
+          <div class="text-xs uppercase tracking-wider text-accent-cyan/90 mb-1">Suggested addition to the note</div>
+          <div class="text-xs text-slate-200 italic mb-1.5">"${escapeHtml(snippet)}"</div>
+          <button onclick="insertSnippetIntoNote(${JSON.stringify(snippet).replace(/"/g, '&quot;')})"
+                  class="text-xs px-2 py-1 rounded bg-accent-cyan/15 text-accent-cyan border border-accent-cyan/40 hover:bg-accent-cyan/25 transition">
+            + Insert into note
+          </button>
+        </div>`
+      : '';
     return `<div class="rounded-lg border ${headerCls} p-3 mb-2">
       <div class="flex items-start justify-between gap-3 mb-2">
         <div class="text-sm font-semibold text-slate-200">${escapeHtml(labels.what)}</div>
@@ -1402,6 +1717,8 @@
       </div>
       <div class="text-xs text-slate-300 mb-1.5"><strong class="text-slate-400">Why it matters:</strong> ${escapeHtml(labels.why)}</div>
       <div class="text-xs text-slate-300 mb-1.5"><strong class="text-slate-400">What to do:</strong> ${escapeHtml(labels.do)}</div>
+      ${snippetBlock}
+      ${item.fix_suggestion ? `<div class="text-xs text-emerald-300 mt-1.5"><strong class="text-emerald-400">Fix:</strong> ${escapeHtml(item.fix_suggestion)}</div>` : ''}
       ${item.message ? `<details class="mt-1.5"><summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-400">System detail</summary>
         <div class="text-xs text-slate-400 mt-1 italic">${escapeHtml(item.message)}</div></details>` : ''}
     </div>`;
