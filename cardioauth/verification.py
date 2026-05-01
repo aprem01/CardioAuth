@@ -287,6 +287,54 @@ class EvidenceCompletenessChecker(Checker):
         return out
 
 
+class CriteriaMatchResolvedCPTChecker(Checker):
+    """Peter May rerun (Case 5): the reasoner evaluated PET-specific
+    logic against a SPECT case (CPT 78452). Every criterion code the
+    reasoner evaluated MUST be applicable to the resolved CPT per the
+    canonical taxonomy. If reasoner_summary lists criteria_evaluated
+    that don't apply to the resolved CPT, that's a high-severity
+    coherence failure.
+
+    Today reasoner_summary doesn't carry criteria_evaluated; this
+    checker is forward-compatible — it lights up the moment the
+    reasoner snapshot includes the list.
+    """
+
+    name = "criteria_match_resolved_cpt"
+
+    def check(self, packet: SubmissionPacket) -> list[Finding]:
+        from cardioauth.taxonomy.taxonomy import CRITERION_TAXONOMY
+
+        rs = packet.reasoner_summary or {}
+        evaluated = rs.get("criteria_evaluated") or []
+        resolved_cpt = (packet.resolved_cpt.cpt or "").strip()
+        if not evaluated or not resolved_cpt:
+            return []
+
+        misapplied: list[str] = []
+        for code in evaluated:
+            criterion = CRITERION_TAXONOMY.get(code)
+            if criterion is None:
+                continue
+            applies = criterion.applies_to or []
+            if applies and resolved_cpt not in applies:
+                misapplied.append(code)
+
+        if not misapplied:
+            return []
+
+        return [self._f(
+            kind="criteria_evaluated_outside_resolved_cpt",
+            severity="high",
+            message=(
+                f"Reasoner evaluated {len(misapplied)} criterion code(s) that "
+                f"don't apply to the resolved CPT {resolved_cpt} per the "
+                f"taxonomy: {', '.join(misapplied)}. The reasoner's verdict "
+                "may be reasoning over the wrong procedure family."
+            ),
+        )]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Pipeline
 # ──────────────────────────────────────────────────────────────────────
@@ -315,8 +363,9 @@ class VerificationPipeline:
 
 
 def default_pipeline() -> VerificationPipeline:
-    """Default checker composition — matches today's gate behavior +
-    EvidenceCompletenessChecker (new for Phase B.2)."""
+    """Default checker composition — runs every deterministic check
+    we've built. Order matters only for human-readable finding order;
+    findings are appended in pipeline order to packet.deterministic_findings."""
     return VerificationPipeline([
         EssentialsChecker(),
         ReasonerConfidenceChecker(),
@@ -324,6 +373,7 @@ def default_pipeline() -> VerificationPipeline:
         ExtractionConfidenceChecker(),
         CoherenceChecker(),
         EvidenceCompletenessChecker(),
+        CriteriaMatchResolvedCPTChecker(),
     ])
 
 

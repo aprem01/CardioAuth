@@ -422,6 +422,52 @@ def run_end_to_end_demo(
         )
     timeline.steps.append(t.finish())
 
+    # ── Phase 5a: Typed pipeline (verification + reviewer + freeze) ──
+    # May (Peter rerun): the typed VerificationPipeline + LLM reviewer were
+    # shipped as modules but not invoked by the runtime gate. The reviewer
+    # was silent on Cases 1 + 5 because it never ran. Now: build the typed
+    # SubmissionPacket up front, run deterministic checks, run the reviewer
+    # on held cases, and freeze the packet. The legacy decision logic below
+    # continues to drive the gate; it now also has access to typed findings.
+    typed_packet = None
+    typed_pipeline_findings = None
+    typed_reviewer_verdict = None
+    try:
+        from cardioauth.packet_archive import freeze_packet
+        from cardioauth.packet_builder import build_submission_packet
+        from cardioauth.payer_forms import get_payer_form
+        from cardioauth.reviewer import review_and_attach
+        from cardioauth.verification import default_pipeline
+
+        evidence_graph_for_packet = getattr(timeline, "evidence_graph", None)
+        if evidence_graph_for_packet is not None:
+            packet_form = get_payer_form(payer_name, procedure_code)
+            typed_packet = build_submission_packet(
+                case_id=case_id,
+                raw_note=raw_note or "",
+                chart=chart,
+                policy_data=policy_data,
+                reasoning=reasoning,
+                evidence_graph=evidence_graph_for_packet,
+                payer_form=packet_form,
+                payer=payer_name,
+                model_version=cfg.model,
+                form_schema_version=(
+                    f"{packet_form.payer}-{packet_form.vendor}-{packet_form.name}"
+                    if packet_form is not None else ""
+                ),
+            )
+            typed_pipeline_findings = default_pipeline().run(typed_packet)
+            typed_packet.add_findings(typed_pipeline_findings)
+            typed_reviewer_verdict = review_and_attach(typed_packet)
+            try:
+                freeze_packet(typed_packet)
+            except Exception as fe:
+                logger.warning("freeze_packet failed (continuing): %s", fe)
+            timeline.submission_packet = typed_packet  # type: ignore[attr-defined]
+    except Exception as pe:
+        logger.warning("Typed pipeline integration failed (continuing with legacy): %s", pe)
+
     # ── Step 5: Physician approval + submission gate ──
     # Apr 28 (Peter MVP-workflow email): mirror the real office process.
     # Hard-block ONLY on missing essentials (patient name, DOB, member ID,
@@ -499,6 +545,13 @@ def run_end_to_end_demo(
             "Submission cannot proceed without: " + ", ".join(critical_missing) + ". "
             "These are required by every payer and cannot be inferred."
         )
+        if typed_packet is not None:
+            typed_packet.set_decision("block", rationale=block_reason)
+            try:
+                from cardioauth.packet_archive import freeze_packet
+                freeze_packet(typed_packet)
+            except Exception:
+                pass
         detail = {
             "decision": "blocked",
             "reason": block_reason,
@@ -510,6 +563,14 @@ def run_end_to_end_demo(
             "alternative_modality": alternative_modality,
             "critical_fields_missing": critical_missing,
             "warnings": warnings,
+            "typed_pipeline_findings": (
+                [f.to_dict() for f in (typed_pipeline_findings or [])]
+                if typed_pipeline_findings is not None else []
+            ),
+            "reviewer_verdict": (
+                typed_reviewer_verdict.to_dict()
+                if typed_reviewer_verdict is not None else None
+            ),
             "blocking_gaps": [
                 (g.criterion.split(":")[0].strip() if hasattr(g, "criterion") else (g.get("code") or ""))
                 for g in (reasoning.criteria_not_met or [])
@@ -549,6 +610,41 @@ def run_end_to_end_demo(
             f"(reasoner: {label}, {score:.0%}){cap_note}"
         )
         decision = "approved"
+
+    # Augment the gate's detail with the typed pipeline + reviewer
+    # outputs so the UI can render the 9-question reviewer panel
+    # alongside the legacy warnings.
+    typed_findings_payload = (
+        [f.to_dict() for f in (typed_pipeline_findings or [])]
+        if typed_pipeline_findings is not None else []
+    )
+    reviewer_verdict_payload = (
+        typed_reviewer_verdict.to_dict()
+        if typed_reviewer_verdict is not None else None
+    )
+    typed_summary = None
+    if typed_packet is not None:
+        typed_summary = {
+            "case_id": typed_packet.case_id,
+            "resolved_cpt": typed_packet.resolved_cpt.to_dict(),
+            "form_field_count": len(typed_packet.form_fields),
+            "evidence_span_count": len(typed_packet.evidence_graph),
+            "narrative_cpt_referenced": typed_packet.narrative.cpt_referenced,
+            "narrative_procedure_referenced": typed_packet.narrative.procedure_referenced,
+            "deterministic_finding_count": len(typed_packet.deterministic_findings),
+        }
+    if typed_packet is not None:
+        # Sync the typed packet's decision so freeze_packet → replay reflects
+        # the gate's choice. Re-freeze post-gate to capture the decision.
+        typed_packet.set_decision(
+            decision if decision in ("approved", "held_for_review") else "hold_for_review",
+            rationale=result_msg,
+        )
+        try:
+            from cardioauth.packet_archive import freeze_packet
+            freeze_packet(typed_packet)
+        except Exception:
+            pass
     t.set_result(
         result_msg,
         detail={
@@ -563,6 +659,9 @@ def run_end_to_end_demo(
             "alternative_modality": alternative_modality,
             "warnings": warnings,
             "held_for_review": held_for_review,
+            "typed_pipeline_findings": typed_findings_payload,
+            "reviewer_verdict": reviewer_verdict_payload,
+            "submission_packet_summary": typed_summary,
         },
         status="fallback" if held_for_review else "ok",
     )

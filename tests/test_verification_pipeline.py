@@ -19,6 +19,7 @@ from cardioauth.verification import (
     AlternativeModalityChecker,
     Checker,
     CoherenceChecker,
+    CriteriaMatchResolvedCPTChecker,
     EssentialsChecker,
     EvidenceCompletenessChecker,
     ExtractionConfidenceChecker,
@@ -267,6 +268,60 @@ def test_coherence_emits_when_resolved_diverges_from_narrative() -> None:
     )
 
 
+# ── CriteriaMatchResolvedCPTChecker (Case 5 fix) ─────────────────────
+
+
+def test_criteria_match_silent_when_no_evaluated_list() -> None:
+    """When reasoner_summary doesn't carry criteria_evaluated, the
+    checker is forward-compatible — no findings."""
+    p = _empty_packet(reasoner_summary={"approval_score": 0.8})
+    assert CriteriaMatchResolvedCPTChecker().check(p) == []
+
+
+def test_criteria_match_silent_when_evaluated_apply() -> None:
+    """ECG-001 applies to 78492 — reasoner correctly evaluating it."""
+    p = _empty_packet(reasoner_summary={
+        "approval_score": 0.8,
+        "criteria_evaluated": ["ECG-001", "BMI-001"],
+    })
+    # default_pipeline ResolvedCPT is 78492 in fixture
+    out = CriteriaMatchResolvedCPTChecker().check(p)
+    assert out == []
+
+
+def test_criteria_match_flags_misapplied_codes_high() -> None:
+    """Peter Case 5: reasoner evaluated PET-only criterion (BMI-002) on
+    a SPECT case (78452). Must flag as high severity."""
+    p = _empty_packet(
+        resolved_cpt=ResolvedCPT(
+            cpt="78452", procedure="Cardiac SPECT", source="request",
+        ),
+        reasoner_summary={
+            "approval_score": 0.5,
+            "criteria_evaluated": ["BMI-002", "ECG-001"],
+        },
+    )
+    findings = CriteriaMatchResolvedCPTChecker().check(p)
+    kinds = {f.kind for f in findings}
+    assert "criteria_evaluated_outside_resolved_cpt" in kinds
+    msg = next(f.message for f in findings if f.kind == "criteria_evaluated_outside_resolved_cpt")
+    assert "BMI-002" in msg
+    assert "78452" in msg
+    sev = next(f.severity for f in findings if f.kind == "criteria_evaluated_outside_resolved_cpt")
+    assert sev == "high"
+
+
+def test_criteria_match_ignores_unknown_codes() -> None:
+    """Codes not in the taxonomy can't be evaluated against applies_to;
+    they're skipped, not falsely flagged."""
+    p = _empty_packet(reasoner_summary={
+        "approval_score": 0.8,
+        "criteria_evaluated": ["UNKNOWN-999", "ECG-001"],
+    })
+    out = CriteriaMatchResolvedCPTChecker().check(p)
+    assert out == []
+
+
 # ── VerificationPipeline ───────────────────────────────────────────────
 
 def test_pipeline_runs_each_checker_and_collects_findings() -> None:
@@ -301,12 +356,13 @@ def test_pipeline_isolates_failing_checker() -> None:
     assert any(f.kind == "reasoner_low_score" for f in findings)
 
 
-def test_default_pipeline_has_all_six_checkers() -> None:
+def test_default_pipeline_has_all_checkers() -> None:
     pipe = default_pipeline()
     names = {c.name for c in pipe.checkers}
     assert names == {
         "essentials", "reasoner_confidence", "alternative_modality",
         "extraction_confidence_cap", "coherence", "evidence_completeness",
+        "criteria_match_resolved_cpt",
     }
 
 
