@@ -623,6 +623,7 @@ def run_end_to_end_demo(
         if typed_reviewer_verdict is not None else None
     )
     typed_summary = None
+    safety_audit = None
     if typed_packet is not None:
         typed_summary = {
             "case_id": typed_packet.case_id,
@@ -633,6 +634,13 @@ def run_end_to_end_demo(
             "narrative_procedure_referenced": typed_packet.narrative.procedure_referenced,
             "deterministic_finding_count": len(typed_packet.deterministic_findings),
         }
+        # The SafetyVerifierChecker stashes its audit log on
+        # packet.reasoner_summary._safety_audit. Lift it onto
+        # typed_summary so the UI can render the "what was checked" panel.
+        rs = typed_packet.reasoner_summary or {}
+        if "_safety_audit" in rs:
+            safety_audit = rs["_safety_audit"]
+            typed_summary["_safety_audit"] = safety_audit
     if typed_packet is not None:
         # Sync the typed packet's decision so freeze_packet → replay reflects
         # the gate's choice. Re-freeze post-gate to capture the decision.

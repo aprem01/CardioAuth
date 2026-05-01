@@ -287,6 +287,108 @@ class EvidenceCompletenessChecker(Checker):
         return out
 
 
+class SafetyVerifierChecker(Checker):
+    """Independent safety-verification layer (Peter's aviation-style
+    safety system). Runs the rule-based fact extractor against the
+    raw note INDEPENDENTLY of the primary path, then cross-checks
+    each fact against the chart and the reasoner verdict.
+
+    Disagreements between the independent path and the primary path
+    are high-confidence signals that something went wrong upstream:
+      - Note has LBBB + chart has LBBB + reasoner says ECG-001 not_met
+        → reasoner missed signal that's clearly there.
+      - Note has LBBB + chart has no LBBB
+        → chart extractor missed signal.
+      - Note CPT differs from chart CPT (already caught by
+        cpt_resolver, but the audit log surfaces the comparison).
+
+    The audit_log is attached to the FIRST emitted finding via the
+    fix_suggestion field as serialized JSON, so the UI can render
+    the full "what was checked" panel even when no findings fire.
+    Phase D: a structured audit attribute on the packet.
+    """
+
+    name = "safety_verifier"
+
+    def check(self, packet: SubmissionPacket) -> list[Finding]:
+        from cardioauth.safety_verifier import run_safety_verification
+        import json
+
+        try:
+            audit = run_safety_verification(
+                raw_note=packet.raw_note or "",
+                chart_data=packet.chart_data or {},
+                reasoner_summary=packet.reasoner_summary or {},
+                resolved_cpt=packet.resolved_cpt.cpt or "",
+            )
+        except Exception as e:
+            logger.warning("Safety verifier failed (continuing): %s", e)
+            return []
+
+        # Stash audit log on the packet for the UI to render even when
+        # no findings fire ("what was checked" panel).
+        try:
+            packet.reasoner_summary = {
+                **(packet.reasoner_summary or {}),
+                "_safety_audit": audit.to_dict(),
+            }
+        except Exception:
+            pass
+
+        findings: list[Finding] = []
+        for cmp in audit.comparisons:
+            if not cmp.fact.present:
+                continue
+            # Reasoner-missed-signal: note has it, criterion was evaluated
+            # but came back not_met. High severity: the reasoner output is
+            # likely wrong on this case.
+            if cmp.relevant_criteria and cmp.criterion_met_by_reasoner is False:
+                findings.append(self._f(
+                    kind="safety_reasoner_missed_signal",
+                    severity="high",
+                    message=(
+                        f"Independent verification found {cmp.fact.label} in the "
+                        f"note (\"{cmp.fact.quote[:120].strip()}\"), and the chart "
+                        f"{'also captured it' if cmp.present_in_chart else 'did NOT capture it'}, "
+                        f"but the reasoner returned not_met for criterion(s) "
+                        f"{', '.join(cmp.relevant_criteria)}. The reasoner verdict "
+                        "is likely wrong on this case."
+                    ),
+                    auto_fixable=False,
+                ))
+            # Chart-extraction-missed: note has it, chart doesn't. Even if
+            # the criterion didn't apply or wasn't evaluated, this is a
+            # silent extraction loss the office should know about.
+            if cmp.fact.present and not cmp.present_in_chart and cmp.relevant_criteria:
+                findings.append(self._f(
+                    kind="safety_chart_extraction_gap",
+                    severity="medium",
+                    message=(
+                        f"Independent verification found {cmp.fact.label} in the "
+                        f"note (\"{cmp.fact.quote[:120].strip()}\"), but the chart "
+                        f"extractor did not capture it. Downstream stages may have "
+                        "judged the case without this signal."
+                    ),
+                ))
+
+        # CPT mismatch between note and chart — cpt_resolver may already
+        # have flagged this; the safety verifier flags it again with the
+        # specific verbatim quote so the UI can show context.
+        if audit.note_chart_cpt_mismatch:
+            findings.append(self._f(
+                kind="safety_note_chart_cpt_mismatch",
+                severity="high",
+                message=(
+                    f"Independent verification: the note references CPT "
+                    f"{', '.join(audit.cpts_in_note)} but the chart's "
+                    f"procedure_code is {audit.cpt_in_chart}. The submission "
+                    "would carry an inconsistent CPT across the package."
+                ),
+            ))
+
+        return findings
+
+
 class CriteriaMatchResolvedCPTChecker(Checker):
     """Peter May rerun (Case 5): the reasoner evaluated PET-specific
     logic against a SPECT case (CPT 78452). Every criterion code the
@@ -374,6 +476,7 @@ def default_pipeline() -> VerificationPipeline:
         CoherenceChecker(),
         EvidenceCompletenessChecker(),
         CriteriaMatchResolvedCPTChecker(),
+        SafetyVerifierChecker(),
     ])
 
 

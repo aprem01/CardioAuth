@@ -1288,85 +1288,302 @@
     </details>`;
   }
 
+  // ─────────────────────── Plain-language helpers ───────────────────────
+  // Translate every internal "kind" string into a 10th-grade-readable
+  // headline + explanation + suggested action. The audit-details
+  // expandable still surfaces the raw kind for clinicians who want it.
+  const KIND_LABELS = {
+    missing_essential:                { what: "A required field is empty",
+                                        why:  "The payer always rejects packages without this. We can't submit until it's filled in.",
+                                        do:   "Fill in the field and try again." },
+    reasoner_low_confidence:          { what: "The AI thinks this case won't get approved",
+                                        why:  "Documentation may not support the procedure under the payer's rules.",
+                                        do:   "Review the criterion gaps below before sending. Strengthen the chart or pivot to a different procedure." },
+    reasoner_low_score:               { what: "The AI's approval score is low",
+                                        why:  "Several supporting criteria look weak or missing.",
+                                        do:   "Walk through the not-met criteria; add documentation if you can." },
+    reasoner_uncertain:               { what: "The AI isn't confident either way",
+                                        why:  "The case is borderline — could go either way.",
+                                        do:   "A physician should look at this one personally before submitting." },
+    alternative_modality:             { what: "A different test might fit better",
+                                        why:  "The clinical picture suggests another modality is more likely to be approved.",
+                                        do:   "Consider the suggested alternative — or keep going with what was ordered if you have a reason." },
+    extraction_thin:                  { what: "We couldn't read the chart very confidently",
+                                        why:  "The note was short or unusual. The AI's certainty was reduced as a precaution.",
+                                        do:   "Make sure the chart looks complete; if it does, you can proceed." },
+    cpt_note_mismatch:                { what: "The note orders a different code than was requested",
+                                        why:  "The form, attestation, and submission would say different things — payers reject these.",
+                                        do:   "Decide which code is correct and update the order before submitting." },
+    cpt_attestation_mismatch:         { what: "The attestation references a different code than the form",
+                                        why:  "Internal inconsistency. A reviewer at the payer would flag this.",
+                                        do:   "Fix the attestation so the CPT matches the form." },
+    cpt_attestation_vs_resolved:      { what: "The narrative mentions a different code than we resolved",
+                                        why:  "The form is built for one code; the cover letter says another. Internal contradiction.",
+                                        do:   "Update the attestation to match the resolved CPT, or fix the resolved CPT if the attestation is right." },
+    procedure_name_drift:             { what: "The narrative talks about a different procedure",
+                                        why:  "Form says one thing, paragraph says another. Looks sloppy to a reviewer.",
+                                        do:   "Make sure the cover letter is about the procedure you're actually requesting." },
+    cpt_minor_variant:                { what: "Same family of test, slightly different code",
+                                        why:  "Like single-study vs multiple-study PET. Not a clinical issue but the codes need to match.",
+                                        do:   "Confirm which billing code is right before sending." },
+    cpt_family_mismatch:              { what: "Different procedure family than what the note ordered",
+                                        why:  "PET vs SPECT, cath vs CT — these are different procedures. Submitting the wrong one would be denied.",
+                                        do:   "Stop and confirm which procedure you intended." },
+    cpt_alternative_modality:         { what: "AI suggests a different procedure",
+                                        why:  "Based on the chart, another modality may have a higher approval chance.",
+                                        do:   "Advisory — not blocking. Keep the original or pivot, your call." },
+    cpt_reasoner_supports_note:       { what: "AI agrees with what the note ordered (different from request)",
+                                        why:  "The order, the chart, and the AI all point at the same alternative — strong signal.",
+                                        do:   "Consider switching the request to match." },
+    criteria_evaluated_outside_resolved_cpt: { what: "The AI used the wrong rules for this procedure",
+                                        why:  "The CPT says SPECT but the AI judged it like a PET case. The score may be wrong.",
+                                        do:   "Stop — the AI's verdict isn't trustworthy for this case." },
+    form_field_unsupported:           { what: "A form field is filled in but we can't trace where it came from",
+                                        why:  "The value might be right, but if asked, we can't point to the source quote.",
+                                        do:   "Glance at the field; if it matches the chart, you can accept it." },
+  };
+
+  function plainLabel(kind) {
+    return KIND_LABELS[kind] || {
+      what: kind ? kind.replace(/_/g, " ") : "Issue flagged",
+      why:  "The system flagged this as worth a look.",
+      do:   "Review the details below and decide.",
+    };
+  }
+
+  // Severity → traffic-light style. Plain words + emoji for scanability.
+  function severityChip(sev) {
+    const map = {
+      blocking: { label: "STOP", emoji: "🛑", cls: "bg-red-500/15 text-red-300 border-red-500/40" },
+      high:     { label: "Important", emoji: "🔴", cls: "bg-red-500/10 text-red-300 border-red-500/30" },
+      medium:   { label: "Review",    emoji: "🟡", cls: "bg-amber-500/10 text-amber-300 border-amber-500/30" },
+      low:      { label: "Heads-up",  emoji: "🔵", cls: "bg-slate-500/10 text-slate-300 border-slate-500/30" },
+      info:     { label: "FYI",       emoji: "ℹ️", cls: "bg-slate-500/10 text-slate-400 border-slate-500/30" },
+    };
+    const m = map[sev] || map.info;
+    return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-medium ${m.cls}">${m.emoji} ${m.label}</span>`;
+  }
+
+  // The big headline banner. One sentence, top of the panel.
+  function decisionBanner(decision, heldForReview) {
+    if (decision === 'blocked') {
+      return `<div class="rounded-lg p-4 mb-3 bg-red-500/10 border border-red-500/40">
+        <div class="flex items-center gap-2"><span class="text-2xl">🛑</span>
+          <div><div class="text-base font-bold text-red-300">Stop — fix this before sending</div>
+          <div class="text-xs text-red-200/80">Required information is missing. We can't submit yet.</div></div></div></div>`;
+    }
+    if (decision === 'deferred' || heldForReview) {
+      return `<div class="rounded-lg p-4 mb-3 bg-amber-500/10 border border-amber-500/40">
+        <div class="flex items-center gap-2"><span class="text-2xl">🟡</span>
+          <div><div class="text-base font-bold text-amber-300">Needs your review before sending</div>
+          <div class="text-xs text-amber-200/80">The package is built. A few things look worth a second look — see below.</div></div></div></div>`;
+    }
+    return `<div class="rounded-lg p-4 mb-3 bg-emerald-500/10 border border-emerald-500/40">
+      <div class="flex items-center gap-2"><span class="text-2xl">✅</span>
+        <div><div class="text-base font-bold text-emerald-300">Looks good to send</div>
+        <div class="text-xs text-emerald-200/80">No major issues found. The submission package is ready.</div></div></div></div>`;
+  }
+
+  // One issue card — "WHAT / WHY / WHAT TO DO" pattern, plain English.
+  function issueCard(item) {
+    const labels = plainLabel(item.kind);
+    const sev = item.severity || 'medium';
+    const headerCls = ({
+      blocking: 'border-red-500/40 bg-red-500/5',
+      high:     'border-red-500/30 bg-red-500/5',
+      medium:   'border-amber-500/30 bg-amber-500/5',
+      low:      'border-slate-500/30 bg-slate-500/5',
+      info:     'border-slate-500/30 bg-slate-500/5',
+    })[sev] || 'border-slate-500/30 bg-slate-500/5';
+    return `<div class="rounded-lg border ${headerCls} p-3 mb-2">
+      <div class="flex items-start justify-between gap-3 mb-2">
+        <div class="text-sm font-semibold text-slate-200">${escapeHtml(labels.what)}</div>
+        ${severityChip(sev)}
+      </div>
+      <div class="text-xs text-slate-300 mb-1.5"><strong class="text-slate-400">Why it matters:</strong> ${escapeHtml(labels.why)}</div>
+      <div class="text-xs text-slate-300 mb-1.5"><strong class="text-slate-400">What to do:</strong> ${escapeHtml(labels.do)}</div>
+      ${item.message ? `<details class="mt-1.5"><summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-400">System detail</summary>
+        <div class="text-xs text-slate-400 mt-1 italic">${escapeHtml(item.message)}</div></details>` : ''}
+    </div>`;
+  }
+
+  // Renders the 9-question reviewer panel as a clean checklist.
+  function reviewerChecklist(verdict) {
+    if (!verdict) return '';
+    const QUESTIONS = [
+      ['q1', 'Are all required fields filled in?'],
+      ['q2', 'Does the procedure match across the form, the note, and the request?'],
+      ['q3', 'If something doesn\'t match, did the system flag it (instead of silently fixing it)?'],
+      ['q4', 'Can each form answer be traced back to the chart or note?'],
+      ['q5', 'Is the original wording preserved next to the cleaned-up payer answer?'],
+      ['q6', 'Did the system catch any contradictions across the package?'],
+      ['q7', 'Are alternative-procedure suggestions advisory (not silently changing the order)?'],
+      ['q8', 'Are manual sign-offs clearly marked for human confirmation?'],
+      ['q9', 'Would this look professional and complete to a payer reviewer?'],
+    ];
+    const fpq = verdict.findings_per_question || {};
+    const recBadge = ({
+      transmit: '<span class="px-2 py-0.5 rounded text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">Send it</span>',
+      hold:     '<span class="px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40">Hold for review</span>',
+      block:    '<span class="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-300 border border-red-500/40">Block</span>',
+    })[verdict.overall_recommendation] || '';
+    const passEmoji = verdict.passed ? '✅' : '⚠️';
+    const skipped = (verdict.rationale || '').toLowerCase().includes('skipped');
+
+    return `<div class="rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-4 mb-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-bold text-indigo-300">AI Reviewer's checklist ${passEmoji}</div>
+        ${recBadge}
+      </div>
+      ${verdict.rationale ? `<p class="text-xs text-indigo-200/90 mb-3 italic">"${escapeHtml(verdict.rationale)}"</p>` : ''}
+      ${skipped ? `<div class="text-xs text-slate-400 italic">The full checklist runs only when the deterministic checks flag something. This case looked clean enough that we skipped the AI review.</div>` :
+      `<ul class="space-y-1">
+        ${QUESTIONS.map(([qid, text]) => {
+          const findings = fpq[qid] || [];
+          const hasIssue = findings.length > 0;
+          const icon = hasIssue ? '⚠️' : '✓';
+          const color = hasIssue ? 'text-amber-300' : 'text-emerald-400';
+          return `<li class="text-xs ${color} flex items-start gap-2">
+            <span class="font-mono w-4">${icon}</span>
+            <span class="flex-1 text-slate-300">${escapeHtml(text)}</span>
+          </li>${hasIssue ? findings.map(f => `<li class="ml-7 text-xs text-slate-400 italic mb-1">↳ ${escapeHtml(f.message || '')}</li>`).join('') : ''}`;
+        }).join('')}
+      </ul>`}
+      ${verdict.cost_input_tokens ? `<div class="mt-3 pt-2 border-t border-indigo-500/20 text-xs text-slate-500">
+        Reviewed by ${escapeHtml(verdict.model || 'AI')} · ${verdict.cost_input_tokens + verdict.cost_output_tokens} tokens · ${verdict.duration_ms}ms
+      </div>` : ''}
+    </div>`;
+  }
+
+  function safetyAuditPanel(packetSummary, reviewerVerdict) {
+    // The safety audit log is stashed on reasoner_summary._safety_audit
+    // by the SafetyVerifierChecker. The packet summary here may not
+    // carry it directly — we look it up in the reviewer verdict's
+    // findings, deterministic findings, or skip if absent.
+    const audit = (packetSummary && packetSummary._safety_audit)
+      || (reviewerVerdict && reviewerVerdict._safety_audit);
+    if (!audit || !audit.comparisons || !audit.comparisons.length) return '';
+
+    const stageBadge = (state) => {
+      // state is "yes" | "no" | "n/a"
+      if (state === 'yes')  return '<span class="text-emerald-400 font-bold">✓ yes</span>';
+      if (state === 'no')   return '<span class="text-red-400 font-bold">✗ no</span>';
+      return '<span class="text-slate-500 italic">n/a</span>';
+    };
+
+    const rows = audit.comparisons.map(cmp => {
+      const noteState  = cmp.fact.present ? 'yes' : 'no';
+      const chartState = cmp.fact.present
+        ? (cmp.present_in_chart ? 'yes' : 'no')
+        : 'n/a';
+      const reasonerState = cmp.criterion_met_by_reasoner === true ? 'yes'
+                          : cmp.criterion_met_by_reasoner === false ? 'no'
+                          : 'n/a';
+      const isReasonerMissed = cmp.fact.present && cmp.criterion_met_by_reasoner === false;
+      const isChartMissed = cmp.fact.present && !cmp.present_in_chart;
+      const rowCls = isReasonerMissed ? 'bg-red-500/5 border-l-2 border-red-500/40'
+                   : isChartMissed ? 'bg-amber-500/5 border-l-2 border-amber-500/40'
+                   : '';
+      return `<tr class="${rowCls} border-b border-slate-700/30">
+        <td class="py-1.5 px-2 text-slate-300">${escapeHtml(cmp.fact.label)}</td>
+        <td class="py-1.5 px-2 text-center">${stageBadge(noteState)}</td>
+        <td class="py-1.5 px-2 text-center">${stageBadge(chartState)}</td>
+        <td class="py-1.5 px-2 text-center">${stageBadge(reasonerState)}</td>
+        <td class="py-1.5 px-2 text-xs text-slate-500 italic">${cmp.fact.quote ? '"'+escapeHtml(cmp.fact.quote.slice(0, 80))+(cmp.fact.quote.length > 80 ? '...' : '')+'"' : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    const cptLine = audit.cpts_in_note && audit.cpts_in_note.length
+      ? `<div class="text-xs ${audit.note_chart_cpt_mismatch ? 'text-red-300' : 'text-slate-400'} mt-2">
+          ${audit.note_chart_cpt_mismatch ? '⚠️' : '✓'} CPT cross-check:
+          note mentions ${audit.cpts_in_note.map(c => '<code>'+escapeHtml(c)+'</code>').join(', ')},
+          chart says <code>${escapeHtml(audit.cpt_in_chart)}</code>${audit.note_chart_cpt_mismatch ? ' — <strong>mismatch</strong>' : ''}
+        </div>`
+      : '';
+
+    return `<div class="rounded-lg border border-slate-600/40 bg-slate-800/30 p-4 mb-3">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-xl">🛡️</span>
+        <div>
+          <div class="text-sm font-bold text-slate-200">Safety check audit trail</div>
+          <div class="text-xs text-slate-400">Independent re-read of the note (no AI) — does each pipeline stage agree?</div>
+        </div>
+      </div>
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="border-b border-slate-700 text-slate-500 uppercase tracking-wider">
+            <th class="text-left py-1.5 px-2">What we looked for</th>
+            <th class="text-center py-1.5 px-2">In note?</th>
+            <th class="text-center py-1.5 px-2">Chart got it?</th>
+            <th class="text-center py-1.5 px-2">AI scored it?</th>
+            <th class="text-left py-1.5 px-2">Quote</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${cptLine}
+      <div class="mt-3 text-xs text-slate-500 italic">
+        Rows highlighted in red mean the AI missed signal that's in the note. Yellow means the chart extractor missed it.
+      </div>
+    </div>`;
+  }
+
   function renderPhysicianDetail(d) {
     if (!d) return '';
     const alt = d.alternative_modality;
-    const capLine = d.approval_score_capped_by_extraction
-      ? `<div class="text-xs text-amber-300/90">Note: reasoner score capped from ${(((d.approval_score_raw)||0)*100).toFixed(0)}% to ${((d.approval_score||0)*100).toFixed(0)}% by extraction confidence ${((d.chart_confidence||0)*100).toFixed(0)}%.</div>`
-      : '';
+    const heldForReview = !!d.held_for_review || d.decision === 'deferred';
+    const isBlocked = d.decision === 'blocked';
 
-    const warningSeverityClass = (sev) => ({
-      high:   'text-red-300 border-red-500/40 bg-red-500/5',
-      medium: 'text-amber-300 border-amber-500/40 bg-amber-500/5',
-      low:    'text-slate-300 border-slate-500/40 bg-slate-500/5',
-    }[sev] || 'text-slate-300 border-slate-500/40 bg-slate-500/5');
-    const warningsBlock = (warnings) => {
-      if (!warnings || !warnings.length) return '';
-      return `<div><p class="text-xs font-semibold text-indigo-300 uppercase mb-1">Warnings (${warnings.length})</p>
-        <ul class="space-y-1">
-          ${warnings.map(w => `<li class="text-xs px-2 py-1 rounded border ${warningSeverityClass(w.severity)}"><strong>[${escapeHtml(w.severity || 'info')}]</strong> ${escapeHtml(w.message || '')}</li>`).join('')}
-        </ul></div>`;
-    };
+    // Combine all issue sources into one list, plain-language sorted by severity
+    const SEV_RANK = { blocking: 5, high: 4, medium: 3, low: 2, info: 1 };
+    const items = [];
+    (d.warnings || []).forEach(w => items.push(w));
+    (d.typed_pipeline_findings || []).forEach(f => items.push(f));
+    (d.critical_fields_missing || []).forEach(field => items.push({
+      kind: 'missing_essential', severity: 'blocking', message: `Field: ${field}`,
+    }));
+    items.sort((a, b) => (SEV_RANK[b.severity] || 0) - (SEV_RANK[a.severity] || 0));
+    // Dedupe by (kind + message) — typed_pipeline_findings often duplicates legacy warnings
+    const seen = new Set();
+    const unique = items.filter(it => {
+      const key = (it.kind || '') + '|' + (it.message || '');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
-    if (d.held_for_review) {
-      return `<details class="mt-2" open>
-        <summary class="text-xs cursor-pointer text-indigo-400 hover:text-indigo-300">HELD FOR REVIEW — submission package built, awaiting decision</summary>
-        <div class="mt-2 bg-indigo-500/5 border border-indigo-500/30 rounded p-3 text-xs space-y-2">
-          <p class="text-indigo-300">Essential identification fields are present, but the system flagged warnings the physician/back office should review before submitting. The submission package is built and ready — accept the warnings to submit, or fix the underlying gaps and resubmit.</p>
-          ${capLine}
-          ${warningsBlock(d.warnings)}
-          ${alt ? `<div class="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
-            <p class="text-xs font-semibold text-amber-300 uppercase mb-1">Possible alternative modality</p>
-            <p class="text-sm text-amber-200"><strong>${escapeHtml(alt.name)}</strong> (CPT ${escapeHtml(alt.cpt)})</p>
-            <p class="text-xs text-amber-300/80 mt-1">${escapeHtml(alt.rationale || '')}</p>
-          </div>` : ''}
-        </div>
-      </details>`;
-    }
+    const altCard = alt ? `<div class="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 mb-3">
+      <div class="text-sm font-bold text-amber-300 mb-1">💡 Different procedure may fit better</div>
+      <div class="text-sm text-amber-200">Try: <strong>${escapeHtml(alt.name)}</strong> (CPT ${escapeHtml(alt.cpt)})</div>
+      <div class="text-xs text-amber-200/80 mt-1">${escapeHtml(alt.rationale || '')}</div>
+    </div>` : '';
 
-    if (d.decision === 'deferred') {
-      return `<details class="mt-2" open>
-        <summary class="text-xs cursor-pointer text-indigo-400 hover:text-indigo-300">Submission DEFERRED — physician review required</summary>
-        <div class="mt-2 bg-indigo-500/5 border border-indigo-500/30 rounded p-3 text-xs space-y-2">
-          <p class="text-indigo-300">${escapeHtml(d.reason || '')}</p>
-          ${capLine}
-          ${(d.blocking_gaps || []).length ? `<div><p class="text-xs font-semibold text-indigo-300 uppercase mb-1">Criteria not met</p><ul class="text-xs text-indigo-200/80 ml-3">${(d.blocking_gaps || []).slice(0,5).map(g => '<li>'+escapeHtml(String(g))+'</li>').join('')}</ul></div>` : ''}
-          ${alt ? `<div class="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
-            <p class="text-xs font-semibold text-amber-300 uppercase mb-1">Possible alternative</p>
-            <p class="text-sm text-amber-200"><strong>${escapeHtml(alt.name)}</strong> (CPT ${escapeHtml(alt.cpt)})</p>
-            <p class="text-xs text-amber-300/80 mt-1">${escapeHtml(alt.rationale)}</p>
-          </div>` : ''}
-        </div>
-      </details>`;
-    }
-
-    if (d.decision === 'blocked') {
-      return `<details class="mt-2" open>
-        <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Submission BLOCKED</summary>
-        <div class="mt-2 bg-red-500/5 border border-red-500/30 rounded p-3 text-xs space-y-2">
-          <p class="text-red-300">${escapeHtml(d.reason || '')}</p>
-          ${capLine}
-          ${(d.critical_fields_missing || []).length ? `<div><p class="text-xs font-semibold text-red-400 uppercase mb-1">Critical fields missing</p><ul class="text-xs text-red-300 ml-3">${(d.critical_fields_missing || []).map(g => '<li>'+escapeHtml(String(g))+'</li>').join('')}</ul></div>` : ''}
-          ${(d.blocking_gaps || []).length ? `<div><p class="text-xs font-semibold text-red-400 uppercase mb-1">Top blocking gaps</p><ul class="text-xs text-red-300 ml-3">${(d.blocking_gaps || []).slice(0,5).map(g => '<li>'+escapeHtml(String(g))+'</li>').join('')}</ul></div>` : ''}
-          ${alt ? `<div class="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
-            <p class="text-xs font-semibold text-amber-300 uppercase mb-1">Suggested alternative</p>
-            <p class="text-sm text-amber-200"><strong>${escapeHtml(alt.name)}</strong> (CPT ${escapeHtml(alt.cpt)})</p>
-            <p class="text-xs text-amber-300/80 mt-1">${escapeHtml(alt.rationale)}</p>
-          </div>` : ''}
-        </div>
-      </details>`;
-    }
-    return `<details class="mt-2">
-      <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Physician decision</summary>
-      <div class="mt-2 bg-background rounded p-3 text-xs space-y-1">
-        <div><span class="text-slate-500">Decision:</span> <span class="text-emerald-300">${escapeHtml(d.decision || 'approved')}</span></div>
-        <div><span class="text-slate-500">Approved by:</span> ${escapeHtml(d.approved_by || '')}</div>
-        <div><span class="text-slate-500">At:</span> <span class="font-mono">${escapeHtml(d.approved_at || '')}</span></div>
-        ${d.approval_label ? `<div><span class="text-slate-500">Reasoner verdict:</span> ${escapeHtml(d.approval_label)} (${((d.approval_score || 0)*100).toFixed(0)}%)</div>` : ''}
-        ${capLine}
-        ${warningsBlock(d.warnings)}
+    const auditDetails = `<details class="mt-3">
+      <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-400">Audit details (for clinicians and auditors)</summary>
+      <div class="mt-2 bg-background rounded p-3 text-xs space-y-1 text-slate-400">
+        <div><span class="text-slate-500">Decision:</span> ${escapeHtml(d.decision || '')}</div>
+        ${d.approved_by ? `<div><span class="text-slate-500">Approved by:</span> ${escapeHtml(d.approved_by)}</div>` : ''}
+        ${d.approved_at ? `<div><span class="text-slate-500">At:</span> <span class="font-mono">${escapeHtml(d.approved_at)}</span></div>` : ''}
+        ${d.approval_label ? `<div><span class="text-slate-500">Reasoner verdict:</span> ${escapeHtml(d.approval_label)} · score ${((d.approval_score || 0)*100).toFixed(0)}%${d.approval_score_capped_by_extraction ? ` (capped from ${((d.approval_score_raw||0)*100).toFixed(0)}% by extraction confidence ${((d.chart_confidence||0)*100).toFixed(0)}%)` : ''}</div>` : ''}
+        ${d.reason ? `<div><span class="text-slate-500">Reason:</span> ${escapeHtml(d.reason)}</div>` : ''}
+        ${d.submission_packet_summary ? `<div class="pt-1 border-t border-slate-700/50"><span class="text-slate-500">Packet:</span> case ${escapeHtml(d.submission_packet_summary.case_id || '')} · resolved CPT ${escapeHtml((d.submission_packet_summary.resolved_cpt || {}).cpt || '')} · ${d.submission_packet_summary.form_field_count} fields · ${d.submission_packet_summary.evidence_span_count} evidence spans · ${d.submission_packet_summary.deterministic_finding_count} findings</div>` : ''}
+        ${(d.blocking_gaps || []).length ? `<div><span class="text-slate-500">Blocking criteria gaps:</span> ${(d.blocking_gaps || []).map(g => escapeHtml(String(g))).join(', ')}</div>` : ''}
       </div>
     </details>`;
+
+    const issueList = unique.length === 0
+      ? '<div class="text-xs text-slate-500 italic mb-2">Nothing flagged.</div>'
+      : `<div class="mb-2"><div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Things to look at (${unique.length})</div>
+         ${unique.map(issueCard).join('')}</div>`;
+
+    return `<div class="mt-2">
+      ${decisionBanner(d.decision, heldForReview)}
+      ${safetyAuditPanel(d.submission_packet_summary, d.reviewer_verdict)}
+      ${reviewerChecklist(d.reviewer_verdict)}
+      ${altCard}
+      ${issueList}
+      ${auditDetails}
+    </div>`;
   }
 
   function renderPayerFormDetail(d) {

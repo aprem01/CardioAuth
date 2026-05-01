@@ -362,7 +362,7 @@ def test_default_pipeline_has_all_checkers() -> None:
     assert names == {
         "essentials", "reasoner_confidence", "alternative_modality",
         "extraction_confidence_cap", "coherence", "evidence_completeness",
-        "criteria_match_resolved_cpt",
+        "criteria_match_resolved_cpt", "safety_verifier",
     }
 
 
