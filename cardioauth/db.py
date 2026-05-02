@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -365,17 +366,83 @@ def purge_old_data() -> dict:
 # ────────────────────────────────────────────────────────────────────────
 
 
-def is_db_available() -> bool:
-    """Check if the database is reachable."""
+# Circuit breaker: when the DB is unreachable, every request shouldn't pay
+# the connection-timeout cost (~500-800ms in production) and shouldn't spam
+# the logs. Cache the availability check; on failure, mark the DB
+# unavailable for FAILURE_TTL seconds and short-circuit further checks
+# until the window expires. On the first re-check after the window, log
+# the single WARNING and probe again — so the app picks up a restored DB
+# without needing a restart.
+_DB_AVAILABILITY_CACHE: dict = {
+    "last_check": 0.0,
+    "available": None,        # None = never checked
+    "fail_logged": False,     # don't re-log the same failure within the window
+}
+_SUCCESS_TTL = 30.0           # cache success for 30s; cheap re-check after
+_FAILURE_TTL = 60.0           # cache failure for 60s; longer to suppress spam
+_DSN_NOT_SET_LOGGED = False
+
+
+def _connection_probe() -> tuple[bool, str]:
+    """Single probe attempt. Returns (ok, error_message). Never logs."""
     if not DATABASE_URL:
-        logger.warning("DB: DATABASE_URL not set")
-        return False
+        return False, "DATABASE_URL not set"
     try:
-        conn = _get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        conn.close()
-        return True
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=3)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+        finally:
+            conn.close()
+        return True, ""
     except Exception as e:
-        logger.warning("DB connection failed: %s: %s", type(e).__name__, str(e)[:200])
+        return False, f"{type(e).__name__}: {str(e)[:200]}"
+
+
+def is_db_available() -> bool:
+    """Check if the database is reachable.
+
+    Caches the result with a short TTL so a broken DB doesn't burn
+    ~500-800ms per request on connection-timeout, and so the WARNING is
+    logged once per failure window instead of per request. The app
+    automatically re-probes after the window expires, so a fixed
+    DATABASE_URL takes effect without a restart (max one TTL of latency).
+    """
+    global _DSN_NOT_SET_LOGGED
+    now = time.time()
+    cache = _DB_AVAILABILITY_CACHE
+
+    # Fast path: cache hit and still within TTL
+    if cache["available"] is True and (now - cache["last_check"]) < _SUCCESS_TTL:
+        return True
+    if cache["available"] is False and (now - cache["last_check"]) < _FAILURE_TTL:
+        return False
+
+    # No DSN configured — log once at startup, then stay quiet
+    if not DATABASE_URL:
+        if not _DSN_NOT_SET_LOGGED:
+            logger.warning("DB: DATABASE_URL not set; persistence disabled")
+            _DSN_NOT_SET_LOGGED = True
+        cache["available"] = False
+        cache["last_check"] = now
+        return False
+
+    ok, err = _connection_probe()
+    cache["last_check"] = now
+    if ok:
+        if cache["available"] is False:
+            logger.info("DB: connection restored")
+            cache["fail_logged"] = False
+        cache["available"] = True
+        return True
+    else:
+        # Log the failure ONCE per window to avoid filling logs
+        if not cache["fail_logged"]:
+            logger.warning(
+                "DB connection failed (%s) — suppressing further warnings for %.0fs",
+                err, _FAILURE_TTL,
+            )
+            cache["fail_logged"] = True
+        cache["available"] = False
         return False
