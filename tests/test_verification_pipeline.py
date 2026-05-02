@@ -118,6 +118,54 @@ def test_essentials_message_names_each_field() -> None:
     assert "Patient name" in findings[0].message
 
 
+# ── EssentialsChecker skeletal-chart guard (Peter May rerun) ──────────
+
+
+def test_essentials_skeletal_chart_emits_one_finding_not_six() -> None:
+    """When the chart is in API-fallback mode (Anthropic spend limit
+    cascade), EssentialsChecker should emit ONE honest finding about
+    the upstream failure — not six false 'missing field' findings."""
+    p = _empty_packet(chart_data={
+        "patient_name": "", "date_of_birth": "",
+        "insurance_id": "", "payer_name": "",
+        "procedure_code": "78492", "attending_physician": "",
+        "missing_fields": ["Note extraction failed: 429 spend limit reached"],
+    })
+    findings = EssentialsChecker().check(p)
+    assert len(findings) == 1
+    assert findings[0].kind == "extraction_blocked_by_api"
+    assert findings[0].severity == "blocking"
+
+
+def test_essentials_skeletal_chart_no_api_unavailable_prefix() -> None:
+    """The 'Anthropic API unavailable' prefix also triggers the guard."""
+    p = _empty_packet(chart_data={
+        "patient_name": "", "date_of_birth": "",
+        "insurance_id": "", "payer_name": "",
+        "procedure_code": "78492", "attending_physician": "",
+        "missing_fields": ["Anthropic API unavailable; only raw note preserved"],
+    })
+    findings = EssentialsChecker().check(p)
+    assert len(findings) == 1
+    assert findings[0].kind == "extraction_blocked_by_api"
+
+
+def test_essentials_normal_missing_fields_still_emit_per_field() -> None:
+    """A chart with non-API missing_fields entries (e.g. user just
+    didn't fill them in) still emits per-field findings — the guard
+    only fires when the missing_fields prefix is an API-fallback."""
+    p = _empty_packet(chart_data={
+        "patient_name": "", "date_of_birth": "1958-01-15",
+        "insurance_id": "UHC-1", "payer_name": "UHC",
+        "procedure_code": "78492", "attending_physician": "Dr. X",
+        "missing_fields": ["Patient declined to provide name"],
+    })
+    findings = EssentialsChecker().check(p)
+    # patient_name was the only blank → exactly one missing_essential
+    assert len(findings) == 1
+    assert findings[0].kind == "missing_essential"
+
+
 # ── ReasonerConfidenceChecker ──────────────────────────────────────────
 
 def test_reasoner_low_score_emits_high_finding() -> None:

@@ -52,6 +52,31 @@ class TimelineStep:
 
 
 @dataclass
+class PipelineError:
+    """A pipeline-level error surfaced once at the top of the timeline.
+
+    Peter May rerun: silent fallback masked an Anthropic spend-limit
+    cascade. A failure in one LLM-dependent stage should produce one
+    clear top-level signal, not N false-positive findings downstream.
+    """
+
+    kind: str            # "anthropic_spend_limit" | "anthropic_unavailable" | "extraction_failed"
+    severity: str        # "blocking" | "high" — drives banner color
+    message: str         # plain-language explanation
+    affected_stages: list[str] = field(default_factory=list)
+    fix_suggestion: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "severity": self.severity,
+            "message": self.message,
+            "affected_stages": list(self.affected_stages),
+            "fix_suggestion": self.fix_suggestion,
+        }
+
+
+@dataclass
 class E2ETimeline:
     case_id: str
     patient_id: str
@@ -61,6 +86,7 @@ class E2ETimeline:
     total_duration_ms: int = 0
     outcome: str = ""
     steps: list[TimelineStep] = field(default_factory=list)
+    pipeline_errors: list[PipelineError] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -72,7 +98,68 @@ class E2ETimeline:
             "total_duration_ms": self.total_duration_ms,
             "outcome": self.outcome,
             "steps": [s.to_dict() for s in self.steps],
+            "pipeline_errors": [e.to_dict() for e in self.pipeline_errors],
         }
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Pipeline-error detection
+# ────────────────────────────────────────────────────────────────────────
+
+
+_API_FALLBACK_PREFIXES = (
+    "Anthropic API unavailable",
+    "Note extraction failed",
+)
+
+
+def _chart_extraction_failed_via_api(chart) -> bool:
+    """True iff the chart came back from one of the API-fallback paths
+    in `_extract_chart_with_evidence`. Read off `missing_fields[0]`
+    rather than a separate flag because that's what the existing
+    fallback paths already populate."""
+    mf = list(getattr(chart, "missing_fields", None) or [])
+    if not mf:
+        return False
+    first = mf[0] if isinstance(mf[0], str) else ""
+    return any(first.startswith(p) for p in _API_FALLBACK_PREFIXES)
+
+
+def _pipeline_error_from_chart(chart) -> "PipelineError":
+    """Build the top-level pipeline error from the chart's first
+    missing_fields entry. Spend-limit messages get the highest-
+    severity color and an explicit refill-and-retry CTA."""
+    mf = list(getattr(chart, "missing_fields", None) or [])
+    raw = mf[0] if mf and isinstance(mf[0], str) else "API unavailable"
+    lower = raw.lower()
+    is_spend = "spend limit" in lower or "usage limit" in lower or "credit" in lower
+    if is_spend:
+        return PipelineError(
+            kind="anthropic_spend_limit",
+            severity="blocking",
+            message=(
+                "Anthropic API spend limit reached. The chart extractor, "
+                "policy retriever, and reasoner all rely on Claude — outputs "
+                "from this run are NOT valid until credits are refilled."
+            ),
+            affected_stages=["CHART_AGENT", "POLICY_AGENT", "UnifiedReasoner", "Reviewer"],
+            fix_suggestion=(
+                "Refill Anthropic credits at console.anthropic.com, then re-run "
+                "the case. Patient identity fields were extracted via regex and "
+                "will populate even on the failed run; clinical reasoning "
+                "requires the API."
+            ),
+        )
+    return PipelineError(
+        kind="anthropic_unavailable",
+        severity="high",
+        message=(
+            f"Chart extraction via Claude failed ({raw[:160]}). "
+            "Downstream stages ran on partial data. Re-run after the API is reachable."
+        ),
+        affected_stages=["CHART_AGENT", "POLICY_AGENT", "UnifiedReasoner", "Reviewer"],
+        fix_suggestion="Verify API connectivity and re-run.",
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -187,21 +274,40 @@ def run_end_to_end_demo(
         from cardioauth.models.chart_migration import migrate_legacy_chart, validate_lab_source_anchoring
         chart = migrate_legacy_chart(chart)
         chart, lab_warnings = validate_lab_source_anchoring(chart, strict=False)
-        t.set_result(
+
+        # Peter May rerun: detect chart-extraction-failed-via-API and
+        # surface ONE pipeline-level error instead of letting downstream
+        # checkers emit a cascade of false-positive findings.
+        extraction_failed = _chart_extraction_failed_via_api(chart)
+        if extraction_failed:
+            timeline.pipeline_errors.append(_pipeline_error_from_chart(chart))
+
+        chart_status: StepStatus = "fallback" if extraction_failed else "ok"
+        chart_summary = (
             f"Extracted {len(chart.current_symptoms)} symptoms, "
             f"{len(chart.ecg_findings)} ECG findings, "
             f"{len(chart.prior_stress_tests)} stress tests, "
             f"{len(chart.relevant_labs)} labs, "
             f"{len(chart.past_medical_history)} PMH"
             + (f" (dropped {len(lab_warnings)} suspect labs)" if lab_warnings else "")
-            + f" · {len(extraction_result.evidence_graph)} evidence spans recorded",
+            + f" · {len(extraction_result.evidence_graph)} evidence spans recorded"
+        )
+        if extraction_failed:
+            chart_summary = (
+                "Chart extraction FAILED via API — using regex-only essentials. "
+                "Downstream stages running on partial data; refill API credits to re-run."
+            )
+        t.set_result(
+            chart_summary,
             detail={
                 "chart_data": chart.model_dump(mode="json"),
                 "evidence_graph": extraction_result.evidence_graph.to_dict(),
                 "evidence_span_count": len(extraction_result.evidence_graph),
                 "lab_warnings": lab_warnings,
                 "extraction_source": "raw_note",
+                "extraction_failed_via_api": extraction_failed,
             },
+            status=chart_status,
         )
         timeline.steps.append(t.finish())
     else:
@@ -1289,13 +1395,37 @@ def _extract_chart_with_evidence(
         emit_spans_for_chart_dict,
     )
     from cardioauth.models.chart import ChartData
+    from cardioauth.note_essentials import (
+        extract_essentials_from_note,
+        normalize_payer_name,
+        overlay_essentials,
+    )
 
     cfg = Config()
     graph = EvidenceGraph()
 
+    # Peter May rerun: deterministic regex pass for the six payer-required
+    # essentials runs FIRST. Claude wins when it returns values; this
+    # backstops empty Claude output (and survives Claude failures
+    # entirely so EssentialsChecker doesn't false-flag fields that are
+    # plainly in the note).
+    essentials = extract_essentials_from_note(raw_note)
+
+    def _seed_from_essentials(base_payer: str = "") -> dict:
+        """Build the field overlay applied to every fallback chart."""
+        seed: dict = {}
+        for field, match in essentials.items():
+            seed[field] = (
+                normalize_payer_name(match.value) if field == "payer_name"
+                else match.value
+            )
+        if base_payer and not seed.get("payer_name"):
+            seed["payer_name"] = base_payer
+        return seed
+
     if not cfg.anthropic_api_key:
         logger.warning("Note extraction: no API key, skeletal chart only")
-        chart = ChartData(
+        skeleton = dict(
             patient_id=patient_id or "CUSTOM",
             procedure_requested=procedure_name or procedure_code,
             procedure_code=procedure_code,
@@ -1305,6 +1435,8 @@ def _extract_chart_with_evidence(
             confidence_score=0.5,
             missing_fields=["Anthropic API unavailable; only raw note preserved"],
         )
+        skeleton.update(_seed_from_essentials(base_payer=payer_name))
+        chart = ChartData(**skeleton)
         # Even in the skeleton path, the procedure code + payer carry
         # spans — they came from the request, not the note.
         emit_spans_for_chart_dict(
@@ -1362,6 +1494,11 @@ def _extract_chart_with_evidence(
         data.setdefault("confidence_score", 0.85)
         data.setdefault("missing_fields", [])
 
+        # Peter May rerun: overlay regex essentials so Claude misses
+        # don't leave EssentialsChecker with bogus blanks. Claude's
+        # values win; regex only fills empty slots.
+        data = overlay_essentials(data, essentials)
+
         # Preserve the raw note so downstream reasoner can read it directly
         existing_notes = data.get("additional_notes", "") or ""
         if raw_note and raw_note not in existing_notes:
@@ -1408,12 +1545,15 @@ def _extract_chart_with_evidence(
                 f"Structured extraction dropped: {str(ve)[:120]}"
             ]
             safe["confidence_score"] = min(float(safe.get("confidence_score") or 0.5), 0.5)
+            # Last-resort: regex essentials still apply so identity
+            # fields don't disappear into the validation fallback.
+            safe = overlay_essentials(safe, essentials)
             chart = ChartData(**safe)
             return ChartExtractionResult(chart=chart, evidence_graph=graph)
 
     except Exception as e:
         logger.warning("Note extraction: Claude call failed: %s — falling back to skeletal chart", e)
-        chart = ChartData(
+        skeleton = dict(
             patient_id=patient_id or "CUSTOM",
             procedure_requested=procedure_name or procedure_code,
             procedure_code=procedure_code,
@@ -1423,4 +1563,21 @@ def _extract_chart_with_evidence(
             confidence_score=0.5,
             missing_fields=[f"Note extraction failed: {str(e)[:120]}"],
         )
+        # Even when Claude is down, regex essentials carry through so
+        # patient_name / DOB / member ID / NPI fill from the raw note.
+        skeleton.update(_seed_from_essentials(base_payer=payer_name))
+        chart = ChartData(**skeleton)
+        # Emit spans for the regex hits so the evidence graph stays
+        # honest about which fields were derived from the note vs
+        # the request.
+        if essentials:
+            essentials_dict = {f: m.value for f, m in essentials.items()}
+            emit_spans_for_chart_dict(
+                chart_dict=essentials_dict,
+                raw_note=raw_note,
+                graph=graph,
+                extractor="note_essentials_regex",
+                extractor_version="v1",
+                base_confidence=0.95,
+            )
         return ChartExtractionResult(chart=chart, evidence_graph=graph)

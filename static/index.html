@@ -1073,6 +1073,13 @@
     const summary = document.getElementById('e2e-summary');
     if (!timeline) return;
 
+    // Peter May rerun: pipeline_errors are top-level signals (Anthropic
+    // spend limit, etc.) that should outrank everything else in the
+    // timeline. Render them as a sticky banner above the steps so the
+    // physician sees the root cause, not the cascade of false-positive
+    // findings beneath it.
+    const pipelineErrorsHtml = renderPipelineErrors(data.pipeline_errors || []);
+
     const statusColor = (s) => ({
       ok: 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300',
       fallback: 'border-amber-500/30 bg-amber-500/5 text-amber-300',
@@ -1107,7 +1114,7 @@
       </div>
     `).join('');
 
-    timeline.innerHTML = stepsHtml;
+    timeline.innerHTML = pipelineErrorsHtml + stepsHtml;
 
     const outcomeColor = (data.outcome === 'APPROVED') ? 'text-emerald-400' :
                          (data.outcome === 'DENIED') ? 'text-red-400' :
@@ -1366,6 +1373,44 @@
       noteEl.focus();
     }
   };
+
+  // Top-of-timeline banner for pipeline-level errors (Peter May rerun:
+  // Anthropic spend-limit cascade was silent, now it's the headline).
+  function renderPipelineErrors(errors) {
+    if (!errors || !errors.length) return '';
+    return errors.map(e => {
+      const blocking = e.severity === 'blocking';
+      const cls = blocking
+        ? 'border-red-500/60 bg-red-500/10 text-red-200'
+        : 'border-amber-500/50 bg-amber-500/10 text-amber-200';
+      const icon = blocking ? '🚨' : '⚠️';
+      const stagesLine = (e.affected_stages || []).length
+        ? `<div class="text-xs mt-2 opacity-75">Affected stages: ${(e.affected_stages || []).map(s => '<span class="px-1.5 py-0.5 rounded bg-black/20 mr-1 font-mono text-xs">'+escapeHtml(s)+'</span>').join('')}</div>`
+        : '';
+      const fixLine = e.fix_suggestion
+        ? `<div class="text-sm mt-3 pt-3 border-t border-white/10"><strong>What to do:</strong> ${escapeHtml(e.fix_suggestion)}</div>`
+        : '';
+      return `<div class="rounded-xl border-2 ${cls} p-4 mb-4 shadow-lg">
+        <div class="flex items-start gap-3">
+          <span class="text-3xl">${icon}</span>
+          <div class="flex-1">
+            <div class="text-base font-bold uppercase tracking-wide">${escapeHtml(e.kind === 'anthropic_spend_limit' ? 'Anthropic spend limit reached' : (e.kind || 'Pipeline error').replace(/_/g, ' '))}</div>
+            <div class="text-sm mt-1">${escapeHtml(e.message || '')}</div>
+            ${stagesLine}
+            ${fixLine}
+            <div class="mt-3 flex gap-2">
+              <button onclick="runE2EDemo()" class="px-3 py-1.5 rounded text-xs font-semibold bg-white/10 hover:bg-white/20 border border-white/20 transition">
+                ↻ Re-run after fix
+              </button>
+              <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener" class="px-3 py-1.5 rounded text-xs font-semibold bg-white/10 hover:bg-white/20 border border-white/20 transition">
+                ↗ Open Anthropic billing
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
 
   function renderStepDetail(step) {
     // Per-agent bespoke renderers — structured, not raw JSON. Peter wants

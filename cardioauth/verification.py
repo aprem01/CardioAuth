@@ -71,6 +71,13 @@ class EssentialsChecker(Checker):
 
     The MVP gate (Peter Apr 28): "Only the key clinical and
     identification fields would need to trigger a submission block."
+
+    Peter May rerun: when the chart came back from an API-fallback
+    path, every essential will be blank, and EssentialsChecker emits
+    six "missing required field" findings even though the data is
+    sitting in the raw note. That's the system lying. The skeletal-
+    chart guard suppresses the cascade and emits one honest finding
+    pointing at the upstream API failure.
     """
 
     name = "essentials"
@@ -84,8 +91,44 @@ class EssentialsChecker(Checker):
         ("attending_physician", "Ordering physician"),
     )
 
+    _API_FALLBACK_PREFIXES = (
+        "Anthropic API unavailable",
+        "Note extraction failed",
+    )
+
+    def _chart_in_api_fallback(self, chart: dict) -> bool:
+        """True iff the chart was assembled via one of the
+        _extract_chart_with_evidence fallback paths. Detection mirrors
+        demo_e2e._chart_extraction_failed_via_api."""
+        mf = chart.get("missing_fields") or []
+        if not mf:
+            return False
+        first = mf[0] if isinstance(mf[0], str) else ""
+        return any(first.startswith(p) for p in self._API_FALLBACK_PREFIXES)
+
     def check(self, packet: SubmissionPacket) -> list[Finding]:
         chart = packet.chart_data or {}
+
+        # Peter May rerun: don't flag every essential when the chart is
+        # in API-fallback mode. The data is in the raw note; the LLM
+        # just couldn't be reached. Surface ONE honest finding instead
+        # of six false "missing field" cascades.
+        if self._chart_in_api_fallback(chart):
+            return [self._f(
+                kind="extraction_blocked_by_api",
+                severity="blocking",
+                message=(
+                    "Cannot validate identity fields — chart extraction failed "
+                    "due to an upstream API issue. Patient name, DOB, member ID "
+                    "and ordering MD are likely present in the raw note but "
+                    "couldn't be confirmed. Re-run after the API recovers."
+                ),
+                fix_suggestion=(
+                    "Refill Anthropic credits and re-run, or paste the note "
+                    "again once the API is reachable."
+                ),
+            )]
+
         out: list[Finding] = []
         for key, label in self.ESSENTIAL_FIELDS:
             v = chart.get(key, "")
