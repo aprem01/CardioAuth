@@ -338,3 +338,76 @@ def state2_json_schema() -> dict:
         Pydantic validation that catches drift.
     """
     return LeanState2Output.model_json_schema()
+
+
+def state2_json_schema_flat() -> dict:
+    """Same as state2_json_schema(), but with all $defs inlined and all
+    $refs resolved.
+
+    Anthropic's tool-use input_schema validator chokes on schemas with
+    $ref / $defs (verified in production: live endpoint hung on the
+    referenced shape). This flattened variant inlines every reference
+    so the schema is fully self-contained — exactly what tool-use
+    mode wants.
+
+    Pure function. Safe to call repeatedly.
+    """
+    return _inline_refs(LeanState2Output.model_json_schema())
+
+
+def _inline_refs(schema: dict) -> dict:
+    """Walk a JSON Schema and inline every $ref against the top-level
+    $defs. Recursive but bounded by reference depth (Pydantic schemas
+    don't have cycles in practice — a future cycle would blow the
+    stack, but that's not how our data model works).
+
+    Returns a NEW schema dict; does not mutate the input.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    # Lift the $defs once at the top
+    defs = schema.get("$defs", {}) or schema.get("definitions", {}) or {}
+
+    def _resolve(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                key = ref[len("#/$defs/"):]
+                target = defs.get(key)
+                if target is None:
+                    # Unknown ref — leave as-is so the caller can decide
+                    return node
+                # Recursively inline the target's own refs
+                inlined = _resolve(target)
+                # Preserve any sibling fields from the original $ref node
+                # (description, title, default, etc.) — JSON Schema 2020-12
+                # allows mixing $ref + sibling keywords; some validators
+                # respect them.
+                merged = dict(inlined)
+                for k, v in node.items():
+                    if k != "$ref":
+                        merged[k] = v
+                return merged
+            if isinstance(ref, str) and ref.startswith("#/definitions/"):
+                key = ref[len("#/definitions/"):]
+                target = defs.get(key)
+                if target is None:
+                    return node
+                inlined = _resolve(target)
+                merged = dict(inlined)
+                for k, v in node.items():
+                    if k != "$ref":
+                        merged[k] = v
+                return merged
+            return {k: _resolve(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_resolve(item) for item in node]
+        return node
+
+    flattened = _resolve(schema)
+    # Drop the $defs / definitions tables now that everything's inlined
+    if isinstance(flattened, dict):
+        flattened.pop("$defs", None)
+        flattened.pop("definitions", None)
+    return flattened

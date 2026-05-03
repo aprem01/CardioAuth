@@ -290,3 +290,92 @@ def test_patient_identity_fields_populated_when_present() -> None:
     )
     assert out.patient_name == "Margaret Synthetic"
     assert out.attending_npi == "1306939693"
+
+
+# ── Schema flattening for Anthropic tool-use ────────────────────────
+
+
+def test_state2_json_schema_flat_resolves_all_refs() -> None:
+    """Anthropic tool-use validator can choke on $refs. The flat
+    variant inlines every $defs entry so the schema is self-
+    contained."""
+    from cardioauth.lean_schema import state2_json_schema_flat
+
+    flat = state2_json_schema_flat()
+    refs = _walk_for_refs(flat)
+    assert refs == [], f"Found unresolved refs in flat schema: {refs}"
+
+
+def test_state2_json_schema_flat_drops_defs_table() -> None:
+    """After inlining, the $defs / definitions tables should be
+    removed (cleaner schema, smaller wire size)."""
+    from cardioauth.lean_schema import state2_json_schema_flat
+
+    flat = state2_json_schema_flat()
+    assert "$defs" not in flat
+    assert "definitions" not in flat
+
+
+def test_state2_json_schema_flat_preserves_required_top_level_fields() -> None:
+    """Flattening must not drop required fields."""
+    from cardioauth.lean_schema import state2_json_schema_flat
+
+    flat = state2_json_schema_flat()
+    required = set(flat.get("required", []))
+    # The same required fields the original Pydantic schema produces
+    for field in (
+        "case_id", "request_cpt", "payer",
+        "cpt_resolution", "approval_verdict",
+        "narrative", "documentation_quality",
+    ):
+        assert field in required
+
+
+def test_state2_json_schema_flat_preserves_nested_field_constraints() -> None:
+    """Inlined nested types must keep their own required fields and
+    constraints. Spot-check CriterionEvaluation: inside criteria_evaluated."""
+    from cardioauth.lean_schema import state2_json_schema_flat
+
+    flat = state2_json_schema_flat()
+    crit_array = flat["properties"]["criteria_evaluated"]
+    # Nested inlined: 'items' should be a full object schema, not a $ref
+    item = crit_array.get("items", {})
+    assert "$ref" not in item
+    assert "properties" in item
+    assert "code" in item["properties"]
+    assert "status" in item["properties"]
+    # status enum values preserved
+    assert "enum" in item["properties"]["status"]
+    enum_vals = set(item["properties"]["status"]["enum"])
+    assert {"met", "not_met", "not_evaluated", "ambiguous"}.issubset(enum_vals)
+
+
+def test_state2_json_schema_flat_is_pure_function() -> None:
+    """Calling twice produces equal output and doesn't mutate
+    LeanState2Output's schema cache."""
+    from cardioauth.lean_schema import state2_json_schema, state2_json_schema_flat
+
+    a = state2_json_schema_flat()
+    b = state2_json_schema_flat()
+    assert a == b
+    # Original (un-flattened) still has $defs
+    orig = state2_json_schema()
+    assert "$defs" in orig
+
+
+def _walk_for_refs(obj, path: str = "") -> list[str]:
+    """Recursively find any node that contains $ref."""
+    found = []
+    if isinstance(obj, dict):
+        if "$ref" in obj:
+            found.append(path)
+        if "$defs" in obj:
+            found.append(path + "/$defs")
+        if "definitions" in obj:
+            found.append(path + "/definitions")
+        for k, v in obj.items():
+            found.extend(_walk_for_refs(v, f"{path}/{k}"))
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            found.extend(_walk_for_refs(item, f"{path}[{i}]"))
+    return found

@@ -414,16 +414,14 @@ def _classify_llm_error(e: Exception) -> dict:
 
 
 def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, dict]:
-    """Default LLM caller — free-form mode with schema-as-text in the
-    system prompt + Pydantic validation at the boundary.
+    """Default LLM caller — Anthropic tool-use mode with a flattened
+    JSON schema (all $defs inlined, no $refs). Defaults to tool-use;
+    set CARDIOAUTH_LEAN_FREE_FORM=1 to fall back to free-form mode.
 
-    NOTE: tool-use mode (Anthropic structured-output) was attempted but
-    hangs on this schema's $defs structure in production. Reverted to
-    free-form mode pending a schema-flattening refactor. Cost +
-    correctness preserved; latency win is gated on the tool-use fix.
-
-    Set CARDIOAUTH_LEAN_TOOL_USE=1 to opt-in to the experimental
-    tool-use path once the schema issue is debugged.
+    The schema flattening matters: Anthropic's tool-use validator
+    rejects schemas with `$ref` references in some configurations.
+    state2_json_schema_flat() resolves all refs into inline shapes,
+    making the schema fully self-contained.
     """
     import os
     import anthropic
@@ -435,10 +433,11 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
         raise RuntimeError("ANTHROPIC_API_KEY not configured")
     client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
 
-    use_tool_mode = os.environ.get("CARDIOAUTH_LEAN_TOOL_USE", "").lower() in ("1", "true", "yes")
+    free_form = os.environ.get("CARDIOAUTH_LEAN_FREE_FORM", "").lower() in ("1", "true", "yes")
 
-    if use_tool_mode:
-        from cardioauth.lean_schema import state2_json_schema
+    if not free_form:
+        # Default: tool-use with flattened schema
+        from cardioauth.lean_schema import state2_json_schema_flat
         tool_def = {
             "name": "emit_lean_state2_output",
             "description": (
@@ -446,7 +445,7 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
                 "single LeanState2Output object. All clinical claims "
                 "must cite verbatim quotes from the note."
             ),
-            "input_schema": state2_json_schema(),
+            "input_schema": state2_json_schema_flat(),
         }
         with TimedCall() as t:
             response = client.messages.create(
@@ -466,8 +465,8 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
             (response.content[0].text if response.content else "")
         )
     else:
-        # Default: free-form mode, schema-in-prompt, parse + validate
-        # downstream.
+        # Opt-out: free-form mode, schema-in-prompt, parse + validate
+        # downstream. Kept as an escape hatch in case tool-use breaks.
         with TimedCall() as t:
             response = client.messages.create(
                 model=cfg.model, max_tokens=8000,
