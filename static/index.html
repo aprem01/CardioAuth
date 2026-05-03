@@ -1069,9 +1069,20 @@
     summary.innerHTML = '';
 
     // Pipeline engine: current (multi-stage demo_e2e), lean (1 LLM call),
-    // or ab (run both, side-by-side report). All three engines support
-    // both paste-note and PDF input modes.
+    // or ab (run both, side-by-side report). Lean + A/B require raw
+    // note text (they don't read demo FHIR charts directly), so we
+    // refuse demo-patient mode for those engines with a clear message.
     const engine = window._e2eEngine || 'current';
+
+    if ((engine === 'lean' || engine === 'ab') && mode === 'demo') {
+      timeline.innerHTML = `<div class="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-amber-300">
+        <strong>${engine === 'ab' ? 'A/B' : 'Lean hybrid'} mode requires note text.</strong> Demo patients use FHIR-style structured charts, not raw notes — so the lean pipeline has nothing to extract. Switch to <strong>"Paste deidentified note"</strong> or <strong>"Upload deidentified PDF"</strong>, or pick the <strong>Current</strong> engine to run a demo patient.
+      </div>`;
+      btn.disabled = false;
+      btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> Run end-to-end pipeline`;
+      return;
+    }
+
     let endpoint;
     if (engine === 'lean') {
       endpoint = (mode === 'pdf') ? '/api/demo/end-to-end-lean-pdf' : '/api/demo/end-to-end-lean';

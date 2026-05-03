@@ -433,23 +433,37 @@ def _harvest_current_metrics(comp: CaseComparison, timeline: dict) -> None:
 
 
 def compare_one_case(
-    case: dict, *, lean_llm_caller: Any = None,
+    case: dict, *, lean_llm_caller: Any = None, parallel: bool = True,
 ) -> CaseComparison:
     """Run both pipelines on one case and return a populated
-    CaseComparison row."""
+    CaseComparison row.
+
+    `parallel`: when True (default), runs both pipelines concurrently
+    via threads — wall-clock = max(lean, current), not lean + current.
+    Set False for deterministic test ordering."""
     comp = CaseComparison(
         case_id=case.get("case_id", "?"),
         request_cpt=case["request_cpt"],
         payer=case["payer"],
     )
 
-    lean_result, lean_err = _run_lean(case, llm_caller=lean_llm_caller)
+    if parallel:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as exec:
+            lean_future = exec.submit(_run_lean, case, llm_caller=lean_llm_caller)
+            current_future = exec.submit(_run_current, case)
+            lean_result, lean_err = lean_future.result()
+            current_timeline, current_err = current_future.result()
+    else:
+        lean_result, lean_err = _run_lean(case, llm_caller=lean_llm_caller)
+        current_timeline, current_err = _run_current(case)
+
     if lean_err:
         comp.lean_run_error = lean_err
     elif lean_result is not None:
         _harvest_lean_metrics(comp, lean_result)
 
-    current_timeline, current_err = _run_current(case)
     if current_err:
         comp.current_run_error = current_err
     else:

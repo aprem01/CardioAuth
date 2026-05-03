@@ -433,6 +433,13 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
         raise RuntimeError("ANTHROPIC_API_KEY not configured")
     client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
 
+    # Per-stage model override. Defaults to cfg.model. Sonnet is
+    # ~5x faster and ~5x cheaper than Opus for structured-output
+    # tasks like State 2, where the reasoning is bounded by the
+    # schema. Set LEAN_STATE2_MODEL=claude-sonnet-4-6 (or haiku) to
+    # use a smaller model just for the unified call.
+    state2_model = os.environ.get("LEAN_STATE2_MODEL", "").strip() or cfg.model
+
     free_form = os.environ.get("CARDIOAUTH_LEAN_FREE_FORM", "").lower() in ("1", "true", "yes")
 
     if not free_form:
@@ -449,13 +456,13 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
         }
         with TimedCall() as t:
             response = client.messages.create(
-                model=cfg.model, max_tokens=8000,
+                model=state2_model, max_tokens=8000,
                 system=system_with_cache_control(system_prompt),
                 messages=[{"role": "user", "content": user_prompt}],
                 tools=[tool_def],
                 tool_choice={"type": "tool", "name": "emit_lean_state2_output"},
             )
-        track_usage(response, agent="LEAN_STATE2", model=cfg.model, duration_ms=t.ms)
+        track_usage(response, agent="LEAN_STATE2", model=state2_model, duration_ms=t.ms)
         block = next(
             (b for b in response.content if getattr(b, "type", "") == "tool_use"),
             None,
@@ -469,11 +476,11 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
         # downstream. Kept as an escape hatch in case tool-use breaks.
         with TimedCall() as t:
             response = client.messages.create(
-                model=cfg.model, max_tokens=8000,
+                model=state2_model, max_tokens=8000,
                 system=system_with_cache_control(system_prompt),
                 messages=[{"role": "user", "content": user_prompt}],
             )
-        track_usage(response, agent="LEAN_STATE2", model=cfg.model, duration_ms=t.ms)
+        track_usage(response, agent="LEAN_STATE2", model=state2_model, duration_ms=t.ms)
         raw = response.content[0].text
 
     in_tok = int(getattr(response.usage, "input_tokens", 0) or 0)
