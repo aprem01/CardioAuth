@@ -142,6 +142,8 @@ class LeanRunResult:
     state2_tokens: int
     state2_cost_usd: float
     state2_output: dict | None  # full structured output, for inspection
+    # State 3 — independent safety audit (regex re-extraction trail)
+    safety_audit: dict | None = None
     # State 5 — FHIR Provenance + freeze artifacts
     provenance: dict | None = None         # FHIR Provenance resource
     archive_paths: dict | None = None      # local file paths for the frozen run
@@ -164,6 +166,7 @@ class LeanRunResult:
             "state2_tokens": self.state2_tokens,
             "state2_cost_usd": self.state2_cost_usd,
             "state2_output": self.state2_output,
+            "safety_audit": self.safety_audit,
             "provenance": self.provenance,
             "archive_paths": self.archive_paths,
         }
@@ -806,6 +809,7 @@ def run_lean_pipeline(
         state2_tokens=ctx.state2_tokens,
         state2_cost_usd=ctx.state2_cost_usd,
         state2_output=(out.model_dump() if out else None),
+        safety_audit=ctx.safety_audit,
     )
 
     # State 5: FHIR Provenance + freeze (CMS-0057-F).

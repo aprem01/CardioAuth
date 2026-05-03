@@ -1189,6 +1189,13 @@
     const cost = (data.state2_cost_usd || 0).toFixed(4);
     const tokens = data.state2_tokens || 0;
 
+    // Wrap the safety_audit in the shape safetyAuditPanel() expects.
+    // Lean attaches it directly on the result; the existing helper
+    // looks under packetSummary._safety_audit.
+    const safetyAuditWrapper = data.safety_audit
+      ? { _safety_audit: data.safety_audit }
+      : null;
+
     summary.innerHTML = `
       <div class="bg-surface rounded-xl border border-surface-border p-5 mt-4">
         ${decisionBanner(decision, heldForReview)}
@@ -1204,6 +1211,7 @@
           </div>
         </div>
         <p class="text-xs text-slate-500">Case ${escapeHtml(data.case_id || '')} · ${escapeHtml(data.payer || '')}</p>
+        ${safetyAuditPanel(safetyAuditWrapper, null)}
         ${findingsHtml}
         ${renderProvenancePanel(data.provenance, data.archive_paths)}
       </div>`;
