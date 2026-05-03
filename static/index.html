@@ -1122,7 +1122,19 @@
         if (summaryEl) summaryEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     } catch (e) {
-      timeline.innerHTML = `<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-300">E2E run failed: ${escapeHtml(String(e))}</div>`;
+      // The error message is often a JSON body like {"detail": "..."}.
+      // Parse it and render just the detail so users get a clean message,
+      // not raw JSON.
+      let msg = String(e);
+      try {
+        // Strip any "Error: " prefix and try to parse the rest as JSON
+        const stripped = msg.replace(/^Error:\s*/, '');
+        const parsed = JSON.parse(stripped);
+        if (parsed && typeof parsed === 'object' && parsed.detail) {
+          msg = String(parsed.detail);
+        }
+      } catch (_) { /* leave msg as-is */ }
+      timeline.innerHTML = `<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-300">${escapeHtml(msg)}</div>`;
     }
 
     btn.disabled = false;
