@@ -95,7 +95,7 @@ NPI: 1306939693
 # ── Stage ordering ────────────────────────────────────────────────────
 
 
-def test_pipeline_runs_all_four_stages_in_order() -> None:
+def test_pipeline_runs_all_five_stages_in_order() -> None:
     result = run_lean_pipeline(
         raw_note=_NOTE, request_cpt="78452", payer="UnitedHealthcare",
         llm_caller=_fake_llm(_good_payload()),
@@ -106,6 +106,7 @@ def test_pipeline_runs_all_four_stages_in_order() -> None:
         "State 2: unified call",
         "State 3: safety verify",
         "State 4: gate",
+        "State 5: provenance + freeze",
     ]
 
 

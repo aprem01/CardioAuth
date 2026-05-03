@@ -142,6 +142,9 @@ class LeanRunResult:
     state2_tokens: int
     state2_cost_usd: float
     state2_output: dict | None  # full structured output, for inspection
+    # State 5 — FHIR Provenance + freeze artifacts
+    provenance: dict | None = None         # FHIR Provenance resource
+    archive_paths: dict | None = None      # local file paths for the frozen run
 
     def to_dict(self) -> dict:
         return {
@@ -161,6 +164,8 @@ class LeanRunResult:
             "state2_tokens": self.state2_tokens,
             "state2_cost_usd": self.state2_cost_usd,
             "state2_output": self.state2_output,
+            "provenance": self.provenance,
+            "archive_paths": self.archive_paths,
         }
 
 
@@ -785,7 +790,7 @@ def run_lean_pipeline(
     ctx.total_duration_ms = int((time.time() - overall_start) * 1000)
 
     out = ctx.state2_output
-    return LeanRunResult(
+    result = LeanRunResult(
         case_id=ctx.case_id,
         decision=ctx.decision,
         decision_rationale=ctx.decision_rationale,
@@ -803,3 +808,33 @@ def run_lean_pipeline(
         state2_cost_usd=ctx.state2_cost_usd,
         state2_output=(out.model_dump() if out else None),
     )
+
+    # State 5: FHIR Provenance + freeze (CMS-0057-F).
+    # Pure function for provenance + best-effort archival. Failures
+    # here don't abort the run — the result is still returned.
+    try:
+        from cardioauth.lean_provenance import emit_provenance, freeze_lean_run
+        result.provenance = emit_provenance(result)
+        result.archive_paths = freeze_lean_run(result)
+        # Append a State 5 stage record for the timeline
+        result.stages.append({
+            "name": "State 5: provenance + freeze",
+            "status": "ok",
+            "duration_ms": 0,
+            "summary": (
+                f"FHIR Provenance emitted (id={result.provenance.get('id', '')}); "
+                f"frozen to {result.archive_paths.get('result_path', '')}"
+                if result.archive_paths else
+                f"FHIR Provenance emitted (id={result.provenance.get('id', '')})"
+            ),
+        })
+    except Exception as e:
+        logger.warning("Lean State 5: provenance/freeze failed (continuing): %s", e)
+        result.stages.append({
+            "name": "State 5: provenance + freeze",
+            "status": "fallback",
+            "duration_ms": 0,
+            "summary": f"failed: {str(e)[:120]}",
+        })
+
+    return result
