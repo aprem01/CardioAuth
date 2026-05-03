@@ -712,6 +712,7 @@
     else if (hash === '#policy-library') { app.innerHTML = renderLoading('Policy Library'); loadPolicyLibrary(); }
     else if (hash === '#privacy') app.innerHTML = renderPrivacy();
     else if (hash === '#demo-e2e') app.innerHTML = renderE2EDemo();
+    else if (hash === '#generators') app.innerHTML = renderGenerators();
     else { app.innerHTML = renderDashboard(); }
   }
 
@@ -814,6 +815,225 @@
   }
 
   // ──────────────────────────── End-to-End Demo ────────────────────────────
+  // ─────────────────────── Generators page ───────────────────────
+  // Three agentic generators surfaced as a single tabbed page so a
+  // clinician/engineer can drop in source material (policy PDF text,
+  // blank PA-form text, criterion + samples) and get a Python-source
+  // draft to PR. Each tab posts to its corresponding /api/generators/*
+  // endpoint.
+  function renderGenerators() {
+    return `
+    <div class="fade-in space-y-6">
+      <div class="flex items-center justify-between">
+        <button onclick="navigate('#dashboard')" class="text-sm text-slate-400 hover:text-accent-cyan transition flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Dashboard
+        </button>
+        <span class="text-sm text-slate-500">Agentic content generators</span>
+      </div>
+
+      <div class="bg-surface rounded-xl border border-surface-border p-6">
+        <h2 class="text-xl font-semibold text-white mb-2">Generators</h2>
+        <p class="text-sm text-slate-400 mb-4">
+          Three 5-phase agentic generators. Each takes source material, drafts a
+          structured candidate, validates it deterministically, and emits Python
+          source ready for human review + PR.
+        </p>
+
+        <div class="flex gap-2 mb-6 flex-wrap">
+          <button id="gen-tab-tax" onclick="setGenTab('tax')" class="px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-accent-cyan bg-accent-cyan/10 text-accent-cyan">Taxonomy</button>
+          <button id="gen-tab-form" onclick="setGenTab('form')" class="px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-surface-border bg-surface text-slate-400 hover:border-slate-500">Payer form</button>
+          <button id="gen-tab-safe" onclick="setGenTab('safe')" class="px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-surface-border bg-surface text-slate-400 hover:border-slate-500">Safety extractor</button>
+        </div>
+
+        <!-- Taxonomy generator -->
+        <div id="gen-panel-tax">
+          <p class="text-xs text-slate-500 mb-3">Drop in payer policy text. Drafts CRITERION_TAXONOMY entries with verbatim policy quotes.</p>
+          <div class="grid md:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
+              <input id="gen-tax-payer" value="UnitedHealthcare" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200" />
+            </div>
+            <div>
+              <label class="text-xs uppercase text-slate-500 mb-1 block">Target CPTs (comma-separated)</label>
+              <input id="gen-tax-cpts" value="78492,78452" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+            </div>
+          </div>
+          <label class="text-xs uppercase text-slate-500 mb-1 block">Policy text</label>
+          <textarea id="gen-tax-text" rows="10" placeholder="Paste payer medical-policy text (UHC bulletin / Medicare LCD / etc.)…"
+            class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono"></textarea>
+          <button onclick="runGenerator('tax')" class="btn-primary mt-3">Generate taxonomy candidates</button>
+        </div>
+
+        <!-- Form generator -->
+        <div id="gen-panel-form" class="hidden">
+          <p class="text-xs text-slate-500 mb-3">Drop in blank PA-form text. Drafts a PayerForm definition with populated_from mappings.</p>
+          <div class="mb-3">
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
+            <input id="gen-form-payer" value="Aetna" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200" />
+          </div>
+          <label class="text-xs uppercase text-slate-500 mb-1 block">Form text</label>
+          <textarea id="gen-form-text" rows="10" placeholder="Paste blank PA-form text (Availity / eviCore / payer portal export)…"
+            class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono"></textarea>
+          <button onclick="runGenerator('form')" class="btn-primary mt-3">Generate form candidate</button>
+        </div>
+
+        <!-- Safety extractor generator -->
+        <div id="gen-panel-safe" class="hidden">
+          <p class="text-xs text-slate-500 mb-3">Given a criterion + sample phrasings, drafts a safety_verifier check_xxx() function. Phase 5 measures recall + false-positive rate empirically.</p>
+          <div class="grid md:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="text-xs uppercase text-slate-500 mb-1 block">Criterion codes</label>
+              <input id="gen-safe-codes" value="ECG-001" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+            </div>
+          </div>
+          <label class="text-xs uppercase text-slate-500 mb-1 block">Criterion definition</label>
+          <textarea id="gen-safe-def" rows="3" placeholder="LBBB on baseline ECG renders ECG nondiagnostic for ischemia…"
+            class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200"></textarea>
+          <label class="text-xs uppercase text-slate-500 mb-1 mt-3 block">Positive samples (one per line — patterns SHOULD match)</label>
+          <textarea id="gen-safe-pos" rows="6" placeholder="ECG shows LBBB&#10;chronic left bundle branch block&#10;baseline LBBB"
+            class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono"></textarea>
+          <label class="text-xs uppercase text-slate-500 mb-1 mt-3 block">Negative samples (one per line — patterns should NOT match)</label>
+          <textarea id="gen-safe-neg" rows="4" placeholder="denies LBBB&#10;no LBBB on baseline"
+            class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono"></textarea>
+          <button onclick="runGenerator('safe')" class="btn-primary mt-3">Generate safety extractor</button>
+        </div>
+      </div>
+
+      <div id="gen-result"></div>
+    </div>`;
+  }
+
+  window.setGenTab = function(tab) {
+    const tabs = ['tax', 'form', 'safe'];
+    const activeCls = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-accent-cyan bg-accent-cyan/10 text-accent-cyan';
+    const inactiveCls = 'px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-surface-border bg-surface text-slate-400 hover:border-slate-500';
+    tabs.forEach(t => {
+      const btn = document.getElementById('gen-tab-' + t);
+      const panel = document.getElementById('gen-panel-' + t);
+      if (btn) btn.className = (t === tab) ? activeCls : inactiveCls;
+      if (panel) panel.classList.toggle('hidden', t !== tab);
+    });
+  };
+
+  window.runGenerator = async function(tab) {
+    const out = document.getElementById('gen-result');
+    if (!out) return;
+    out.innerHTML = `<div class="text-sm text-slate-400 italic">Running…</div>`;
+
+    let endpoint = '';
+    let body = {};
+    if (tab === 'tax') {
+      endpoint = '/api/generators/taxonomy';
+      body = {
+        payer: document.getElementById('gen-tax-payer').value,
+        target_cpts: document.getElementById('gen-tax-cpts').value
+          .split(',').map(s => s.trim()).filter(Boolean),
+        policy_text: document.getElementById('gen-tax-text').value,
+      };
+    } else if (tab === 'form') {
+      endpoint = '/api/generators/payer-form';
+      body = {
+        payer: document.getElementById('gen-form-payer').value,
+        form_pdf_text: document.getElementById('gen-form-text').value,
+      };
+    } else if (tab === 'safe') {
+      endpoint = '/api/generators/safety-extractor';
+      body = {
+        criterion_codes: document.getElementById('gen-safe-codes').value
+          .split(',').map(s => s.trim()).filter(Boolean),
+        criterion_definition: document.getElementById('gen-safe-def').value,
+        positive_samples: document.getElementById('gen-safe-pos').value
+          .split('\n').map(s => s.trim()).filter(Boolean),
+        negative_samples: document.getElementById('gen-safe-neg').value
+          .split('\n').map(s => s.trim()).filter(Boolean),
+      };
+    }
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+      const data = await res.json();
+      out.innerHTML = renderGeneratorResult(tab, data);
+    } catch (e) {
+      let msg = String(e);
+      try {
+        const stripped = msg.replace(/^Error:\s*/, '');
+        const parsed = JSON.parse(stripped);
+        if (parsed && parsed.detail) msg = String(parsed.detail);
+      } catch (_) {}
+      out.innerHTML = `<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-300">${escapeHtml(msg)}</div>`;
+    }
+  };
+
+  function renderGeneratorResult(tab, data) {
+    const stages = (data.stages || []).map(s =>
+      `<tr class="border-b border-surface-border/40">
+        <td class="py-1 px-2 text-sm text-slate-300">${escapeHtml(s.name || '')}</td>
+        <td class="py-1 px-2 text-xs ${s.status === 'ok' ? 'text-emerald-400' : 'text-amber-400'}">${escapeHtml(s.status || '')}</td>
+        <td class="py-1 px-2 text-xs text-slate-400">${s.duration_ms || 0}ms</td>
+        <td class="py-1 px-2 text-xs text-slate-400">${escapeHtml(s.summary || '')}</td>
+      </tr>`).join('');
+
+    let summaryHtml = '';
+    if (tab === 'tax') {
+      const n = (data.candidates || []).length;
+      summaryHtml = `<p class="text-sm text-slate-300 mb-2">Drafted <strong>${n}</strong> criterion candidate(s) for ${escapeHtml(data.payer || '')}; ${(data.duplicates_of_existing || []).length} duplicates skipped; ${(data.requires_human_judgment || []).length} flagged for human review.</p>`;
+    } else if (tab === 'form') {
+      const n = ((data.candidate_form && data.candidate_form.fields) || []).length;
+      summaryHtml = `<p class="text-sm text-slate-300 mb-2">Drafted form: <strong>${n}</strong> fields for ${escapeHtml(data.payer || '')}.</p>`;
+    } else if (tab === 'safe') {
+      const ce = data.candidate_extractor || {};
+      summaryHtml = `<p class="text-sm text-slate-300 mb-2">Drafted extractor: <strong>${escapeHtml(ce.function_name || '')}</strong> for ${escapeHtml((ce.criterion_codes || []).join(', '))}.</p>`;
+    }
+
+    const totalMs = data.total_duration_ms || 0;
+    const cost = (data.llm_cost_usd || 0).toFixed(4);
+    const tokens = data.llm_tokens || 0;
+    const py = data.python_source || '';
+
+    return `<div class="bg-surface rounded-xl border border-surface-border p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-base font-semibold text-white">Generator output</h3>
+        <span class="text-xs text-slate-500">${(totalMs / 1000).toFixed(1)}s · ${tokens} tokens · $${cost}</span>
+      </div>
+      ${summaryHtml}
+      <table class="w-full mb-4 border border-surface-border/50 rounded">
+        <thead><tr class="border-b border-surface-border text-xs text-slate-500 uppercase">
+          <th class="text-left py-2 px-2">Phase</th>
+          <th class="text-left py-2 px-2">Status</th>
+          <th class="text-left py-2 px-2">Time</th>
+          <th class="text-left py-2 px-2">Summary</th>
+        </tr></thead>
+        <tbody>${stages}</tbody>
+      </table>
+      <div class="mb-2 flex items-center justify-between">
+        <span class="text-xs uppercase text-slate-500">Python source (paste into the relevant module)</span>
+        <button onclick="copyToClipboard(this, ${JSON.stringify(py).replace(/"/g, '&quot;')})" class="text-xs px-2 py-1 rounded bg-accent-cyan/20 text-accent-cyan hover:bg-accent-cyan/30 transition">📋 Copy</button>
+      </div>
+      <pre class="text-xs text-slate-300 bg-background rounded p-3 overflow-x-auto whitespace-pre-wrap">${escapeHtml(py)}</pre>
+      <details class="mt-3">
+        <summary class="text-xs cursor-pointer text-slate-500">Raw JSON</summary>
+        <pre class="text-xs text-slate-400 mt-2 bg-background rounded p-3 overflow-x-auto">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+      </details>
+    </div>`;
+  }
+
+  window.copyToClipboard = function(btn, text) {
+    navigator.clipboard.writeText(text).then(() => {
+      const orig = btn.innerHTML;
+      btn.innerHTML = '✓ Copied';
+      setTimeout(() => { btn.innerHTML = orig; }, 1500);
+    });
+  };
+
   function renderE2EDemo() {
     return `
     <div class="fade-in space-y-6">

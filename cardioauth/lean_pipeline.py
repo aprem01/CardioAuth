@@ -199,7 +199,10 @@ def _state1_pre_pass(ctx: LeanRunContext) -> StageResult:
 
     # Taxonomy filter — only criteria that apply to the request CPT.
     # As taxonomy grows from 25 → 250 entries, this filter keeps the
-    # prompt size bounded.
+    # prompt size bounded. Definitions trimmed to ~280 chars: enough
+    # for the LLM to understand the criterion, short enough to keep
+    # the prompt small. Use `Criterion.short_name` and `definition`
+    # from the dataclass.
     try:
         from cardioauth.taxonomy.taxonomy import CRITERION_TAXONOMY
         applicable = []
@@ -207,16 +210,26 @@ def _state1_pre_pass(ctx: LeanRunContext) -> StageResult:
         for code, criterion in CRITERION_TAXONOMY.items():
             applies_to = getattr(criterion, "applies_to", None) or []
             if not applies_to or ctx.request_cpt in applies_to:
+                # Build a slim taxonomy entry. Trim long definitions so
+                # 250 criteria don't blow the prompt past 50K tokens.
+                full_def = getattr(criterion, "definition", "") or ""
+                short = getattr(criterion, "short_name", "") or ""
+                trimmed_def = (
+                    full_def[:280] + "…" if len(full_def) > 280 else full_def
+                )
                 entry = {
                     "code": code,
-                    "description": getattr(criterion, "description", ""),
+                    "short_name": short,
+                    "description": trimmed_def,
                     "applies_to": list(applies_to),
                     "evidence_type": getattr(criterion, "evidence_type", ""),
+                    "severity": getattr(criterion, "severity", "required"),
+                    "pathway_group": getattr(criterion, "pathway_group", "") or "",
                 }
                 # Payer-specific criteria — codes start with the payer
                 # short-name (e.g. "UHC-MCG-..."). Generic codes (ECG-,
                 # BMI-, EX-, NDX-) go in the main list.
-                if code.startswith(ctx.payer.split()[0].upper() + "-") if ctx.payer else False:
+                if ctx.payer and code.startswith(ctx.payer.split()[0].upper() + "-"):
                     payer_specific.append(entry)
                 else:
                     applicable.append(entry)
