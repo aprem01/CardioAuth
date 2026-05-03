@@ -343,3 +343,51 @@ def test_result_serializes_to_dict() -> None:
     assert "approval_score" in d
     # Must round-trip JSON for the API endpoint
     json.dumps(d, default=str)
+
+
+# ── Cost estimator (per-model pricing) ───────────────────────────────
+
+
+def test_cost_estimator_handles_known_models() -> None:
+    """Known model prefixes resolve to concrete prices."""
+    from cardioauth.lean_pipeline import _estimate_cost_usd
+
+    # Opus is most expensive
+    opus = _estimate_cost_usd("claude-opus-4-7", 1000, 500)
+    sonnet = _estimate_cost_usd("claude-sonnet-4-6", 1000, 500)
+    haiku = _estimate_cost_usd("claude-haiku-4-5-20251001", 1000, 500)
+    assert opus > sonnet > haiku
+    # Sonnet at 1000 in / 500 out should be ~ $0.0105 (3 + 7.5 = 10.5/1000)
+    assert 0.005 < sonnet < 0.020
+
+
+def test_cost_estimator_strips_window_suffix() -> None:
+    """`claude-opus-4-7[1m]` should match the same price as `claude-opus-4-7`."""
+    from cardioauth.lean_pipeline import _estimate_cost_usd
+    a = _estimate_cost_usd("claude-opus-4-7", 1000, 500)
+    b = _estimate_cost_usd("claude-opus-4-7[1m]", 1000, 500)
+    assert a == b
+
+
+def test_cost_estimator_falls_back_for_unknown_model() -> None:
+    """Unknown model gets a neutral default — never zero."""
+    from cardioauth.lean_pipeline import _estimate_cost_usd
+    cost = _estimate_cost_usd("some-future-model", 1000, 500)
+    assert cost > 0.0
+
+
+def test_cost_estimator_zero_tokens_yields_zero() -> None:
+    from cardioauth.lean_pipeline import _estimate_cost_usd
+    assert _estimate_cost_usd("claude-opus-4-7", 0, 0) == 0.0
+
+
+# ── Tool-use real caller (smoke; doesn't actually call Anthropic) ──────
+
+
+def test_real_anthropic_caller_requires_api_key(monkeypatch) -> None:
+    """No key → RuntimeError. Caller must not silently fall through."""
+    from cardioauth.lean_pipeline import _real_anthropic_caller
+    # Force an empty Config().anthropic_api_key
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        _real_anthropic_caller("system", "user")

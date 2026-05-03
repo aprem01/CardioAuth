@@ -1388,6 +1388,57 @@ async def end_to_end_ab(req: E2EDemoRequest, user: AuthUser = Depends(get_curren
     return comp.to_dict()
 
 
+@app.post("/api/demo/end-to-end-ab-pdf")
+async def end_to_end_ab_pdf(
+    file: UploadFile = File(...),
+    patient_id: str = "CUSTOM-PDF",
+    procedure_code: str = "78492",
+    payer_name: str = "UnitedHealthcare",
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A/B + PDF: parse PDF once, run both pipelines on the parsed
+    text, return the side-by-side comparison. This is what makes the
+    PDF-mode A/B run cleanly without paying the LlamaParse cost twice."""
+    log_audit(
+        user, "e2e_demo_ab_pdf",
+        f"file={file.filename or 'unknown'} cpt={procedure_code}",
+    )
+    from cardioauth.lean_ab_harness import compare_one_case
+    from cardioauth.pdf_parser import PdfParserError, parse_pdf_to_text
+
+    contents = await file.read()
+    try:
+        parsed = parse_pdf_to_text(contents, filename=file.filename or "upload.pdf")
+    except PdfParserError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.exception("PDF parse failed")
+        raise HTTPException(status_code=500, detail=f"PDF parse failed: {e}")
+
+    try:
+        comp = compare_one_case({
+            "case_id": f"{patient_id}-{procedure_code}",
+            "patient_id": patient_id,
+            "request_cpt": procedure_code,
+            "payer": payer_name,
+            "raw_note": parsed.text,
+            "scripted_outcome": "APPROVED",
+        })
+    except Exception as e:
+        logging.exception("A/B (PDF) run failed")
+        raise HTTPException(status_code=500, detail=f"A/B run failed: {e}")
+
+    out = comp.to_dict()
+    out["pdf_meta"] = {
+        "filename": file.filename,
+        "page_count": parsed.page_count,
+        "parser": parsed.parser,
+        "parse_duration_ms": parsed.duration_ms,
+        "text_preview": parsed.text[:400],
+    }
+    return out
+
+
 @app.get("/api/submissions/{submission_id}")
 def get_submission_record(submission_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Look up a persisted submission by ID (survives container restart)."""
