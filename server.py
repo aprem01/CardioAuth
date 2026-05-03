@@ -1289,7 +1289,11 @@ def end_to_end_lean(req: E2EDemoRequest, user: AuthUser = Depends(get_current_us
     if not (req.raw_note or "").strip():
         raise HTTPException(
             status_code=400,
-            detail="raw_note is required for the lean pipeline (paste-note mode).",
+            detail=(
+                "Lean pipeline needs note text — please switch to "
+                "'Paste deidentified note' or 'Upload deidentified PDF', "
+                "or pick the Current engine to run a demo patient."
+            ),
         )
 
     try:
@@ -1369,7 +1373,11 @@ async def end_to_end_ab(req: E2EDemoRequest, user: AuthUser = Depends(get_curren
     if not (req.raw_note or "").strip():
         raise HTTPException(
             status_code=400,
-            detail="raw_note is required for the A/B harness.",
+            detail=(
+                "A/B mode needs note text — please switch to "
+                "'Paste deidentified note' or 'Upload deidentified PDF', "
+                "or pick the Current engine to run a demo patient."
+            ),
         )
 
     try:
@@ -1386,6 +1394,98 @@ async def end_to_end_ab(req: E2EDemoRequest, user: AuthUser = Depends(get_curren
         raise HTTPException(status_code=500, detail=f"A/B run failed: {e}")
 
     return comp.to_dict()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Lean Hybrid agentic generators (taxonomy / payer-form / safety
+# extractor) — turn manual PA-domain authoring into clinician REVIEW
+# of auto-drafted candidates. See cardioauth/lean_*_generator.py.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TaxonomyGenRequest(BaseModel):
+    payer: str = "UnitedHealthcare"
+    target_cpts: list[str]
+    policy_text: str
+
+
+class FormGenRequest(BaseModel):
+    payer: str
+    form_pdf_text: str
+
+
+class SafetyExtractorGenRequest(BaseModel):
+    criterion_codes: list[str]
+    criterion_definition: str
+    positive_samples: list[str]
+    negative_samples: list[str] = []
+
+
+@app.post("/api/generators/taxonomy")
+def gen_taxonomy_endpoint(req: TaxonomyGenRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Drafts CRITERION_TAXONOMY entries from a payer policy text.
+    Output is REVIEWED BY A CLINICIAN before merging — this endpoint
+    returns the draft, the run trace, and ready-to-paste Python source."""
+    log_audit(user, "gen_taxonomy", f"payer={req.payer} cpts={','.join(req.target_cpts)}")
+    from cardioauth.lean_taxonomy_generator import generate_taxonomy_candidates
+
+    try:
+        result = generate_taxonomy_candidates(
+            payer=req.payer,
+            target_cpts=req.target_cpts,
+            policy_text=req.policy_text,
+        )
+    except Exception as e:
+        logging.exception("Taxonomy generator failed")
+        raise HTTPException(status_code=500, detail=f"Generator failed: {e}")
+
+    out = result.to_dict()
+    out["python_source"] = result.to_python_source()
+    return out
+
+
+@app.post("/api/generators/payer-form")
+def gen_payer_form_endpoint(req: FormGenRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Drafts a PayerForm from a blank PA-form PDF text. Reviewed
+    before merging."""
+    log_audit(user, "gen_payer_form", f"payer={req.payer}")
+    from cardioauth.lean_form_generator import generate_payer_form
+
+    try:
+        result = generate_payer_form(payer=req.payer, form_pdf_text=req.form_pdf_text)
+    except Exception as e:
+        logging.exception("Form generator failed")
+        raise HTTPException(status_code=500, detail=f"Generator failed: {e}")
+
+    out = result.to_dict()
+    out["python_source"] = result.to_python_source()
+    return out
+
+
+@app.post("/api/generators/safety-extractor")
+def gen_safety_extractor_endpoint(req: SafetyExtractorGenRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Drafts a safety_verifier extractor from criterion def + sample
+    notes. Reviewed before merging."""
+    log_audit(
+        user, "gen_safety_extractor",
+        f"codes={','.join(req.criterion_codes)} pos={len(req.positive_samples)} neg={len(req.negative_samples)}",
+    )
+    from cardioauth.lean_safety_extractor_generator import generate_safety_extractor
+
+    try:
+        result = generate_safety_extractor(
+            criterion_codes=req.criterion_codes,
+            criterion_definition=req.criterion_definition,
+            positive_samples=req.positive_samples,
+            negative_samples=req.negative_samples,
+        )
+    except Exception as e:
+        logging.exception("Safety extractor generator failed")
+        raise HTTPException(status_code=500, detail=f"Generator failed: {e}")
+
+    out = result.to_dict()
+    out["python_source"] = result.to_python_source()
+    return out
 
 
 @app.post("/api/demo/end-to-end-ab-pdf")
