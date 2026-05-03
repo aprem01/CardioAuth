@@ -840,6 +840,26 @@
           <button id="e2e-mode-pdf" onclick="setE2EMode('pdf')" class="px-4 py-2 rounded-lg text-sm font-medium transition border-2 border-surface-border bg-surface text-slate-400 hover:border-slate-500">Upload deidentified PDF</button>
         </div>
 
+        <!-- Pipeline engine toggle: current (multi-stage) vs lean hybrid vs A/B -->
+        <div class="bg-surface border border-surface-border rounded-lg px-3 py-2 mb-4">
+          <div class="flex items-center gap-3 flex-wrap">
+            <span class="text-xs uppercase text-slate-500">Pipeline engine</span>
+            <button id="e2e-engine-current" onclick="setE2EEngine('current')"
+              class="px-3 py-1 rounded text-xs font-medium transition border border-accent-cyan bg-accent-cyan/10 text-accent-cyan">
+              Current (multi-stage)
+            </button>
+            <button id="e2e-engine-lean" onclick="setE2EEngine('lean')"
+              class="px-3 py-1 rounded text-xs font-medium transition border border-surface-border bg-surface text-slate-400 hover:border-slate-500">
+              Lean hybrid (1 LLM call)
+            </button>
+            <button id="e2e-engine-ab" onclick="setE2EEngine('ab')"
+              class="px-3 py-1 rounded text-xs font-medium transition border border-surface-border bg-surface text-slate-400 hover:border-slate-500">
+              A/B (run both, compare)
+            </button>
+            <span class="text-xs text-slate-500 italic ml-2">Lean hybrid is the new architecture — same safety, ~70% faster, ~75% cheaper.</span>
+          </div>
+        </div>
+
         <!-- Demo patient selector (default) -->
         <div id="e2e-mode-demo-panel">
           <div class="grid md:grid-cols-4 gap-3 mb-4">
@@ -976,6 +996,22 @@
     window._e2eMode = mode;
   }
 
+  // Pipeline engine selector: current (multi-stage), lean (1 LLM call), or A/B
+  window.setE2EEngine = function(engine) {
+    const btns = {
+      current: document.getElementById('e2e-engine-current'),
+      lean:    document.getElementById('e2e-engine-lean'),
+      ab:      document.getElementById('e2e-engine-ab'),
+    };
+    if (!btns.current || !btns.lean || !btns.ab) return;
+    const activeCls = 'px-3 py-1 rounded text-xs font-medium transition border border-accent-cyan bg-accent-cyan/10 text-accent-cyan';
+    const inactiveCls = 'px-3 py-1 rounded text-xs font-medium transition border border-surface-border bg-surface text-slate-400 hover:border-slate-500';
+    for (const key of Object.keys(btns)) {
+      btns[key].className = (key === engine) ? activeCls : inactiveCls;
+    }
+    window._e2eEngine = engine;
+  };
+
   async function runE2EDemo() {
     const btn = document.getElementById('e2e-run-btn');
     const timeline = document.getElementById('e2e-timeline');
@@ -1032,15 +1068,34 @@
     timeline.innerHTML = '';
     summary.innerHTML = '';
 
+    // Pipeline engine: current (multi-stage demo_e2e), lean (1 LLM call),
+    // or ab (run both, side-by-side report). PDF mode supports current + lean
+    // (A/B-on-PDF needs the lean PDF endpoint to do both — reuses paste-note flow).
+    const engine = window._e2eEngine || 'current';
+    let endpoint;
+    if (engine === 'lean') {
+      endpoint = (mode === 'pdf') ? '/api/demo/end-to-end-lean-pdf' : '/api/demo/end-to-end-lean';
+    } else if (engine === 'ab') {
+      // A/B requires raw_note. PDF mode forces a fallback to paste-note shape on the server.
+      endpoint = '/api/demo/end-to-end-ab';
+    } else {
+      endpoint = (mode === 'pdf') ? '/api/demo/end-to-end-pdf' : '/api/demo/end-to-end';
+    }
+
     try {
       let res;
-      if (mode === 'pdf') {
-        res = await fetch('/api/demo/end-to-end-pdf', {
-          method: 'POST',
-          body: pdfForm,
-        });
+      if (mode === 'pdf' && (engine === 'current' || engine === 'lean')) {
+        res = await fetch(endpoint, { method: 'POST', body: pdfForm });
+      } else if (engine === 'ab' && mode === 'pdf') {
+        // A/B + PDF: tell the user we don't support that combo cleanly yet
+        timeline.innerHTML = `<div class="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-amber-300">
+          A/B mode currently requires paste-note input (raw text). Switch to "Paste deidentified note" or pick a single engine for PDF mode.
+        </div>`;
+        btn.disabled = false;
+        btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> Run end-to-end pipeline`;
+        return;
       } else {
-        res = await fetch('/api/demo/end-to-end', {
+        res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -1051,7 +1106,13 @@
         throw new Error(err);
       }
       const data = await res.json();
-      renderE2ETimeline(data);
+      if (engine === 'lean') {
+        renderLeanTimeline(data);
+      } else if (engine === 'ab') {
+        renderAbReport(data);
+      } else {
+        renderE2ETimeline(data);
+      }
       // On iterations 2+ scroll to the outcome so the physician can
       // immediately see what changed.
       if ((window._e2eState || {}).attempts && window._e2eState.attempts.length > 1) {
@@ -1066,6 +1127,172 @@
     const attemptsSoFar = ((window._e2eState || {}).attempts || []).length;
     const btnLabel = attemptsSoFar > 0 ? `Run again (attempt ${attemptsSoFar + 1})` : 'Run end-to-end pipeline';
     btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> ${btnLabel}`;
+  }
+
+  // ─────────────────────── Lean pipeline renderer ──────────────────────
+  // Renders LeanRunResult: 4 stages (pre-pass → unified call → safety verify → gate)
+  // + decision banner + score + findings. Reuses existing helpers
+  // (decisionBanner, severityChip, plainLabel) so the look-and-feel matches
+  // the current pipeline.
+  function renderLeanTimeline(data) {
+    const timeline = document.getElementById('e2e-timeline');
+    const summary = document.getElementById('e2e-summary');
+    if (!timeline) return;
+
+    const pipelineErrorsHtml = renderPipelineErrors(data.pipeline_errors || []);
+
+    const statusColor = (s) => ({
+      ok: 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300',
+      fallback: 'border-amber-500/30 bg-amber-500/5 text-amber-300',
+      skipped: 'border-slate-500/30 bg-slate-500/5 text-slate-400',
+      failed: 'border-red-500/30 bg-red-500/5 text-red-300',
+    })[s] || 'border-surface-border';
+    const statusIcon = (s) => ({ok: '✓', fallback: '~', skipped: '–', failed: '✗'})[s] || '•';
+
+    const stageHtml = (data.stages || []).map((s, i) => `
+      <div class="flex gap-4 items-start" style="animation: fadeIn 0.3s ease-out ${i * 0.12}s both">
+        <div class="flex-shrink-0 flex flex-col items-center">
+          <div class="w-9 h-9 rounded-full border-2 ${statusColor(s.status)} flex items-center justify-center font-bold">${statusIcon(s.status)}</div>
+          ${i < data.stages.length - 1 ? '<div class="w-0.5 h-8 bg-surface-border my-1"></div>' : ''}
+        </div>
+        <div class="flex-1 bg-surface rounded-lg border ${statusColor(s.status)} px-4 py-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex-1">
+              <p class="text-sm font-semibold text-white">${escapeHtml(s.name)}</p>
+              <p class="text-xs text-slate-400 mt-0.5">${s.duration_ms}ms</p>
+            </div>
+            <span class="text-xs uppercase font-medium opacity-80">${s.status}</span>
+          </div>
+          <p class="text-sm mt-2">${escapeHtml(s.summary)}</p>
+        </div>
+      </div>`).join('');
+
+    timeline.innerHTML = pipelineErrorsHtml + stageHtml;
+
+    // Findings — reuse the issueCard helper
+    const findings = data.findings || [];
+    const findingsHtml = findings.length
+      ? `<div class="mt-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Things to look at (${findings.length})</div>
+          ${findings.map(issueCard).join('')}
+        </div>`
+      : '';
+
+    // Decision banner
+    const decision = data.decision === 'transmit' ? 'approved'
+                   : data.decision === 'block' ? 'blocked' : 'deferred';
+    const heldForReview = data.decision === 'hold_for_review';
+
+    const scorePct = Math.round((data.approval_score || 0) * 100);
+    const cost = (data.state2_cost_usd || 0).toFixed(4);
+    const tokens = data.state2_tokens || 0;
+
+    summary.innerHTML = `
+      <div class="bg-surface rounded-xl border border-surface-border p-5 mt-4">
+        ${decisionBanner(decision, heldForReview)}
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="text-xs uppercase text-slate-500">Final outcome (Lean Hybrid)</p>
+            <p class="text-2xl font-bold ${data.decision === 'transmit' ? 'text-emerald-400' : data.decision === 'block' ? 'text-red-400' : 'text-amber-400'}">${escapeHtml((data.decision || '').toUpperCase())}</p>
+            <p class="text-xs text-slate-400 mt-1">Score ${scorePct}% (${escapeHtml(data.approval_label || '')}) · CPT ${escapeHtml(data.resolved_cpt || '—')}</p>
+          </div>
+          <div class="text-right">
+            <p class="text-xs uppercase text-slate-500">Pipeline metrics</p>
+            <p class="text-sm font-semibold text-white">${(data.total_duration_ms / 1000).toFixed(1)}s · ${tokens} tokens · $${cost}</p>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500">Case ${escapeHtml(data.case_id || '')} · ${escapeHtml(data.payer || '')}</p>
+        ${findingsHtml}
+      </div>`;
+
+    // Surface the State 2 structured output for inspection
+    const out = data.state2_output;
+    if (out) {
+      summary.innerHTML += `<details class="mt-4">
+        <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">State 2 structured output (${(out.criteria_evaluated || []).length} criteria evaluated)</summary>
+        <pre class="text-xs text-slate-400 mt-2 bg-background rounded p-3 overflow-x-auto whitespace-pre-wrap">${escapeHtml(JSON.stringify(out, null, 2))}</pre>
+      </details>`;
+    }
+  }
+
+  // ─────────────────────── A/B comparison renderer ──────────────────────
+  function renderAbReport(data) {
+    const timeline = document.getElementById('e2e-timeline');
+    const summary = document.getElementById('e2e-summary');
+    if (!timeline) return;
+
+    const c = data.comparison || {};
+    const lean = data.lean || {};
+    const cur = data.current || {};
+
+    const cmpRow = (label, leanVal, curVal, deltaVal = '') => `
+      <tr class="border-b border-surface-border/40">
+        <td class="py-2 px-3 text-xs text-slate-400 uppercase">${label}</td>
+        <td class="py-2 px-3 text-sm text-emerald-300">${escapeHtml(String(leanVal))}</td>
+        <td class="py-2 px-3 text-sm text-slate-300">${escapeHtml(String(curVal))}</td>
+        <td class="py-2 px-3 text-sm text-accent-cyan">${escapeHtml(String(deltaVal))}</td>
+      </tr>`;
+
+    const pct = (x) => (x == null ? '—' : (x * 100).toFixed(0) + '%');
+    const ms = (x) => (x == null ? '—' : x + 'ms');
+    const usd = (x) => (x == null ? '—' : '$' + Number(x).toFixed(4));
+
+    const findingsList = (kinds) => (kinds || []).length
+      ? (kinds || []).map(k => `<span class="px-1.5 py-0.5 rounded text-xs bg-amber-500/10 text-amber-300 border border-amber-500/20 mr-1 mb-1 inline-block">${escapeHtml(k)}</span>`).join('')
+      : '<span class="text-slate-500 italic">none</span>';
+
+    const decisionsAgreeBadge = c.decisions_agree
+      ? '<span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-xs font-medium">✓ agree</span>'
+      : '<span class="px-2 py-0.5 rounded bg-red-500/15 text-red-300 text-xs font-medium">✗ disagree</span>';
+
+    timeline.innerHTML = `
+      <div class="bg-surface rounded-xl border border-accent-cyan/30 p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="text-lg font-bold text-white">⚖️ A/B Comparison</h3>
+            <p class="text-xs text-slate-400 mt-0.5">Same input, both pipelines. ${decisionsAgreeBadge}</p>
+          </div>
+          <div class="text-right text-xs text-slate-500">
+            Case <span class="font-mono">${escapeHtml(data.case_id || '')}</span><br/>
+            CPT ${escapeHtml(data.request_cpt || '')} · ${escapeHtml(data.payer || '')}
+          </div>
+        </div>
+        <table class="w-full">
+          <thead>
+            <tr class="border-b border-surface-border/60">
+              <th class="text-left py-2 px-3 text-xs text-slate-500 uppercase">Metric</th>
+              <th class="text-left py-2 px-3 text-xs text-emerald-400 uppercase">Lean Hybrid</th>
+              <th class="text-left py-2 px-3 text-xs text-slate-400 uppercase">Current</th>
+              <th class="text-left py-2 px-3 text-xs text-accent-cyan uppercase">Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${cmpRow('Decision', lean.decision || '—', cur.decision || '—', c.decisions_agree ? '✓' : '✗')}
+            ${cmpRow('Resolved CPT', lean.resolved_cpt || '—', cur.resolved_cpt || '—', c.cpts_agree ? '✓' : '✗')}
+            ${cmpRow('Approval score', pct(lean.score) + ' (' + (lean.label || '—') + ')', pct(cur.score) + ' (' + (cur.label || '—') + ')', (c.score_delta != null ? (c.score_delta * 100).toFixed(0) + 'pp' : ''))}
+            ${cmpRow('Latency', ms(lean.latency_ms), ms(cur.latency_ms), (c.latency_speedup ? c.latency_speedup.toFixed(1) + '× faster' : ''))}
+            ${cmpRow('Tokens', lean.tokens || 0, cur.tokens || 0, '')}
+            ${cmpRow('Cost', usd(lean.cost_usd), usd(cur.cost_usd), (c.cost_savings_pct ? c.cost_savings_pct.toFixed(0) + '% savings' : ''))}
+            ${cmpRow('Criteria-met overlap', '', '', (c.criteria_jaccard != null ? 'Jaccard ' + c.criteria_jaccard.toFixed(2) : ''))}
+          </tbody>
+        </table>
+        <div class="mt-4 grid md:grid-cols-2 gap-4">
+          <div>
+            <p class="text-xs uppercase text-emerald-400 mb-2">Lean findings (${(lean.finding_kinds || []).length})</p>
+            <div class="text-xs">${findingsList(lean.finding_kinds)}</div>
+          </div>
+          <div>
+            <p class="text-xs uppercase text-slate-400 mb-2">Current findings (${(cur.finding_kinds || []).length})</p>
+            <div class="text-xs">${findingsList(cur.finding_kinds)}</div>
+          </div>
+        </div>
+      </div>`;
+
+    summary.innerHTML = `
+      <details class="mt-4">
+        <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Raw A/B comparison JSON</summary>
+        <pre class="text-xs text-slate-400 mt-2 bg-background rounded p-3 overflow-x-auto">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+      </details>`;
   }
 
   function renderE2ETimeline(data) {

@@ -1263,6 +1263,131 @@ async def end_to_end_demo_pdf(
     return result
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Lean Hybrid pipeline endpoints (Peter May rerun architecture answer)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/demo/end-to-end-lean")
+def end_to_end_lean(req: E2EDemoRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Run the lean hybrid state machine on a deidentified note.
+
+    This is the alternative to /api/demo/end-to-end built around the
+    Peter May rerun architectural critique: 1 unified LLM call instead
+    of 4 staged calls, surrounded by deterministic guardrails. Same
+    scaling/safety/auditability properties; ~70% latency reduction
+    and ~75% cost reduction expected.
+
+    Returns a JSON-serializable LeanRunResult.
+    """
+    log_audit(
+        user, "e2e_demo_lean",
+        f"patient={req.patient_id} cpt={req.procedure_code}",
+    )
+    from cardioauth.lean_pipeline import run_lean_pipeline
+
+    if not (req.raw_note or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="raw_note is required for the lean pipeline (paste-note mode).",
+        )
+
+    try:
+        result = run_lean_pipeline(
+            case_id=f"{req.patient_id}-{req.procedure_code}",
+            raw_note=req.raw_note,
+            request_cpt=req.procedure_code,
+            payer=req.payer_name,
+        )
+    except Exception as e:
+        logging.exception("Lean pipeline failed")
+        raise HTTPException(status_code=500, detail=f"Lean pipeline failed: {e}")
+
+    return result.to_dict()
+
+
+@app.post("/api/demo/end-to-end-lean-pdf")
+async def end_to_end_lean_pdf(
+    file: UploadFile = File(...),
+    patient_id: str = "CUSTOM-PDF",
+    procedure_code: str = "78492",
+    payer_name: str = "UnitedHealthcare",
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Same lean hybrid pipeline, PDF-upload variant. Mirrors the
+    existing /api/demo/end-to-end-pdf endpoint shape so the UI can
+    swap pipelines with a single toggle."""
+    log_audit(
+        user, "e2e_demo_lean_pdf",
+        f"file={file.filename or 'unknown'} cpt={procedure_code}",
+    )
+    from cardioauth.lean_pipeline import run_lean_pipeline
+    from cardioauth.pdf_parser import PdfParserError, parse_pdf_to_text
+
+    contents = await file.read()
+    try:
+        parsed = parse_pdf_to_text(contents, filename=file.filename or "upload.pdf")
+    except PdfParserError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.exception("PDF parse failed")
+        raise HTTPException(status_code=500, detail=f"PDF parse failed: {e}")
+
+    try:
+        result = run_lean_pipeline(
+            case_id=f"{patient_id}-{procedure_code}",
+            raw_note=parsed.text,
+            request_cpt=procedure_code,
+            payer=payer_name,
+        )
+    except Exception as e:
+        logging.exception("Lean pipeline (PDF) failed")
+        raise HTTPException(status_code=500, detail=f"Lean pipeline failed: {e}")
+
+    out = result.to_dict()
+    out["pdf_meta"] = {
+        "filename": file.filename,
+        "page_count": parsed.page_count,
+        "parser": parsed.parser,
+        "parse_duration_ms": parsed.duration_ms,
+        "text_preview": parsed.text[:400],
+    }
+    return out
+
+
+@app.post("/api/demo/end-to-end-ab")
+async def end_to_end_ab(req: E2EDemoRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Side-by-side run: same input, both pipelines, one comparison
+    report. The Peter-facing artifact for the lean-vs-current
+    benchmark."""
+    log_audit(
+        user, "e2e_demo_ab",
+        f"patient={req.patient_id} cpt={req.procedure_code}",
+    )
+    from cardioauth.lean_ab_harness import compare_one_case
+
+    if not (req.raw_note or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="raw_note is required for the A/B harness.",
+        )
+
+    try:
+        comp = compare_one_case({
+            "case_id": f"{req.patient_id}-{req.procedure_code}",
+            "patient_id": req.patient_id,
+            "request_cpt": req.procedure_code,
+            "payer": req.payer_name,
+            "raw_note": req.raw_note,
+            "scripted_outcome": (req.scripted_outcome or "APPROVED").upper(),
+        })
+    except Exception as e:
+        logging.exception("A/B run failed")
+        raise HTTPException(status_code=500, detail=f"A/B run failed: {e}")
+
+    return comp.to_dict()
+
+
 @app.get("/api/submissions/{submission_id}")
 def get_submission_record(submission_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Look up a persisted submission by ID (survives container restart)."""
