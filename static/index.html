@@ -1194,6 +1194,7 @@
         </div>
         <p class="text-xs text-slate-500">Case ${escapeHtml(data.case_id || '')} · ${escapeHtml(data.payer || '')}</p>
         ${findingsHtml}
+        ${renderProvenancePanel(data.provenance, data.archive_paths)}
       </div>`;
 
     // Surface the State 2 structured output for inspection
@@ -1204,6 +1205,44 @@
         <pre class="text-xs text-slate-400 mt-2 bg-background rounded p-3 overflow-x-auto whitespace-pre-wrap">${escapeHtml(JSON.stringify(out, null, 2))}</pre>
       </details>`;
     }
+  }
+
+  // ─────────────────────── FHIR Provenance panel ─────────────────────
+  // Renders the State 5 audit-trail artifact: provenance ID, signature,
+  // CMS-0057-F policy ref, the three FHIR agent roles, and the local
+  // archive path. Visible inline on every lean run.
+  function renderProvenancePanel(provenance, archivePaths) {
+    if (!provenance) return '';
+    const sig = (provenance.signature && provenance.signature[0])
+      ? provenance.signature[0].data : '';
+    const sigShort = sig ? sig.slice(0, 16) + '…' + sig.slice(-8) : '—';
+    const agents = (provenance.agent || []).map(a => {
+      const role = (a.type && a.type.coding && a.type.coding[0])
+        ? a.type.coding[0].code : '';
+      const who = (a.who && (a.who.display || (a.who.identifier && a.who.identifier.value))) || '';
+      return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-700/40 text-xs text-slate-300 mr-1 mb-1">
+        <span class="text-accent-cyan font-mono">${escapeHtml(role)}</span>
+        <span class="text-slate-400">${escapeHtml(who)}</span>
+      </span>`;
+    }).join('');
+    const policyUrl = (provenance.policy && provenance.policy[0]) || '';
+    const archiveLine = archivePaths && archivePaths.result_path
+      ? `<div class="text-xs text-slate-500 mt-2">Archive: <code class="text-slate-400">${escapeHtml(archivePaths.result_path)}</code></div>`
+      : '';
+    return `<div class="mt-4 rounded-lg border border-slate-600/40 bg-slate-900/40 p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs uppercase tracking-wider text-slate-400">📜 FHIR Provenance — CMS-0057-F</div>
+        <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">${escapeHtml(provenance.resourceType || '')}</span>
+      </div>
+      <div class="text-xs text-slate-300 space-y-1">
+        <div><span class="text-slate-500">id:</span> <code class="text-slate-200">${escapeHtml(provenance.id || '')}</code></div>
+        <div><span class="text-slate-500">recorded:</span> <span class="font-mono">${escapeHtml(provenance.recorded || '')}</span></div>
+        <div><span class="text-slate-500">policy:</span> <a href="${escapeHtml(policyUrl)}" target="_blank" rel="noopener" class="text-accent-cyan underline decoration-dotted">CMS-0057-F</a></div>
+        <div class="pt-1"><span class="text-slate-500">agents:</span><br/>${agents}</div>
+        <div><span class="text-slate-500">signature:</span> <code class="text-slate-400 font-mono text-xs" title="${escapeHtml(sig)}">${escapeHtml(sigShort)}</code></div>
+        ${archiveLine}
+      </div>
+    </div>`;
   }
 
   // ─────────────────────── A/B comparison renderer ──────────────────────
@@ -1279,7 +1318,22 @@
         </div>
       </div>`;
 
-    summary.innerHTML = `
+    // Surface the lean side's FHIR Provenance — current pipeline
+    // doesn't emit one yet, so this panel is lean-only.
+    const leanProvHtml = renderProvenancePanel(
+      (lean.state2_output && lean.state2_output.__provenance) || null,
+      null,
+    );
+    // The compare_one_case() harvester strips state2_output; rebuild
+    // the Provenance display from comp.lean_provenance if present.
+    const leanProv = data.lean_provenance || (data.lean && data.lean.provenance) || null;
+    const leanArchive = data.lean_archive_paths || (data.lean && data.lean.archive_paths) || null;
+    const provBlock = leanProv
+      ? `<div class="mt-4">${renderProvenancePanel(leanProv, leanArchive)}</div>
+         <div class="text-xs text-slate-500 mt-1 italic">FHIR Provenance is emitted by the lean pipeline only (CMS-0057-F). The current pipeline does not yet attach a Provenance resource.</div>`
+      : '';
+
+    summary.innerHTML = `${provBlock}
       <details class="mt-4">
         <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Raw A/B comparison JSON</summary>
         <pre class="text-xs text-slate-400 mt-2 bg-background rounded p-3 overflow-x-auto">${escapeHtml(JSON.stringify(data, null, 2))}</pre>

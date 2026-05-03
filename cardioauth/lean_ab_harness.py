@@ -80,6 +80,11 @@ class CaseComparison:
     current_pipeline_error_kinds: list[str] = field(default_factory=list)
     current_criteria_met: list[str] = field(default_factory=list)
 
+    # FHIR Provenance + archive (lean only — current pipeline doesn't
+    # emit FHIR Provenance yet)
+    lean_provenance: dict | None = None
+    lean_archive_paths: dict | None = None
+
     # Run-level errors (harness errors, not pipeline errors)
     lean_run_error: str = ""
     current_run_error: str = ""
@@ -128,6 +133,8 @@ class CaseComparison:
             "case_id": self.case_id,
             "request_cpt": self.request_cpt,
             "payer": self.payer,
+            "lean_provenance": self.lean_provenance,
+            "lean_archive_paths": self.lean_archive_paths,
             "lean": {
                 "decision": self.lean_decision,
                 "resolved_cpt": self.lean_resolved_cpt,
@@ -355,6 +362,10 @@ def _harvest_lean_metrics(comp: CaseComparison, result: LeanRunResult) -> None:
             c["code"] for c in (result.state2_output.get("criteria_evaluated") or [])
             if c.get("status") == "met"
         )
+    # Pass through FHIR Provenance + archive paths so the UI can
+    # render the audit-trail panel for the lean side.
+    comp.lean_provenance = result.provenance
+    comp.lean_archive_paths = result.archive_paths
 
 
 def _harvest_current_metrics(comp: CaseComparison, timeline: dict) -> None:
