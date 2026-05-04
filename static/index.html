@@ -1093,7 +1093,17 @@
             </div>
             <div>
               <label class="text-xs uppercase text-slate-500 mb-1 block">Procedure (CPT)</label>
-              <input id="e2e-cpt" value="78492" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+              <select id="e2e-cpt" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono">
+                <option value="78492">78492 — Cardiac PET MPI</option>
+                <option value="78452">78452 — Cardiac SPECT MPI</option>
+                <option value="75574">75574 — Coronary CT angiography</option>
+                <option value="33361">33361 — TAVR</option>
+                <option value="92928">92928 — Coronary PCI</option>
+                <option value="93312">93312 — Transesophageal echo</option>
+                <option value="93619">93619 — Electrophysiology study</option>
+                <option value="93880">93880 — Carotid duplex US</option>
+                <option value="93458">93458 — Left heart cath</option>
+              </select>
             </div>
             <div>
               <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
@@ -1123,7 +1133,17 @@
           <div class="grid md:grid-cols-3 gap-3 mb-3">
             <div>
               <label class="text-xs uppercase text-slate-500 mb-1 block">Procedure (CPT)</label>
-              <input id="e2e-custom-cpt" value="78492" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+              <select id="e2e-custom-cpt" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono">
+                <option value="78492">78492 — Cardiac PET MPI</option>
+                <option value="78452">78452 — Cardiac SPECT MPI</option>
+                <option value="75574">75574 — Coronary CT angiography</option>
+                <option value="33361">33361 — TAVR</option>
+                <option value="92928">92928 — Coronary PCI</option>
+                <option value="93312">93312 — Transesophageal echo</option>
+                <option value="93619">93619 — Electrophysiology study</option>
+                <option value="93880">93880 — Carotid duplex US</option>
+                <option value="93458">93458 — Left heart cath</option>
+              </select>
             </div>
             <div>
               <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
@@ -1157,7 +1177,17 @@
           <div class="grid md:grid-cols-3 gap-3 mb-3">
             <div>
               <label class="text-xs uppercase text-slate-500 mb-1 block">Procedure (CPT)</label>
-              <input id="e2e-pdf-cpt" value="78492" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+              <select id="e2e-pdf-cpt" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono">
+                <option value="78492">78492 — Cardiac PET MPI</option>
+                <option value="78452">78452 — Cardiac SPECT MPI</option>
+                <option value="75574">75574 — Coronary CT angiography</option>
+                <option value="33361">33361 — TAVR</option>
+                <option value="92928">92928 — Coronary PCI</option>
+                <option value="93312">93312 — Transesophageal echo</option>
+                <option value="93619">93619 — Electrophysiology study</option>
+                <option value="93880">93880 — Carotid duplex US</option>
+                <option value="93458">93458 — Left heart cath</option>
+              </select>
             </div>
             <div>
               <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
@@ -1328,12 +1358,35 @@
         throw new Error(err);
       }
       const data = await res.json();
+      // Step 0 echo: surface what was actually submitted at the top
+      // of the timeline so a UI/form bug can't silently route a SPECT
+      // case as PET (or vice versa). Reads from the SAME element the
+      // request used, not the panel's default.
+      const cpt = (mode === 'pdf')
+        ? (document.getElementById('e2e-pdf-cpt') || {}).value
+        : (mode === 'custom')
+          ? (document.getElementById('e2e-custom-cpt') || {}).value
+          : (document.getElementById('e2e-cpt') || {}).value;
+      const payer = (mode === 'pdf')
+        ? (document.getElementById('e2e-pdf-payer') || {}).value
+        : (mode === 'custom')
+          ? (document.getElementById('e2e-custom-payer') || {}).value
+          : (document.getElementById('e2e-payer') || {}).value;
+      const cptName = (cpt === '78492' ? 'Cardiac PET MPI' : cpt === '78452' ? 'Cardiac SPECT MPI'
+                     : cpt === '33361' ? 'TAVR' : cpt === '92928' ? 'PCI'
+                     : cpt === '75574' ? 'Cardiac CT angiography' : cpt === '93312' ? 'TEE'
+                     : cpt === '93619' ? 'EP study' : cpt === '93880' ? 'Carotid duplex'
+                     : cpt === '93458' ? 'Left heart cath' : 'Procedure');
+      const echoBanner = `<div class="mb-3 px-4 py-2 rounded-lg bg-accent-cyan/5 border border-accent-cyan/30 text-sm text-accent-cyan">
+        <span class="font-mono font-semibold">${escapeHtml(cpt || '?')}</span> · ${escapeHtml(cptName)} · ${escapeHtml(payer || '?')} · engine=<span class="font-semibold">${escapeHtml(engine)}</span> · mode=<span class="font-semibold">${escapeHtml(mode)}</span>
+      </div>`;
+
       if (engine === 'lean') {
-        renderLeanTimeline(data);
+        renderLeanTimeline(data, echoBanner);
       } else if (engine === 'ab') {
-        renderAbReport(data);
+        renderAbReport(data, echoBanner);
       } else {
-        renderE2ETimeline(data);
+        renderE2ETimeline(data, echoBanner);
       }
       // On iterations 2+ scroll to the outcome so the physician can
       // immediately see what changed.
@@ -1368,7 +1421,7 @@
   // + decision banner + score + findings. Reuses existing helpers
   // (decisionBanner, severityChip, plainLabel) so the look-and-feel matches
   // the current pipeline.
-  function renderLeanTimeline(data) {
+  function renderLeanTimeline(data, echoBanner) {
     const timeline = document.getElementById('e2e-timeline');
     const summary = document.getElementById('e2e-summary');
     if (!timeline) return;
@@ -1401,7 +1454,7 @@
         </div>
       </div>`).join('');
 
-    timeline.innerHTML = pipelineErrorsHtml + stageHtml;
+    timeline.innerHTML = (echoBanner || '') + pipelineErrorsHtml + stageHtml;
 
     // Findings — reuse the issueCard helper
     const findings = data.findings || [];
@@ -1497,7 +1550,7 @@
   }
 
   // ─────────────────────── A/B comparison renderer ──────────────────────
-  function renderAbReport(data) {
+  function renderAbReport(data, echoBanner) {
     const timeline = document.getElementById('e2e-timeline');
     const summary = document.getElementById('e2e-summary');
     if (!timeline) return;
@@ -1526,7 +1579,7 @@
       ? '<span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-xs font-medium">✓ agree</span>'
       : '<span class="px-2 py-0.5 rounded bg-red-500/15 text-red-300 text-xs font-medium">✗ disagree</span>';
 
-    timeline.innerHTML = `
+    timeline.innerHTML = (echoBanner || '') + `
       <div class="bg-surface rounded-xl border border-accent-cyan/30 p-5">
         <div class="flex items-center justify-between mb-4">
           <div>
@@ -1591,7 +1644,7 @@
       </details>`;
   }
 
-  function renderE2ETimeline(data) {
+  function renderE2ETimeline(data, echoBanner) {
     const timeline = document.getElementById('e2e-timeline');
     const summary = document.getElementById('e2e-summary');
     if (!timeline) return;
@@ -1637,7 +1690,7 @@
       </div>
     `).join('');
 
-    timeline.innerHTML = pipelineErrorsHtml + stepsHtml;
+    timeline.innerHTML = (echoBanner || '') + pipelineErrorsHtml + stepsHtml;
 
     const outcomeColor = (data.outcome === 'APPROVED') ? 'text-emerald-400' :
                          (data.outcome === 'DENIED') ? 'text-red-400' :

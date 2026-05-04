@@ -65,13 +65,32 @@ _PATTERNS: dict[str, list[tuple[str, str]]] = {
          r"\bborn\s+(?:on\s+)?" + _DOB_VALUE),
     ],
     "insurance_id": [
+        # Common labels — Member ID / Subscriber ID / Policy # / etc.
         ("member_id_label",
-         r"\b(?:Member\s*(?:ID|#)|Insurance\s*(?:ID|#)|Subscriber\s*(?:ID|#)|"
-         r"Policy\s*(?:#|Number)|Insurance\s*Member\s*ID)\s*[:#-]?\s*"
+         r"\b(?:Member\s*(?:ID|#|Number)|Insurance\s*(?:ID|#|Number)|"
+         r"Subscriber\s*(?:ID|#|Number)|Policy\s*(?:#|Number|ID)|"
+         r"Insurance\s*Member\s*ID|Cardholder\s*(?:ID|#)|"
+         r"Plan\s*(?:ID|#|Number))\s*[:#-]?\s*"
          r"([A-Z0-9\-]{4,20})"),
+        # Group number (sometimes the only ID present on the
+        # insurance-card line)
+        ("group_id_label",
+         r"\b(?:Group\s*(?:#|Number|ID))\s*[:#-]?\s*"
+         r"([A-Z0-9\-]{4,20})"),
+        # Medicare HICN / MBI — 11-character format like 1AA9-AA9-AA99
+        ("medicare_mbi",
+         r"\b(?:MBI|HICN|Medicare\s*(?:Beneficiary\s*Identifier|Number|ID))\s*[:#-]?\s*"
+         r"([A-Z0-9\-]{6,20})"),
+        # Payer-prefixed IDs (UHC123456, Aetna-W123456789, etc.) when
+        # the label uses the payer brand directly
         ("plan_id",
-         r"\b(?:UHC|Aetna|Anthem|BCBS|Cigna|Humana|Medicare)\s*"
+         r"\b(?:UHC|UnitedHealthcare|Aetna|Anthem|BCBS|"
+         r"Blue\s*Cross|Cigna|Humana|Medicare|Medicaid|Tricare)\s*"
          r"(?:Member|Plan|ID|#)?\s*[:#-]?\s*([A-Z0-9\-]{6,20})"),
+        # Fallback: bare "ID:" or "ID #:" line, when the label is
+        # generic and the value is clearly identifier-shaped
+        ("generic_id_with_dash",
+         r"(?:^|\n)\s*ID\s*[#:]\s*([A-Z]{2,5}[\-A-Z0-9]{4,18})"),
     ],
     "payer_name": [
         ("payer_label",

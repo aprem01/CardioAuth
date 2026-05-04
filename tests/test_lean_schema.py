@@ -79,16 +79,30 @@ def test_state2_json_schema_emits_valid_json_schema_doc() -> None:
 # ── Cross-field invariants ───────────────────────────────────────────
 
 
-def test_ambiguous_criterion_requires_rationale() -> None:
-    """Edge case: when LLM marks a criterion ambiguous, it MUST explain
-    why. Otherwise the downstream gate has no signal to act on."""
-    with pytest.raises(ValidationError, match="rationale required when status=ambiguous"):
-        CriterionEvaluation(code="ECG-001", status="ambiguous", confidence=0.5)
+def test_ambiguous_criterion_backfills_missing_rationale() -> None:
+    """When LLM marks a criterion ambiguous without rationale, we
+    fill a placeholder instead of rejecting. Hard rejection was the
+    source of production schema-validation failures (Anthropic's
+    tool-use doesn't enforce cross-field invariants)."""
+    c = CriterionEvaluation(code="ECG-001", status="ambiguous", confidence=0.5)
+    assert "Auto-filled" in c.rationale
+    assert "ambiguous" in c.rationale
 
 
-def test_not_met_criterion_requires_rationale() -> None:
-    with pytest.raises(ValidationError, match="rationale required when status=not_met"):
-        CriterionEvaluation(code="BMI-001", status="not_met", confidence=0.9)
+def test_not_met_criterion_backfills_missing_rationale() -> None:
+    c = CriterionEvaluation(code="BMI-001", status="not_met", confidence=0.9)
+    assert "Auto-filled" in c.rationale
+    assert "not_met" in c.rationale
+
+
+def test_explicit_rationale_preserved_when_provided() -> None:
+    """When the LLM does provide a rationale, we don't override it."""
+    c = CriterionEvaluation(
+        code="ECG-001", status="not_met",
+        rationale="Note doesn't document any ECG abnormality.",
+    )
+    assert "Auto-filled" not in c.rationale
+    assert "Note doesn't document" in c.rationale
 
 
 def test_met_criterion_does_not_require_rationale() -> None:
@@ -107,14 +121,14 @@ def test_not_evaluated_criterion_does_not_require_rationale() -> None:
     assert c.status == "not_evaluated"
 
 
-def test_cpt_resolution_non_request_requires_rationale() -> None:
-    """If we're saying the note ordered a different CPT than the
-    request, we owe the physician an explanation."""
-    with pytest.raises(ValidationError, match="rationale required"):
-        CptResolution(
-            cpt="78452", procedure_name="SPECT",
-            source="note_extracted", request_cpt="78492",
-        )
+def test_cpt_resolution_non_request_backfills_rationale() -> None:
+    """Non-request CPT source without rationale → backfilled, not
+    rejected."""
+    cr = CptResolution(
+        cpt="78452", procedure_name="SPECT",
+        source="note_extracted", request_cpt="78492",
+    )
+    assert "Auto-filled" in cr.rationale
 
 
 def test_cpt_resolution_request_does_not_require_rationale() -> None:

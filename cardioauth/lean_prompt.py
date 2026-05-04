@@ -74,6 +74,14 @@ criterion is genuinely unclear, say "ambiguous" and explain why.
      requires_human_review=true
    - not_evaluated: criterion doesn't apply to this case
 
+   **CRITICAL — RATIONALE IS REQUIRED for `not_met` and `ambiguous`.**
+   Every CriterionEvaluation with status `not_met` or `ambiguous`
+   MUST have a non-empty `rationale` field (at least 8 characters
+   explaining what's missing or unclear). Empty rationale = malformed
+   output. Same rule applies to CptResolution when `source` is
+   anything other than `"request"`: provide a `rationale` explaining
+   why the CPT differs from the request.
+
 5. **Documentation quality matters.** Set
    documentation_quality.note_format_quality honestly:
    - structured: full sectioned note (HPI, Assessment, ECG, etc.)

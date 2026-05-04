@@ -103,10 +103,22 @@ class CriterionEvaluation(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _ambiguous_or_notmet_needs_rationale(self) -> "CriterionEvaluation":
+    def _backfill_missing_rationale(self) -> "CriterionEvaluation":
+        """When status is not_met / ambiguous and rationale is empty,
+        fill a placeholder rationale rather than reject the whole
+        output. Anthropic's tool-use enforces the JSON shape but
+        doesn't see cross-field invariants, so the LLM occasionally
+        emits not_met without rationale. Filling a placeholder lets
+        the run complete; the State 4 gate emits a low-severity
+        finding so the reviewer still sees the gap.
+
+        Hard rejection here was the source of "lean unified call
+        failing schema validation" — fixed by softening to a
+        placeholder."""
         if self.status in ("ambiguous", "not_met") and not self.rationale.strip():
-            raise ValueError(
-                f"rationale required when status={self.status} (criterion {self.code!r})"
+            object.__setattr__(
+                self, "rationale",
+                f"[Auto-filled: LLM emitted status={self.status} without explicit rationale.]",
             )
         return self
 
@@ -160,9 +172,15 @@ class CptResolution(BaseModel):
     note_evidence: list[EvidenceQuote] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _non_request_needs_rationale(self) -> "CptResolution":
+    def _backfill_missing_rationale(self) -> "CptResolution":
+        """Same softening as CriterionEvaluation: fill a placeholder
+        rather than reject when the LLM omits rationale on a non-
+        request CPT resolution."""
         if self.source != "request" and not self.rationale.strip():
-            raise ValueError(f"rationale required when source={self.source!r}")
+            object.__setattr__(
+                self, "rationale",
+                f"[Auto-filled: LLM emitted source={self.source} without explicit rationale.]",
+            )
         return self
 
 

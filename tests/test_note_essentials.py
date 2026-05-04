@@ -107,6 +107,55 @@ def test_member_id_skips_short_garbage() -> None:
     assert "insurance_id" not in out
 
 
+# ── Expanded member_id phrasings (Peter May rerun feedback) ─────────
+
+
+def test_cardholder_id_label() -> None:
+    note = "Cardholder ID: ABC123456\n"
+    out = extract_essentials_from_note(note)
+    assert out["insurance_id"].value == "ABC123456"
+
+
+def test_member_number_label() -> None:
+    """Some payers say 'Member Number' rather than 'Member ID'."""
+    note = "Member Number: UHC123456789\n"
+    out = extract_essentials_from_note(note)
+    assert out["insurance_id"].value == "UHC123456789"
+
+
+def test_plan_id_label() -> None:
+    note = "Plan ID: AET-W123456\n"
+    out = extract_essentials_from_note(note)
+    assert out["insurance_id"].value == "AET-W123456"
+
+
+def test_policy_number_label() -> None:
+    note = "Policy Number: BCBS-987654321\n"
+    out = extract_essentials_from_note(note)
+    assert out["insurance_id"].value == "BCBS-987654321"
+
+
+def test_group_id_label() -> None:
+    """Group # is sometimes the only ID labeled."""
+    note = "Group #: GRP-12345\n"
+    out = extract_essentials_from_note(note)
+    assert out["insurance_id"].value == "GRP-12345"
+
+
+def test_medicare_mbi_label() -> None:
+    """Medicare's Beneficiary Identifier."""
+    note = "MBI: 1AA9-AA9-AA99\n"
+    out = extract_essentials_from_note(note)
+    assert out["insurance_id"].value == "1AA9-AA9-AA99"
+
+
+def test_uhc_brand_id_label() -> None:
+    """When the payer brand prefixes the value directly."""
+    note = "UHC ID: 99218374\n"
+    out = extract_essentials_from_note(note)
+    assert out["insurance_id"].value == "99218374"
+
+
 # ── Payer name ─────────────────────────────────────────────────────────
 
 
