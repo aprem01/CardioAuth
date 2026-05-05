@@ -124,12 +124,18 @@ def score_case(case: StressCase, response: dict) -> dict[str, Any]:
             (out2.get("cpt_resolution") or {}).get("source", "")
         )
 
-    # Sanity-check a few obvious failure modes
+    # Sanity-check failure modes. CPT divergence with a recorded
+    # source (note_extracted / ambiguous_human_decide) is correct
+    # behavior — only flag when the source is "request" but the cpt
+    # mysteriously differs.
     flags = []
     if out.get("case_id_returned") and case.request_cpt not in out["case_id_returned"]:
         flags.append("case_id_does_not_contain_request_cpt")
-    if out.get("resolved_cpt") and out["resolved_cpt"] != case.request_cpt:
-        flags.append(f"resolved_cpt_differs:{out['resolved_cpt']}")
+    cpt_source = out.get("cpt_resolution_source", "")
+    if (out.get("resolved_cpt")
+            and out["resolved_cpt"] != case.request_cpt
+            and cpt_source == "request"):
+        flags.append(f"resolved_cpt_differs_without_source_change:{out['resolved_cpt']}")
     if out.get("narrative_cpt") and out.get("resolved_cpt") and \
        out["narrative_cpt"] != out["resolved_cpt"]:
         flags.append("narrative_cpt_diverges_from_resolved")
@@ -137,6 +143,8 @@ def score_case(case: StressCase, response: dict) -> dict[str, Any]:
         flags.append("has_pipeline_errors")
     if out.get("state2_status") == "failed":
         flags.append("state2_failed")
+    if out.get("http_status") and out["http_status"] >= 500:
+        flags.append(f"http_{out['http_status']}")
     out["red_flags"] = flags
 
     out["status"] = "OK" if not flags else "FLAGS"
