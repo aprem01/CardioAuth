@@ -13,7 +13,7 @@ import os
 import tempfile
 
 import anthropic
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -1206,12 +1206,12 @@ def end_to_end_demo(req: E2EDemoRequest, user: AuthUser = Depends(get_current_us
 @app.post("/api/demo/end-to-end-pdf")
 async def end_to_end_demo_pdf(
     file: UploadFile = File(...),
-    patient_id: str = "CUSTOM-PDF",
-    procedure_code: str = "78492",
-    procedure_name: str = "",
-    payer_name: str = "UnitedHealthcare",
-    scripted_outcome: str = "APPROVED",
-    approver_name: str = "Dr. Demo",
+    patient_id: str = Form("CUSTOM-PDF"),
+    procedure_code: str = Form("78492"),
+    procedure_name: str = Form(""),
+    payer_name: str = Form("UnitedHealthcare"),
+    scripted_outcome: str = Form("APPROVED"),
+    approver_name: str = Form("Dr. Demo"),
     user: AuthUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Run the E2E pipeline on an uploaded PDF.
@@ -1313,9 +1313,9 @@ def end_to_end_lean(req: E2EDemoRequest, user: AuthUser = Depends(get_current_us
 @app.post("/api/demo/end-to-end-lean-pdf")
 async def end_to_end_lean_pdf(
     file: UploadFile = File(...),
-    patient_id: str = "CUSTOM-PDF",
-    procedure_code: str = "78492",
-    payer_name: str = "UnitedHealthcare",
+    patient_id: str = Form("CUSTOM-PDF"),
+    procedure_code: str = Form("78492"),
+    payer_name: str = Form("UnitedHealthcare"),
     user: AuthUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Same lean hybrid pipeline, PDF-upload variant. Mirrors the
@@ -1491,9 +1491,9 @@ def gen_safety_extractor_endpoint(req: SafetyExtractorGenRequest, user: AuthUser
 @app.post("/api/demo/end-to-end-ab-pdf")
 async def end_to_end_ab_pdf(
     file: UploadFile = File(...),
-    patient_id: str = "CUSTOM-PDF",
-    procedure_code: str = "78492",
-    payer_name: str = "UnitedHealthcare",
+    patient_id: str = Form("CUSTOM-PDF"),
+    procedure_code: str = Form("78492"),
+    payer_name: str = Form("UnitedHealthcare"),
     user: AuthUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """A/B + PDF: parse PDF once, run both pipelines on the parsed

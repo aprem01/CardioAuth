@@ -105,6 +105,73 @@ def test_explicit_rationale_preserved_when_provided() -> None:
     assert "Note doesn't document" in c.rationale
 
 
+# ── Case-insensitive enum normalization ─────────────────────────────
+
+
+def test_status_normalizes_titlecase() -> None:
+    """LLM occasionally emits 'Met' instead of 'met' — accept both."""
+    c = CriterionEvaluation(code="ECG-001", status="Met")
+    assert c.status == "met"
+
+
+def test_status_normalizes_uppercase_and_spaces() -> None:
+    """'NOT MET' or 'NOT-MET' or 'NotMet' → 'not_met'."""
+    for v in ["NOT MET", "NOT-MET", "NotMet", "not met"]:
+        c = CriterionEvaluation(
+            code="ECG-001", status=v,
+            rationale="Test rationale.",
+        )
+        assert c.status == "not_met", f"failed for input {v!r}"
+
+
+def test_status_normalizes_not_evaluated_variants() -> None:
+    for v in ["NotEvaluated", "not evaluated", "NOT_EVALUATED"]:
+        c = CriterionEvaluation(code="ECG-001", status=v)
+        assert c.status == "not_evaluated", f"failed for {v!r}"
+
+
+def test_approval_label_normalizes_titlecase() -> None:
+    """'High' → 'HIGH'."""
+    from cardioauth.lean_schema import ApprovalVerdict
+    v = ApprovalVerdict(score=0.85, label="High")
+    assert v.label == "HIGH"
+
+
+def test_approval_label_normalizes_natural_form() -> None:
+    """'Do Not Submit' → 'DO_NOT_SUBMIT'."""
+    from cardioauth.lean_schema import ApprovalVerdict
+    v = ApprovalVerdict(score=0.3, label="Do Not Submit")
+    assert v.label == "DO_NOT_SUBMIT"
+
+
+def test_cpt_resolution_source_normalizes() -> None:
+    """'Note Extracted' → 'note_extracted'."""
+    from cardioauth.lean_schema import CptResolution
+    cr = CptResolution(
+        cpt="78452", procedure_name="SPECT",
+        source="Note Extracted", request_cpt="78492",
+        rationale="Note clearly orders SPECT.",
+    )
+    assert cr.source == "note_extracted"
+
+
+def test_documentation_quality_synonyms_normalize() -> None:
+    """'Well structured' → 'structured', 'Partial' → 'semi_structured'."""
+    from cardioauth.lean_schema import DocumentationQuality
+    a = DocumentationQuality(note_format_quality="Well Structured")
+    assert a.note_format_quality == "structured"
+    b = DocumentationQuality(note_format_quality="Partial")
+    assert b.note_format_quality == "semi_structured"
+
+
+def test_documentation_quality_default_when_omitted() -> None:
+    """If the LLM omits note_format_quality entirely, default to
+    semi_structured rather than reject."""
+    from cardioauth.lean_schema import DocumentationQuality
+    dq = DocumentationQuality()
+    assert dq.note_format_quality == "semi_structured"
+
+
 def test_met_criterion_does_not_require_rationale() -> None:
     """When the status is met, the evidence quotes ARE the rationale."""
     c = CriterionEvaluation(

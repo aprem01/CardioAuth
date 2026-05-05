@@ -40,10 +40,44 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 SCHEMA_VERSION = "lean-1.0"
+
+
+def _normalize_enum(
+    value, allowed: tuple[str, ...], *, preserve_case: str = "lower",
+):
+    """Normalize an LLM-emitted string to one of the allowed enum
+    values, tolerating common casing/spacing variants.
+
+    Strategy: try exact match → canonicalize separators (- _ space →
+    _) and case-fold → also match with separators removed. Returns
+    the canonical allowed value when matched, else the canonicalized
+    input so Pydantic surfaces the standard literal-error.
+    """
+    if not isinstance(value, str):
+        return value
+    if value in allowed:
+        return value
+
+    s = value.strip().replace(" ", "_").replace("-", "_")
+    target = s.upper() if preserve_case == "upper" else s.lower()
+    target_no_sep = target.replace("_", "")
+
+    for candidate in allowed:
+        canonical = (
+            candidate.upper() if preserve_case == "upper" else candidate.lower()
+        )
+        if target == canonical:
+            return candidate
+        if target_no_sep == canonical.replace("_", ""):
+            return candidate
+    # No match — return the canonicalized form so Pydantic's error
+    # message is clean (the user sees their input, lowercased + with
+    # underscores, not a CamelCase mangled mess).
+    return target
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -89,6 +123,16 @@ class CriterionEvaluation(BaseModel):
         default_factory=list,
         description="Verbatim quotes supporting the judgment. Empty for not_evaluated.",
     )
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, v):
+        """Tolerate common LLM emit variants: 'Met' → 'met',
+        'NOT MET' → 'not_met', 'NotEvaluated' → 'not_evaluated'.
+        Anthropic's tool-use sometimes returns the literal-cased
+        Python identifier or a human-readable label instead of the
+        snake_case enum value."""
+        return _normalize_enum(v, ("met", "not_met", "not_evaluated", "ambiguous"))
     rationale: str = Field(
         default="",
         description="One-sentence reasoning. Required for ambiguous and not_met.",
@@ -165,6 +209,13 @@ class CptResolution(BaseModel):
     procedure_name: str = Field(..., description="Human-readable procedure name.")
     source: CptResolutionSource
     request_cpt: str = Field(..., description="Echoes the input request CPT.")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source(cls, v):
+        return _normalize_enum(v, (
+            "request", "note_extracted", "ambiguous_human_decide",
+        ))
     rationale: str = Field(
         default="",
         description="Required when source is not 'request'.",
@@ -220,6 +271,17 @@ class ApprovalVerdict(BaseModel):
         description="3-5 bullet points summarizing the case for the physician.",
     )
 
+    @field_validator("label", mode="before")
+    @classmethod
+    def _normalize_label(cls, v):
+        """Tolerate variant casings: 'High' → 'HIGH', 'do not submit' →
+        'DO_NOT_SUBMIT'. Anthropic's tool-use occasionally emits the
+        natural-language form instead of the canonical enum value."""
+        normalized = _normalize_enum(v, (
+            "HIGH", "MEDIUM", "LOW", "DO_NOT_SUBMIT", "INSUFFICIENT",
+        ), preserve_case="upper")
+        return normalized
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Narrative
@@ -245,7 +307,7 @@ class DocumentationQuality(BaseModel):
     """Surface signals about the note's parsability so downstream
     layers can adjust trust accordingly."""
 
-    note_format_quality: NoteFormatQuality
+    note_format_quality: NoteFormatQuality = Field(default="semi_structured")
     missing_essential_fields: list[str] = Field(
         default_factory=list,
         description="Names of payer-required fields the LLM couldn't find.",
@@ -255,6 +317,19 @@ class DocumentationQuality(BaseModel):
         description="Any signals the LLM is uncertain about (e.g. 'BMI mentioned twice with conflicting values').",
     )
     overall_extraction_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+
+    @field_validator("note_format_quality", mode="before")
+    @classmethod
+    def _normalize_quality(cls, v):
+        if not isinstance(v, str):
+            return v
+        s = v.strip().lower().replace(" ", "_").replace("-", "_")
+        # Common synonyms
+        if s in ("structured_note", "well_structured", "complete"):
+            return "structured"
+        if s in ("partial", "partially_structured"):
+            return "semi_structured"
+        return s
 
 
 # ──────────────────────────────────────────────────────────────────────

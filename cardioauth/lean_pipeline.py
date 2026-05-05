@@ -390,16 +390,39 @@ def _state2_unified_call(
                     errors=e.errors,
                 )
 
-    # All retries exhausted
+    # All retries exhausted. Stash a longer raw-output preview so the
+    # UI / logs can show what Anthropic actually returned — the only
+    # way to debug schema mismatches in production without server logs.
     duration_ms = int((time.time() - t0) * 1000)
+    raw_preview = last_err.raw_output[:2000] if last_err else ""
+    err_list = last_err.errors if last_err else []
+    # Also surface as a pipeline_error so the UI banner fires — easier
+    # to spot than digging through stage detail.
+    ctx.pipeline_errors.append({
+        "kind": "lean_schema_validation_failed",
+        "severity": "high",
+        "message": (
+            f"Lean unified call returned output that didn't match the schema "
+            f"after {max_retries + 1} attempt(s). The pipeline can't produce "
+            "a clinical verdict from this run."
+        ),
+        "affected_stages": ["State 2"],
+        "fix_suggestion": (
+            "Check the raw output preview in the State 2 detail. Common causes: "
+            "missing required fields (case_id, narrative, documentation_quality), "
+            "bad enum values (status must be one of met/not_met/ambiguous/"
+            "not_evaluated). Re-run; transient model glitches resolve on retry."
+        ),
+    })
     return StageResult(
         name="State 2: unified call",
         status="failed",
         duration_ms=duration_ms,
         summary=f"Schema validation failed after {max_retries + 1} attempts",
         detail={
-            "errors": last_err.errors if last_err else [],
-            "raw_output_preview": (last_err.raw_output[:500] if last_err else ""),
+            "errors": err_list,
+            "raw_output_preview": raw_preview,
+            "error_count": len(err_list),
         },
     )
 
@@ -771,7 +794,7 @@ def run_lean_pipeline(
     request_cpt: str,
     payer: str,
     llm_caller: Any = None,
-    max_retries: int = 1,
+    max_retries: int = 2,
 ) -> LeanRunResult:
     """Run the lean hybrid state machine end-to-end.
 
