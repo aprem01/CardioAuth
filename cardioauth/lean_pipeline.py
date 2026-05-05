@@ -493,9 +493,16 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
             ),
             "input_schema": state2_json_schema_flat(),
         }
+        # max_tokens=16000: a 7-page PDF case with rich clinical_facts +
+        # criteria_evaluated + verbatim quotes can easily produce 8K+
+        # tokens of structured output. Hitting the cap mid-schema
+        # leaves required fields (narrative, documentation_quality)
+        # unfilled and fails validation. 16K gives enough headroom for
+        # the largest realistic input. Sonnet supports up to 64K
+        # output, Opus up to 32K — 16K is a safe middle.
         with TimedCall() as t:
             response = client.messages.create(
-                model=state2_model, max_tokens=8000,
+                model=state2_model, max_tokens=16000,
                 system=system_with_cache_control(system_prompt),
                 messages=[{"role": "user", "content": user_prompt}],
                 tools=[tool_def],
@@ -515,7 +522,7 @@ def _real_anthropic_caller(system_prompt: str, user_prompt: str) -> tuple[str, d
         # downstream. Kept as an escape hatch in case tool-use breaks.
         with TimedCall() as t:
             response = client.messages.create(
-                model=state2_model, max_tokens=8000,
+                model=state2_model, max_tokens=16000,
                 system=system_with_cache_control(system_prompt),
                 messages=[{"role": "user", "content": user_prompt}],
             )

@@ -398,18 +398,19 @@ def test_state2_json_schema_flat_drops_defs_table() -> None:
 
 
 def test_state2_json_schema_flat_preserves_required_top_level_fields() -> None:
-    """Flattening must not drop required fields."""
+    """Flattening must not drop required fields. Note: narrative,
+    documentation_quality, and approval_verdict have defaults now
+    (defense against LLM output truncation), so only the strictly
+    echoed-from-input fields plus cpt_resolution remain required."""
     from cardioauth.lean_schema import state2_json_schema_flat
 
     flat = state2_json_schema_flat()
     required = set(flat.get("required", []))
-    # The same required fields the original Pydantic schema produces
     for field in (
         "case_id", "request_cpt", "payer",
-        "cpt_resolution", "approval_verdict",
-        "narrative", "documentation_quality",
+        "cpt_resolution",
     ):
-        assert field in required
+        assert field in required, f"missing strict required field: {field}"
 
 
 def test_state2_json_schema_flat_preserves_nested_field_constraints() -> None:

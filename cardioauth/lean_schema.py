@@ -289,9 +289,9 @@ class ApprovalVerdict(BaseModel):
 
 
 class NarrativeDraft(BaseModel):
-    text: str = Field(..., description="Medical-necessity attestation prose.")
-    cpt_referenced: str = Field(..., description="The CPT the narrative explicitly mentions.")
-    procedure_referenced: str = Field(..., description="The procedure name the narrative mentions.")
+    text: str = Field(default="", description="Medical-necessity attestation prose.")
+    cpt_referenced: str = Field(default="", description="The CPT the narrative explicitly mentions.")
+    procedure_referenced: str = Field(default="", description="The procedure name the narrative mentions.")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -387,17 +387,27 @@ class LeanState2Output(BaseModel):
         description="Payer-specific overrides or additions (e.g. UHC's MCG-specific bundle).",
     )
 
-    # Verdict
-    approval_verdict: ApprovalVerdict
+    # Verdict — default to MEDIUM/0.5 with a "verdict-omitted" headline
+    # if the LLM truncates before emitting it. State 4 gate sees the
+    # absent label and routes to hold_for_review automatically.
+    approval_verdict: ApprovalVerdict = Field(
+        default_factory=lambda: ApprovalVerdict(
+            score=0.5, label="MEDIUM",
+            headline_summary=["[LLM did not emit approval verdict — physician review.]"],
+        ),
+    )
 
     # Form
     form_field_values: list[FormFieldValue] = Field(default_factory=list)
 
-    # Narrative
-    narrative: NarrativeDraft
+    # Narrative — default to empty NarrativeDraft if the LLM truncates
+    # or omits. State 4's coherence check still runs; the State 4 gate
+    # treats empty narrative.text as a finding rather than a hard
+    # failure.
+    narrative: NarrativeDraft = Field(default_factory=NarrativeDraft)
 
-    # Quality signals
-    documentation_quality: DocumentationQuality
+    # Quality signals — default if omitted
+    documentation_quality: DocumentationQuality = Field(default_factory=DocumentationQuality)
 
     # Alternative-modality suggestion (advisory; State 4 surfaces it)
     alternative_modality_suggestion: str | None = Field(
