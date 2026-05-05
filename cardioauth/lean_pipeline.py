@@ -794,8 +794,13 @@ def run_lean_pipeline(
     request_cpt: str,
     payer: str,
     llm_caller: Any = None,
-    max_retries: int = 2,
+    max_retries: int = 1,
 ) -> LeanRunResult:
+    # NOTE: max_retries kept at 1 (2 total attempts). 2 retries pushed
+    # the worst-case latency past Railway's 300s gateway timeout. With
+    # the case-insensitive enum normalization in lean_schema.py, the
+    # LLM should rarely need a retry anyway — most schema failures
+    # were enum-casing related, now handled in validation.
     """Run the lean hybrid state machine end-to-end.
 
     `llm_caller` is injectable for tests; pass a callable matching:
