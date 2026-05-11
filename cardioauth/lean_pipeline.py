@@ -90,6 +90,11 @@ class LeanRunContext:
     request_cpt: str
     payer: str
     raw_note: str
+    # Patient longitudinal corpus — Peter's "treadmill 3yrs ago"
+    # feature. The pipeline retrieves snippets from this corpus that
+    # support criteria evaluations beyond what the current note alone
+    # captures. Empty for single-note runs (backwards-compatible).
+    patient_corpus: Any = None        # cardioauth.patient_corpus.PatientCorpus | None
 
     # Filled by State 1
     essentials: dict = field(default_factory=dict)
@@ -97,6 +102,7 @@ class LeanRunContext:
     payer_specific_criteria: list[dict] = field(default_factory=list)
     payer_policy_chunks: list[dict] = field(default_factory=list)
     payer_form_fields: list[dict] = field(default_factory=list)
+    corpus_snippets: list[dict] = field(default_factory=list)  # CorpusSnippet.to_dict()
 
     # Filled by State 2
     state2_output: LeanState2Output | None = None
@@ -142,6 +148,8 @@ class LeanRunResult:
     state2_tokens: int
     state2_cost_usd: float
     state2_output: dict | None  # full structured output, for inspection
+    # Patient longitudinal corpus — retrieved snippets the LLM saw
+    corpus_snippets: list[dict] = field(default_factory=list)
     # State 3 — independent safety audit (regex re-extraction trail)
     safety_audit: dict | None = None
     # State 5 — FHIR Provenance + freeze artifacts
@@ -166,6 +174,7 @@ class LeanRunResult:
             "state2_tokens": self.state2_tokens,
             "state2_cost_usd": self.state2_cost_usd,
             "state2_output": self.state2_output,
+            "corpus_snippets": list(self.corpus_snippets),
             "safety_audit": self.safety_audit,
             "provenance": self.provenance,
             "archive_paths": self.archive_paths,
@@ -281,6 +290,29 @@ def _state1_pre_pass(ctx: LeanRunContext) -> StageResult:
     except Exception as e:
         logger.warning("Lean State 1: policy retrieval failed (continuing): %s", e)
 
+    # Peter's "treadmill 3 years ago" feature: retrieve snippets from
+    # the patient's longitudinal corpus that are relevant to the case's
+    # applicable criteria. The LLM in State 2 sees these alongside the
+    # current note and can cite from any historical document.
+    if ctx.patient_corpus is not None:
+        try:
+            from cardioauth.patient_corpus import (
+                build_query_terms,
+                retrieve_corpus,
+            )
+            query_terms = build_query_terms(
+                ctx.applicable_criteria, ctx.request_cpt,
+            )
+            snippets = retrieve_corpus(
+                ctx.patient_corpus,
+                query_terms=query_terms,
+                top_k=8,
+            )
+            ctx.corpus_snippets = [s.to_dict() for s in snippets]
+            summary_parts.append(f"corpus_snippets={len(ctx.corpus_snippets)}")
+        except Exception as e:
+            logger.warning("Lean State 1: corpus retrieval failed (continuing): %s", e)
+
     duration_ms = int((time.time() - t0) * 1000)
     return StageResult(
         name="State 1: pre-pass",
@@ -293,6 +325,7 @@ def _state1_pre_pass(ctx: LeanRunContext) -> StageResult:
             "payer_specific_criteria_count": len(ctx.payer_specific_criteria),
             "payer_form_field_count": len(ctx.payer_form_fields),
             "payer_policy_chunk_count": len(ctx.payer_policy_chunks),
+            "corpus_snippet_count": len(ctx.corpus_snippets),
         },
     )
 
@@ -327,6 +360,7 @@ def _state2_unified_call(
         payer_form_fields=ctx.payer_form_fields,
         pre_pass_essentials=ctx.essentials,
         payer_specific_criteria=ctx.payer_specific_criteria or None,
+        corpus_snippets=ctx.corpus_snippets or None,
     )
 
     if llm_caller is None:
@@ -802,6 +836,7 @@ def run_lean_pipeline(
     payer: str,
     llm_caller: Any = None,
     max_retries: int = 1,
+    patient_corpus: Any = None,
 ) -> LeanRunResult:
     # NOTE: max_retries kept at 1 (2 total attempts). 2 retries pushed
     # the worst-case latency past Railway's 300s gateway timeout. With
@@ -812,6 +847,14 @@ def run_lean_pipeline(
 
     `llm_caller` is injectable for tests; pass a callable matching:
         (system_prompt: str, user_prompt: str) -> (raw_text: str, usage: dict)
+
+    `patient_corpus` is the optional longitudinal chart corpus. When
+    provided, State 1 retrieves snippets from historical documents
+    relevant to the case's applicable criteria, and State 2 sees them
+    in the prompt — the LLM can cite from any document, not just the
+    current encounter note. This is Peter's "treadmill 3 yrs ago"
+    feature: the pipeline finds facts buried in older records that
+    strengthen the PA package.
     """
     if not case_id:
         case_id = f"LEAN-{request_cpt}-{uuid.uuid4().hex[:6].upper()}"
@@ -820,6 +863,7 @@ def run_lean_pipeline(
     ctx = LeanRunContext(
         case_id=case_id, request_cpt=request_cpt,
         payer=payer, raw_note=raw_note,
+        patient_corpus=patient_corpus,
         started_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -857,6 +901,7 @@ def run_lean_pipeline(
         state2_tokens=ctx.state2_tokens,
         state2_cost_usd=ctx.state2_cost_usd,
         state2_output=(out.model_dump() if out else None),
+        corpus_snippets=list(ctx.corpus_snippets),
         safety_audit=ctx.safety_audit,
     )
 

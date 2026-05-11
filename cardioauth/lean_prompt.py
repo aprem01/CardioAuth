@@ -135,6 +135,7 @@ def build_user_prompt(
     pre_pass_essentials: dict,
     payer_specific_criteria: list[dict] | None = None,
     similar_precedents: list[dict] | None = None,
+    corpus_snippets: list[dict] | None = None,
 ) -> str:
     """Build the per-case user message. The system prompt is cached;
     this changes per call.
@@ -206,8 +207,22 @@ def build_user_prompt(
             + json.dumps(similar_precedents, indent=2)
         )
 
+    if corpus_snippets:
+        sections.append(
+            "# Patient longitudinal chart — retrieved historical evidence\n"
+            "These snippets come from the patient's chart documents OTHER\n"
+            "than the current encounter note (prior stress tests, prior ECGs,\n"
+            "older encounter notes, imaging reports, etc.). Use them to\n"
+            "satisfy criteria that the current note alone doesn't capture.\n"
+            "When you cite a fact from one of these snippets, set\n"
+            "EvidenceQuote.source_section to a citation like\n"
+            "'[stress_test 2023-06-18]' so the reviewer can trace back to\n"
+            "the source document.\n\n"
+            + json.dumps(corpus_snippets, indent=2)
+        )
+
     sections.append(
-        "# Clinical note\n"
+        "# Clinical note (current encounter)\n"
         "BEGIN NOTE\n"
         + raw_note.strip()
         + "\nEND NOTE\n"

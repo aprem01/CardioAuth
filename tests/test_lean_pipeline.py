@@ -392,3 +392,68 @@ def test_real_anthropic_caller_requires_api_key(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
         _real_anthropic_caller("system", "user")
+
+
+# ── Patient longitudinal corpus integration ─────────────────────────
+
+
+def test_pipeline_retrieves_corpus_snippets_and_passes_them_to_llm() -> None:
+    """Peter's killer feature: pipeline reads the WHOLE chart, not just
+    the current note. State 1 retrieves snippets from historical
+    documents; State 2's prompt includes them; the result surfaces
+    them for the UI."""
+    from cardioauth.patient_corpus import CorpusDocument, PatientCorpus
+    from tests.stress.corpus_demo import build_demo_corpus, CURRENT_NOTE
+
+    corpus = build_demo_corpus()
+    seen_user_prompt = {}
+
+    def capture_caller(system, user):
+        seen_user_prompt["text"] = user
+        return json.dumps(_good_payload()), {
+            "input_tokens": 1000, "output_tokens": 500,
+            "model": "fake", "cost_usd": 0.05,
+        }
+
+    result = run_lean_pipeline(
+        raw_note=CURRENT_NOTE,
+        request_cpt="78452",
+        payer="UnitedHealthcare",
+        llm_caller=capture_caller,
+        patient_corpus=corpus,
+    )
+
+    # Result carries the retrieved snippets
+    assert result.corpus_snippets, "expected at least one retrieved snippet"
+    # State 1 stage reports the count
+    state1 = result.stages[0]
+    assert state1["detail"]["corpus_snippet_count"] >= 1
+
+    # User prompt embeds the corpus section
+    user_text = seen_user_prompt["text"]
+    assert "Patient longitudinal chart" in user_text
+    # And at least one historical snippet is in the prompt
+    assert any(
+        s["snippet"][:30] in user_text
+        for s in result.corpus_snippets
+    ), "the snippet text should appear in the actual prompt"
+
+
+def test_pipeline_without_corpus_omits_corpus_section() -> None:
+    """Backwards-compat: when no corpus is supplied, the prompt has
+    no corpus section and the result lists no snippets."""
+    seen = {}
+
+    def caller(system, user):
+        seen["user"] = user
+        return json.dumps(_good_payload()), {
+            "input_tokens": 100, "output_tokens": 50,
+            "model": "fake", "cost_usd": 0.01,
+        }
+
+    result = run_lean_pipeline(
+        raw_note=_NOTE, request_cpt="78452", payer="UnitedHealthcare",
+        llm_caller=caller,
+    )
+    assert result.corpus_snippets == []
+    assert "Patient longitudinal chart" not in seen["user"]

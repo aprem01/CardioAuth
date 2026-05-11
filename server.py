@@ -1268,6 +1268,96 @@ async def end_to_end_demo_pdf(
 # ──────────────────────────────────────────────────────────────────────
 
 
+class CorpusDocumentBody(BaseModel):
+    doc_id: str = ""
+    doc_type: str = "other"
+    date: str = ""
+    title: str = ""
+    text: str = ""
+    source: str = ""
+
+
+class E2ELeanCorpusRequest(BaseModel):
+    """Lean pipeline with a patient longitudinal corpus.
+
+    Peter's "treadmill 3 yrs ago" feature: the pipeline reads not
+    just the current encounter note but a bundle of historical chart
+    documents, and surfaces facts from any of them that support the
+    PA criteria.
+    """
+
+    patient_id: str = "CUSTOM"
+    procedure_code: str
+    procedure_name: str = ""
+    payer_name: str = "UnitedHealthcare"
+    raw_note: str               # the current encounter
+    corpus: list[CorpusDocumentBody] = []  # historical documents
+
+
+@app.post("/api/demo/end-to-end-lean-corpus")
+def end_to_end_lean_corpus(req: E2ELeanCorpusRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Lean pipeline with a patient longitudinal corpus.
+
+    The killer-feature variant. Accepts:
+      - raw_note: the current encounter note (drives the PA)
+      - corpus: list of CorpusDocument bodies (prior stress tests,
+        ECGs, encounter notes, imaging reports, etc.)
+
+    State 1 retrieves snippets from the historical documents that
+    match the case's applicable criteria; State 2's prompt includes
+    them; the LLM can cite facts from any document with a per-document
+    source attribution.
+
+    Returns the standard LeanRunResult with an extra `corpus_snippets`
+    field carrying what was retrieved + why.
+    """
+    log_audit(
+        user, "e2e_demo_lean_corpus",
+        f"patient={req.patient_id} cpt={req.procedure_code} corpus_docs={len(req.corpus)}",
+    )
+    from cardioauth.lean_pipeline import run_lean_pipeline
+    from cardioauth.patient_corpus import CorpusDocument, PatientCorpus
+
+    if not (req.raw_note or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Lean corpus pipeline needs raw_note (the current encounter).",
+        )
+
+    documents: list[CorpusDocument] = []
+    documents.append(CorpusDocument(
+        doc_id="current",
+        doc_type="current_note",
+        date="",
+        title="Current encounter note",
+        text=req.raw_note,
+    ))
+    for i, d in enumerate(req.corpus or []):
+        documents.append(CorpusDocument(
+            doc_id=d.doc_id or f"hist-{i+1}",
+            doc_type=(d.doc_type or "other"),  # type: ignore[arg-type]
+            date=d.date or "",
+            title=d.title or f"Historical document #{i+1}",
+            text=d.text or "",
+            source=d.source or "",
+        ))
+    corpus = PatientCorpus(patient_id=req.patient_id, documents=documents)
+
+    try:
+        result = run_lean_pipeline(
+            case_id=f"{req.patient_id}-{req.procedure_code}",
+            raw_note=req.raw_note,
+            request_cpt=req.procedure_code,
+            payer=req.payer_name,
+            patient_corpus=corpus,
+        )
+    except Exception as e:
+        logging.exception("Lean corpus pipeline failed")
+        raise HTTPException(status_code=500, detail=f"Lean corpus pipeline failed: {e}")
+
+    return result.to_dict()
+
+
 @app.post("/api/demo/end-to-end-lean")
 def end_to_end_lean(req: E2EDemoRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Run the lean hybrid state machine on a deidentified note.
