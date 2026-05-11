@@ -540,6 +540,12 @@
         End-to-end Demo
       </a>
 
+      <!-- Whole-chart corpus demo (Peter's "treadmill 3yrs ago" feature) -->
+      <a href="#corpus-demo" class="sidebar-link" data-route="corpus-demo">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        Whole-chart Demo
+      </a>
+
       <!-- Pre-Submission Tools -->
       <div class="sidebar-group-label mt-4">Pre-Submission Tools</div>
       <a href="#payer-matrix" class="sidebar-link" data-route="payer-matrix">
@@ -713,6 +719,10 @@
     else if (hash === '#privacy') app.innerHTML = renderPrivacy();
     else if (hash === '#demo-e2e') app.innerHTML = renderE2EDemo();
     else if (hash === '#generators') app.innerHTML = renderGenerators();
+    else if (hash === '#corpus-demo') {
+      app.innerHTML = renderCorpusDemo();
+      setTimeout(_renderCorpusDocList, 0);
+    }
     else { app.innerHTML = renderDashboard(); }
   }
 
@@ -821,6 +831,288 @@
   // blank PA-form text, criterion + samples) and get a Python-source
   // draft to PR. Each tab posts to its corresponding /api/generators/*
   // endpoint.
+  // ─────────────────────── Corpus demo (killer feature) ───────────────────
+  // The whole-chart-context demo. The current encounter note alone is
+  // often thin; with the patient's historical documents (prior stress
+  // tests, prior ECGs, older encounter notes, cath reports), the
+  // pipeline can cite facts the current note doesn't mention. The +36pp
+  // delta in the synthetic demo is the strongest single signal we have.
+  function renderCorpusDemo() {
+    return `
+    <div class="fade-in space-y-6">
+      <div class="flex items-center justify-between">
+        <button onclick="navigate('#dashboard')" class="text-sm text-slate-400 hover:text-accent-cyan transition flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+          Dashboard
+        </button>
+        <span class="text-sm text-slate-500">Whole-chart context — the "treadmill 3 years ago" feature</span>
+      </div>
+
+      <div class="bg-surface rounded-xl border border-surface-border p-6">
+        <h2 class="text-xl font-semibold text-white mb-1">Read the whole chart</h2>
+        <p class="text-sm text-slate-400 mb-4">
+          The current encounter note often doesn't repeat facts buried in older records. Add the
+          patient's historical documents (prior stress test, ECG narrative, prior encounter notes,
+          cath reports) and watch the system cite from any of them.
+        </p>
+
+        <div class="flex gap-2 mb-4 flex-wrap">
+          <button onclick="loadDemoCorpus()" class="px-3 py-1.5 rounded text-xs font-medium border border-accent-cyan/40 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition">
+            ⤓ Quick-load demo case
+          </button>
+          <button onclick="clearCorpus()" class="px-3 py-1.5 rounded text-xs font-medium border border-surface-border bg-surface text-slate-400 hover:border-slate-500 transition">
+            Clear
+          </button>
+          <button onclick="addCorpusDoc()" class="px-3 py-1.5 rounded text-xs font-medium border border-surface-border bg-surface text-slate-400 hover:border-slate-500 transition">
+            + Add historical document
+          </button>
+        </div>
+
+        <div class="grid md:grid-cols-3 gap-3 mb-4">
+          <div>
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Procedure (CPT)</label>
+            <select id="corpus-cpt" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono">
+              <option value="78452">78452 — Cardiac SPECT MPI</option>
+              <option value="78492">78492 — Cardiac PET MPI</option>
+              <option value="75574">75574 — Coronary CT angiography</option>
+              <option value="33361">33361 — TAVR</option>
+              <option value="92928">92928 — Coronary PCI</option>
+              <option value="93312">93312 — Transesophageal echo</option>
+              <option value="93619">93619 — Electrophysiology study</option>
+              <option value="93880">93880 — Carotid duplex US</option>
+              <option value="93458">93458 — Left heart cath</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Payer</label>
+            <select id="corpus-payer" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200">
+              <option>UnitedHealthcare</option>
+              <option>Aetna</option>
+              <option>Anthem</option>
+              <option>Medicare</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs uppercase text-slate-500 mb-1 block">Patient ID</label>
+            <input id="corpus-patient" value="CORPUS-DEMO" class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono" />
+          </div>
+        </div>
+
+        <label class="text-xs uppercase text-slate-500 mb-1 block">Current encounter note</label>
+        <textarea id="corpus-current-note" rows="10" placeholder="Paste the current encounter note that drives the PA request..."
+          class="w-full bg-background border border-surface-border rounded-lg px-3 py-2 text-sm text-slate-200 font-mono leading-relaxed"></textarea>
+
+        <div class="mt-4">
+          <label class="text-xs uppercase text-slate-500 mb-2 block">Historical documents (the chart corpus)</label>
+          <div id="corpus-docs" class="space-y-3"></div>
+        </div>
+
+        <button id="corpus-run-btn" onclick="runCorpusDemo()" class="w-full mt-5 py-3 rounded-lg bg-gradient-to-r from-accent-blue to-accent-cyan text-white font-semibold shadow-lg hover:shadow-accent-blue/40 transition flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Run pipeline against the whole chart
+        </button>
+      </div>
+
+      <div id="corpus-result"></div>
+    </div>`;
+  }
+
+  // Track corpus docs as a JS array; render into the #corpus-docs container.
+  window._corpusDocs = [];
+  const _CORPUS_DOC_TYPES = [
+    "prior_encounter", "stress_test", "ecg_report", "echo_report",
+    "imaging_report", "cath_report", "lab_summary", "medication_list",
+    "problem_list", "outside_records", "other",
+  ];
+
+  function _renderCorpusDocList() {
+    const c = document.getElementById('corpus-docs');
+    if (!c) return;
+    if (!_corpusDocs.length) {
+      c.innerHTML = `<div class="text-xs text-slate-500 italic">No historical documents yet. Click "Quick-load demo case" to see the killer feature, or "+ Add historical document" to add your own.</div>`;
+      return;
+    }
+    c.innerHTML = _corpusDocs.map((d, i) => `
+      <div class="rounded-lg border border-surface-border bg-background/50 p-3">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <span class="text-xs uppercase text-slate-500">Doc ${i + 1}</span>
+          <select onchange="_updateCorpusDoc(${i}, 'doc_type', this.value)" class="bg-background border border-surface-border rounded px-2 py-1 text-xs text-slate-200">
+            ${_CORPUS_DOC_TYPES.map(t => `<option value="${t}" ${d.doc_type === t ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+          <input value="${escapeHtml(d.date || '')}" onchange="_updateCorpusDoc(${i}, 'date', this.value)" placeholder="YYYY-MM-DD" class="bg-background border border-surface-border rounded px-2 py-1 text-xs text-slate-200 w-32" />
+          <input value="${escapeHtml(d.title || '')}" onchange="_updateCorpusDoc(${i}, 'title', this.value)" placeholder="Title" class="bg-background border border-surface-border rounded px-2 py-1 text-xs text-slate-200 flex-1 min-w-40" />
+          <button onclick="_removeCorpusDoc(${i})" class="text-xs text-red-400 hover:text-red-300 px-2">✕</button>
+        </div>
+        <textarea rows="4" onchange="_updateCorpusDoc(${i}, 'text', this.value)" placeholder="Document text..."
+          class="w-full bg-background border border-surface-border rounded px-2 py-1 text-xs text-slate-300 font-mono">${escapeHtml(d.text || '')}</textarea>
+      </div>
+    `).join('');
+  }
+
+  window._updateCorpusDoc = function(i, field, val) {
+    if (_corpusDocs[i]) _corpusDocs[i][field] = val;
+  };
+
+  window._removeCorpusDoc = function(i) {
+    _corpusDocs.splice(i, 1);
+    _renderCorpusDocList();
+  };
+
+  window.addCorpusDoc = function() {
+    _corpusDocs.push({
+      doc_id: '', doc_type: 'other', date: '', title: '', text: '', source: '',
+    });
+    _renderCorpusDocList();
+  };
+
+  window.clearCorpus = function() {
+    if (!confirm('Clear all historical documents?')) return;
+    _corpusDocs = [];
+    document.getElementById('corpus-current-note').value = '';
+    document.getElementById('corpus-result').innerHTML = '';
+    _renderCorpusDocList();
+  };
+
+  window.loadDemoCorpus = async function() {
+    const res = await fetch('/api/demo/corpus-demo-data');
+    if (!res.ok) { alert('Failed to load demo data'); return; }
+    const data = await res.json();
+    document.getElementById('corpus-current-note').value = data.raw_note || '';
+    document.getElementById('corpus-cpt').value = data.procedure_code || '78452';
+    document.getElementById('corpus-payer').value = data.payer_name || 'UnitedHealthcare';
+    document.getElementById('corpus-patient').value = data.patient_id || 'DEMO-WHITFORD';
+    _corpusDocs = (data.corpus || []).map(d => ({...d}));
+    _renderCorpusDocList();
+  };
+
+  window.runCorpusDemo = async function() {
+    const btn = document.getElementById('corpus-run-btn');
+    const out = document.getElementById('corpus-result');
+    if (!btn || !out) return;
+
+    const raw_note = (document.getElementById('corpus-current-note').value || '').trim();
+    if (raw_note.length < 30) {
+      out.innerHTML = `<div class="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-amber-300">Paste the current encounter note first (at least 30 characters).</div>`;
+      return;
+    }
+
+    const payload = {
+      patient_id: document.getElementById('corpus-patient').value || 'CORPUS-DEMO',
+      procedure_code: document.getElementById('corpus-cpt').value,
+      payer_name: document.getElementById('corpus-payer').value,
+      raw_note: raw_note,
+      corpus: _corpusDocs.filter(d => (d.text || '').trim().length > 30),
+    };
+
+    btn.disabled = true;
+    const origLabel = btn.innerHTML;
+    btn.innerHTML = `${spinnerSVG(5)} Reading chart + reasoning (60–120s)...`;
+    out.innerHTML = `<div class="text-sm text-slate-400 italic">Running lean pipeline with ${payload.corpus.length} historical document(s)…</div>`;
+
+    try {
+      const res = await fetch('/api/demo/end-to-end-lean-corpus', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        let msg = err;
+        try { const j = JSON.parse(err); if (j.detail) msg = j.detail; } catch (_) {}
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      out.innerHTML = renderCorpusResult(data, payload);
+    } catch (e) {
+      out.innerHTML = `<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-300">${escapeHtml(String(e))}</div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = origLabel;
+  };
+
+  function renderCorpusResult(data, requestPayload) {
+    const out = data.state2_output || {};
+    const score = data.approval_score || 0;
+    const scorePct = Math.round(score * 100);
+    const label = data.approval_label || '';
+    const decision = data.decision || '';
+    const heldForReview = decision === 'hold_for_review';
+    const decisionUi = decision === 'transmit' ? 'approved'
+                     : decision === 'block' ? 'blocked' : 'deferred';
+
+    const snippets = data.corpus_snippets || [];
+    const snippetPanel = snippets.length ? `
+      <div class="mt-4 rounded-lg border border-accent-cyan/30 bg-accent-cyan/5 p-4">
+        <div class="text-sm font-semibold text-accent-cyan mb-2">📚 Historical evidence retrieved (${snippets.length})</div>
+        <div class="text-xs text-slate-400 mb-3 italic">These came from the patient's chart corpus, not the current encounter note.</div>
+        <div class="space-y-2">
+          ${snippets.map(s => `
+            <div class="text-xs">
+              <div class="text-accent-cyan font-mono">[${escapeHtml(s.doc_type || '')} ${escapeHtml(s.doc_date || '')}] ${escapeHtml(s.doc_title || '')}</div>
+              <div class="text-slate-300 ml-3 italic">"${escapeHtml((s.snippet || '').slice(0, 280))}${(s.snippet || '').length > 280 ? '…' : ''}"</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>` : '';
+
+    const criteria = out.criteria_evaluated || [];
+    const met = criteria.filter(c => c.status === 'met');
+    const notMet = criteria.filter(c => c.status === 'not_met');
+    const ambiguous = criteria.filter(c => c.status === 'ambiguous');
+
+    const critTable = criteria.length ? `
+      <div class="mt-4 rounded-lg border border-surface-border p-3 bg-background">
+        <div class="text-sm font-semibold text-slate-200 mb-2">Criteria evaluation (${met.length} met / ${notMet.length} not met / ${ambiguous.length} ambiguous of ${criteria.length})</div>
+        <table class="w-full text-xs">
+          <thead><tr class="border-b border-surface-border text-slate-500">
+            <th class="text-left py-1 px-1">Code</th>
+            <th class="text-left py-1 px-1">Status</th>
+            <th class="text-left py-1 px-1">Confidence</th>
+            <th class="text-left py-1 px-1">Citation(s)</th>
+          </tr></thead>
+          <tbody>${criteria.map(c => {
+            const evs = (c.evidence || []).slice(0, 2).map(e => {
+              const src = (e.source_section || '').trim();
+              const qt = (e.quote || '').slice(0, 80);
+              return `<div class="text-slate-400">${src ? '<span class="text-accent-cyan">'+escapeHtml(src)+'</span> ' : ''}<span class="italic">"${escapeHtml(qt)}${(e.quote || '').length > 80 ? '…' : ''}"</span></div>`;
+            }).join('');
+            const cls = c.status === 'met' ? 'text-emerald-400'
+                       : c.status === 'not_met' ? 'text-red-400'
+                       : c.status === 'ambiguous' ? 'text-amber-400'
+                       : 'text-slate-500';
+            return `<tr class="border-b border-surface-border/40">
+              <td class="py-1 px-1 font-mono text-accent-cyan">${escapeHtml(c.code || '')}</td>
+              <td class="py-1 px-1 ${cls}">${escapeHtml(c.status || '')}</td>
+              <td class="py-1 px-1 text-slate-400">${((c.confidence || 0)*100).toFixed(0)}%</td>
+              <td class="py-1 px-1">${evs || '<span class="text-slate-600 italic">—</span>'}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>` : '';
+
+    return `
+      <div class="bg-surface rounded-xl border border-surface-border p-5">
+        ${decisionBanner(decisionUi, heldForReview)}
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="text-xs uppercase text-slate-500">Outcome (Lean + Whole Chart)</p>
+            <p class="text-2xl font-bold ${decision === 'transmit' ? 'text-emerald-400' : decision === 'block' ? 'text-red-400' : 'text-amber-400'}">${escapeHtml((decision || '').toUpperCase())}</p>
+            <p class="text-xs text-slate-400 mt-1">Score <strong>${scorePct}%</strong> (${escapeHtml(label)}) · CPT ${escapeHtml(data.resolved_cpt || '?')} · ${requestPayload.corpus.length} historical doc(s) ingested</p>
+          </div>
+          <div class="text-right">
+            <p class="text-xs uppercase text-slate-500">Pipeline</p>
+            <p class="text-sm font-semibold text-white">${(data.total_duration_ms/1000).toFixed(1)}s · ${data.state2_tokens || 0} tokens · $${(data.state2_cost_usd || 0).toFixed(4)}</p>
+          </div>
+        </div>
+        ${snippetPanel}
+        ${critTable}
+        <details class="mt-3">
+          <summary class="text-xs cursor-pointer text-slate-500 hover:text-slate-300">Full State 2 structured output</summary>
+          <pre class="text-xs text-slate-400 mt-2 bg-background rounded p-3 overflow-x-auto whitespace-pre-wrap">${escapeHtml(JSON.stringify(out, null, 2))}</pre>
+        </details>
+      </div>`;
+  }
+
   function renderGenerators() {
     return `
     <div class="fade-in space-y-6">

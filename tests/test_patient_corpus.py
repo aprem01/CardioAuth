@@ -173,3 +173,26 @@ def test_build_query_terms_dedupes() -> None:
     terms = build_query_terms(crit, "78452")
     # 'LBBB' is in the ECG category — should appear once, not 3 times
     assert terms.count("LBBB") == 1
+
+
+# ── Demo data endpoint smoke (route registration) ────────────────────
+
+
+def test_demo_data_helper_shape() -> None:
+    """The synthetic demo data feeds the UI's quick-load button.
+    Verify it has the four expected historical docs and a current note."""
+    from tests.stress.corpus_demo import CURRENT_NOTE, build_demo_corpus
+
+    corpus = build_demo_corpus()
+    assert corpus.current_note() is not None
+    historical = corpus.historical()
+    assert len(historical) == 4
+    types = {d.doc_type for d in historical}
+    assert "stress_test" in types
+    assert "ecg_report" in types
+    assert "prior_encounter" in types
+    assert "cath_report" in types
+    # Current note must NOT be in the historical bundle the UI loads
+    assert all(d.doc_type != "current_note" for d in historical)
+    # And the current note text is the one the API serves
+    assert len(CURRENT_NOTE) > 100

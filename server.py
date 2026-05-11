@@ -1294,6 +1294,38 @@ class E2ELeanCorpusRequest(BaseModel):
     corpus: list[CorpusDocumentBody] = []  # historical documents
 
 
+@app.get("/api/demo/corpus-demo-data")
+def corpus_demo_data(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Serve the synthetic 'treadmill 3 years ago' demo content to the UI.
+
+    Lets the user click "Quick-load demo corpus" on the #corpus-demo page
+    and prefill the form with the canonical demo: thin current note +
+    4 historical documents that should turn a 52% MEDIUM case into an
+    88% HIGH case.
+    """
+    from tests.stress.corpus_demo import CURRENT_NOTE, build_demo_corpus
+
+    corpus = build_demo_corpus()
+    return {
+        "patient_id": "DEMO-WHITFORD",
+        "procedure_code": "78452",
+        "procedure_name": "Cardiac SPECT MPI",
+        "payer_name": "UnitedHealthcare",
+        "raw_note": CURRENT_NOTE,
+        "corpus": [
+            {
+                "doc_id": d.doc_id,
+                "doc_type": d.doc_type,
+                "date": d.date,
+                "title": d.title,
+                "text": d.text,
+                "source": d.source,
+            }
+            for d in corpus.historical()
+        ],
+    }
+
+
 @app.post("/api/demo/end-to-end-lean-corpus")
 def end_to_end_lean_corpus(req: E2ELeanCorpusRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Lean pipeline with a patient longitudinal corpus.
