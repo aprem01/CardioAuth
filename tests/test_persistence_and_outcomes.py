@@ -114,6 +114,87 @@ def test_audit_is_append_only() -> None:
     # No API to delete — that's the point; audits are immutable.
 
 
+# ── Outcomes dashboard helpers ──────────────────────────────────────────
+
+
+def test_list_pending_outcome_submissions_excludes_those_with_outcomes() -> None:
+    """Submissions with a recorded outcome must drop off the queue."""
+    store = _fresh_store()
+    store.save_submission("S-A", {"payer": "UHC", "cpt_code": "78452", "status": "submitted"})
+    store.save_submission("S-B", {"payer": "Aetna", "cpt_code": "93458", "status": "submitted"})
+    store.save_outcome("S-A", {"outcome": "APPROVED", "payer": "UHC", "cpt_code": "78452"})
+    pending = store.list_pending_outcome_submissions()
+    ids = {p["submission_id"] for p in pending}
+    assert ids == {"S-B"}
+
+
+def test_list_pending_filters_by_payer_and_cpt() -> None:
+    store = _fresh_store()
+    store.save_submission("S-1", {"payer": "UHC", "cpt_code": "78452", "status": "submitted"})
+    store.save_submission("S-2", {"payer": "Aetna", "cpt_code": "78452", "status": "submitted"})
+    store.save_submission("S-3", {"payer": "UHC", "cpt_code": "93458", "status": "submitted"})
+    by_payer = {p["submission_id"] for p in store.list_pending_outcome_submissions(payer="UHC")}
+    by_cpt = {p["submission_id"] for p in store.list_pending_outcome_submissions(cpt_code="78452")}
+    assert by_payer == {"S-1", "S-3"}
+    assert by_cpt == {"S-1", "S-2"}
+
+
+def test_list_pending_uses_procedure_code_fallback() -> None:
+    """Submissions persisted via the e2e demo path use `procedure_code`,
+    not `cpt_code`. The filter has to accept either."""
+    store = _fresh_store()
+    store.save_submission("S-1", {"payer": "UHC", "procedure_code": "78452", "status": "submitted"})
+    found = store.list_pending_outcome_submissions(cpt_code="78452")
+    assert {p["submission_id"] for p in found} == {"S-1"}
+
+
+def test_list_pending_excludes_terminal_statuses() -> None:
+    """Approved/denied submissions are off-queue even without an outcomes row
+    (manual status updates path)."""
+    store = _fresh_store()
+    store.save_submission("S-A", {"payer": "UHC", "cpt_code": "78452", "status": "approved"})
+    store.save_submission("S-B", {"payer": "UHC", "cpt_code": "78452", "status": "denied"})
+    store.save_submission("S-C", {"payer": "UHC", "cpt_code": "78452", "status": "submitted"})
+    ids = {p["submission_id"] for p in store.list_pending_outcome_submissions()}
+    assert ids == {"S-C"}
+
+
+def test_list_all_rolling_stats_returns_per_pair_rates() -> None:
+    store = _fresh_store()
+    store.record_outcome_for_stats("UHC", "78452", "APPROVED")
+    store.record_outcome_for_stats("UHC", "78452", "APPROVED")
+    store.record_outcome_for_stats("UHC", "78452", "DENIED")
+    store.record_outcome_for_stats("Aetna", "93458", "APPROVED")
+    grid = store.list_all_rolling_stats()
+    keyed = {(s["payer"], s["cpt_code"]): s for s in grid}
+    assert keyed[("UHC", "78452")]["total"] == 3
+    assert keyed[("UHC", "78452")]["approval_rate"] == round(2 / 3, 3)
+    assert keyed[("Aetna", "93458")]["approval_rate"] == 1.0
+
+
+def test_count_outcomes_aggregates_everything() -> None:
+    store = _fresh_store()
+    store.save_outcome("S1", {"outcome": "APPROVED", "payer": "UHC", "cpt_code": "78452"})
+    store.save_outcome("S2", {"outcome": "APPROVED", "payer": "UHC", "cpt_code": "78452"})
+    store.save_outcome("S3", {"outcome": "DENIED", "payer": "UHC", "cpt_code": "78452"})
+    store.save_outcome("S4", {"outcome": "INFO_REQUESTED", "payer": "UHC", "cpt_code": "78452"})
+    counts = store.count_outcomes()
+    assert counts["total"] == 4
+    assert counts["approved"] == 2
+    assert counts["denied"] == 1
+    assert counts["pending"] == 1
+    assert counts["approval_rate"] == 0.5
+    assert counts["denial_rate"] == 0.25
+
+
+def test_count_outcomes_empty_returns_zeros_not_none() -> None:
+    store = _fresh_store()
+    counts = store.count_outcomes()
+    assert counts["total"] == 0
+    assert counts["approval_rate"] is None
+    assert counts["denial_rate"] is None
+
+
 # ── Submission channels ─────────────────────────────────────────────────
 
 def _sample_package() -> SubmissionPackage:

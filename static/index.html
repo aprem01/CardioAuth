@@ -567,6 +567,10 @@
 
       <!-- Tracking -->
       <div class="sidebar-group-label mt-4">Tracking</div>
+      <a href="#outcomes" class="sidebar-link" data-route="outcomes">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        Outcomes
+      </a>
       <a href="#auth-tracker" class="sidebar-link" data-route="auth-tracker">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         Auth Tracker
@@ -723,6 +727,7 @@
       app.innerHTML = renderCorpusDemo();
       setTimeout(_renderCorpusDocList, 0);
     }
+    else if (hash === '#outcomes') { app.innerHTML = renderLoading('Outcomes'); loadOutcomes(); }
     else { app.innerHTML = renderDashboard(); }
   }
 
@@ -7941,6 +7946,245 @@ This procedure is essential for determining whether percutaneous coronary interv
       });
     }
   }
+
+  // ──────────────────────────── Outcomes (#outcomes) ────────────────────────────
+  // Closes the feedback loop: every submitted PA gets a recorded payer
+  // outcome. Headline approval-rate stat answers Peter's "how many got
+  // approved?" question; pending queue is the daily work surface.
+  async function loadOutcomes() {
+    const app = document.getElementById('app');
+    try {
+      const [pending, stats] = await Promise.all([
+        apiFetch('/api/outcomes/pending?limit=100'),
+        apiFetch('/api/outcomes/stats'),
+      ]);
+      app.innerHTML = renderOutcomesPage(pending, stats);
+    } catch(e) {
+      app.innerHTML = renderError('Outcomes', e.message);
+    }
+  }
+
+  function renderOutcomesPage(pending, stats) {
+    const h = (stats && stats.headline) || {};
+    const grid = (stats && stats.by_payer_cpt) || [];
+    const items = (pending && pending.items) || [];
+
+    const approvalRatePct = (h.approval_rate != null) ? Math.round(h.approval_rate * 100) : null;
+    const denialRatePct = (h.denial_rate != null) ? Math.round(h.denial_rate * 100) : null;
+
+    const pendingRows = items.length === 0
+      ? `<tr><td colspan="7" class="px-4 py-6 text-center text-slate-500">No submissions awaiting outcome — queue is clean.</td></tr>`
+      : items.map(it => {
+          const ageBadge = (it.age_days == null) ? '' : (
+            it.age_days >= 14 ? `<span class="text-red-400">${it.age_days}d</span>` :
+            it.age_days >= 7  ? `<span class="text-amber-400">${it.age_days}d</span>` :
+                                 `<span class="text-slate-400">${it.age_days}d</span>`
+          );
+          const escId = (it.submission_id || '').replace(/'/g, "\\'");
+          return `
+          <tr class="border-t border-slate-800 hover:bg-slate-800/40">
+            <td class="px-4 py-2 text-slate-200 font-mono text-xs">${it.submission_id || ''}</td>
+            <td class="px-4 py-2 text-slate-300">${it.patient_name || it.patient_id || '—'}</td>
+            <td class="px-4 py-2 text-slate-300">${it.payer || '—'}</td>
+            <td class="px-4 py-2 text-slate-300">${it.cpt_code || '—'}</td>
+            <td class="px-4 py-2 text-slate-300">${(it.submitted_at || '').slice(0, 10)}</td>
+            <td class="px-4 py-2">${ageBadge}</td>
+            <td class="px-4 py-2 text-right">
+              <button onclick="openOutcomeForm('${escId}', '${(it.payer || '').replace(/'/g, "\\'")}', '${it.cpt_code || ''}')"
+                      class="px-2 py-1 text-xs rounded bg-accent-cyan/20 hover:bg-accent-cyan/30 text-accent-cyan">
+                Record outcome
+              </button>
+            </td>
+          </tr>`;
+        }).join('');
+
+    const gridRows = grid.length === 0
+      ? `<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">No outcomes recorded yet — record one to seed the rollup.</td></tr>`
+      : grid.map(s => {
+          const pct = s.approval_rate != null ? Math.round(s.approval_rate * 100) + '%' : '—';
+          const color = s.approval_rate == null ? 'text-slate-400' :
+                        s.approval_rate >= 0.8 ? 'text-emerald-400' :
+                        s.approval_rate >= 0.5 ? 'text-amber-400' :
+                                                  'text-red-400';
+          return `
+          <tr class="border-t border-slate-800">
+            <td class="px-4 py-2 text-slate-200">${s.payer || '—'}</td>
+            <td class="px-4 py-2 text-slate-200">${s.cpt_code || '—'}</td>
+            <td class="px-4 py-2 text-right text-slate-300">${s.total}</td>
+            <td class="px-4 py-2 text-right text-emerald-400">${s.approved}</td>
+            <td class="px-4 py-2 text-right text-red-400">${s.denied}</td>
+            <td class="px-4 py-2 text-right font-semibold ${color}">${pct}</td>
+          </tr>`;
+        }).join('');
+
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Outcomes & Tracking')}
+
+      <div class="bg-slate-900/60 border border-slate-800 rounded-lg p-4">
+        <p class="text-sm text-slate-400">
+          Close the loop on every PA. Record each payer decision here; the system
+          updates rolling stats, files denial-driven precedents, and drafts appeals when needed.
+        </p>
+      </div>
+
+      <!-- Headline -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+          <div class="text-xs uppercase text-slate-500">Outcomes recorded</div>
+          <div class="text-2xl font-bold text-white mt-1">${h.total || 0}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+          <div class="text-xs uppercase text-slate-500">Approval rate</div>
+          <div class="text-2xl font-bold text-emerald-400 mt-1">${approvalRatePct != null ? approvalRatePct + '%' : '—'}</div>
+          <div class="text-xs text-slate-500 mt-1">${h.approved || 0} approved</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+          <div class="text-xs uppercase text-slate-500">Denial rate</div>
+          <div class="text-2xl font-bold text-red-400 mt-1">${denialRatePct != null ? denialRatePct + '%' : '—'}</div>
+          <div class="text-xs text-slate-500 mt-1">${h.denied || 0} denied</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+          <div class="text-xs uppercase text-slate-500">Awaiting decision</div>
+          <div class="text-2xl font-bold text-amber-400 mt-1">${items.length}</div>
+          <div class="text-xs text-slate-500 mt-1">in queue</div>
+        </div>
+      </div>
+
+      <!-- Pending queue -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-semibold text-white">Pending payer decisions</h2>
+            <p class="text-xs text-slate-500">Submitted but no outcome recorded yet. Oldest first.</p>
+          </div>
+          <button onclick="loadOutcomes()" class="text-xs text-slate-400 hover:text-accent-cyan">Refresh</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-800/50">
+              <tr>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">Submission</th>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">Patient</th>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">Payer</th>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">CPT</th>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">Submitted</th>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">Age</th>
+                <th class="px-4 py-2 text-right text-slate-400 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>${pendingRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Per (payer, cpt) rollup -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-800">
+          <h2 class="text-lg font-semibold text-white">Approval rates by payer × CPT</h2>
+          <p class="text-xs text-slate-500">Live rollup. Each recorded outcome moves the needle for that pair.</p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-800/50">
+              <tr>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">Payer</th>
+                <th class="px-4 py-2 text-left text-slate-400 font-medium">CPT</th>
+                <th class="px-4 py-2 text-right text-slate-400 font-medium">Total</th>
+                <th class="px-4 py-2 text-right text-slate-400 font-medium">Approved</th>
+                <th class="px-4 py-2 text-right text-slate-400 font-medium">Denied</th>
+                <th class="px-4 py-2 text-right text-slate-400 font-medium">Rate</th>
+              </tr>
+            </thead>
+            <tbody>${gridRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Record-outcome modal -->
+      <div id="outcomeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+        <div class="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-md p-6 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-white">Record payer decision</h3>
+            <button onclick="closeOutcomeForm()" class="text-slate-400 hover:text-white">&times;</button>
+          </div>
+          <div class="text-xs text-slate-400">
+            <div>Submission: <span id="outcomeModalSubId" class="font-mono"></span></div>
+            <div>Payer / CPT: <span id="outcomeModalPayerCpt"></span></div>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Outcome</label>
+            <select id="outcomeFormStatus" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white">
+              <option value="APPROVED">APPROVED</option>
+              <option value="DENIED">DENIED</option>
+              <option value="PENDING">PENDING</option>
+              <option value="INFO_REQUESTED">INFO_REQUESTED</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Authorization # (if approved)</label>
+            <input id="outcomeFormAuth" type="text" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white" placeholder="e.g. UHC-12345" />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Denial reason (if denied)</label>
+            <textarea id="outcomeFormDenialReason" rows="2" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white" placeholder="e.g. Medical necessity not met..."></textarea>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Notes</label>
+            <textarea id="outcomeFormNotes" rows="2" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white"></textarea>
+          </div>
+          <div id="outcomeFormError" class="hidden text-xs text-red-400"></div>
+          <div class="flex justify-end gap-2">
+            <button onclick="closeOutcomeForm()" class="px-3 py-2 text-sm rounded bg-slate-800 hover:bg-slate-700 text-slate-300">Cancel</button>
+            <button id="outcomeFormSubmit" onclick="submitOutcome()" class="px-3 py-2 text-sm rounded bg-accent-cyan/30 hover:bg-accent-cyan/50 text-white">Save outcome</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  window.openOutcomeForm = function(submissionId, payer, cpt) {
+    window._outcomeFormSubId = submissionId;
+    document.getElementById('outcomeModalSubId').textContent = submissionId;
+    document.getElementById('outcomeModalPayerCpt').textContent = (payer || '—') + ' / ' + (cpt || '—');
+    document.getElementById('outcomeFormStatus').value = 'APPROVED';
+    document.getElementById('outcomeFormAuth').value = '';
+    document.getElementById('outcomeFormDenialReason').value = '';
+    document.getElementById('outcomeFormNotes').value = '';
+    document.getElementById('outcomeFormError').classList.add('hidden');
+    document.getElementById('outcomeModal').classList.remove('hidden');
+  };
+
+  window.closeOutcomeForm = function() {
+    document.getElementById('outcomeModal').classList.add('hidden');
+  };
+
+  window.submitOutcome = async function() {
+    const subId = window._outcomeFormSubId;
+    if (!subId) return;
+    const btn = document.getElementById('outcomeFormSubmit');
+    const errEl = document.getElementById('outcomeFormError');
+    errEl.classList.add('hidden');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    try {
+      await apiPost('/api/pa/outcome/record', {
+        submission_id: subId,
+        outcome: document.getElementById('outcomeFormStatus').value,
+        authorization_number: document.getElementById('outcomeFormAuth').value || '',
+        denial_reason: document.getElementById('outcomeFormDenialReason').value || '',
+        notes: document.getElementById('outcomeFormNotes').value || '',
+      });
+      closeOutcomeForm();
+      loadOutcomes();
+    } catch(e) {
+      errEl.textContent = e.message;
+      errEl.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save outcome';
+    }
+  };
 
   async function loadDenials() {
     const app = document.getElementById('app');

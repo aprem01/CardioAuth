@@ -125,6 +125,24 @@ class Store(ABC):
     def list_packets(self, *, payer: str = "", resolved_cpt: str = "",
                      decision: str = "", limit: int = 50) -> list[dict]: ...
 
+    # ── Outcome dashboard helpers ──
+
+    @abstractmethod
+    def list_pending_outcome_submissions(
+        self, *, payer: str = "", cpt_code: str = "", limit: int = 100,
+    ) -> list[dict]:
+        """Submissions that have been transmitted but have no recorded
+        outcome yet. Ordered by oldest-first so staff work the queue."""
+
+    @abstractmethod
+    def list_all_rolling_stats(self) -> list[dict]:
+        """Every (payer, cpt) rollup with at least one recorded outcome."""
+
+    @abstractmethod
+    def count_outcomes(self) -> dict:
+        """Total counts across all recorded outcomes — approval rate, denial
+        rate, info-requested rate. Backs the headline stat panel."""
+
 
 # ────────────────────────────────────────────────────────────────────────
 # SQLite backend (default)
@@ -698,6 +716,109 @@ class SQLiteStore(Store):
                 "submission": json.loads(row["sub_json"]),
                 "outcome": json.loads(row["out_json"]),
             }
+
+    # ── outcome dashboard helpers ──────────────────────────────────────
+
+    def list_pending_outcome_submissions(
+        self, *, payer: str = "", cpt_code: str = "", limit: int = 100,
+    ) -> list[dict]:
+        sql = """
+            SELECT s.submission_id, s.data_json, s.status, s.created_at
+            FROM submissions s
+            LEFT JOIN outcomes o ON o.submission_id = s.submission_id
+            WHERE o.submission_id IS NULL
+              AND s.status IN ('submitted', 'pending', 'info_requested')
+        """
+        params: list[Any] = []
+        if payer or cpt_code:
+            sql += " AND ("
+            cond: list[str] = []
+            if payer:
+                cond.append("json_extract(s.data_json, '$.payer') = ?")
+                params.append(payer)
+            if cpt_code:
+                cond.append(
+                    "(json_extract(s.data_json, '$.cpt_code') = ? "
+                    "OR json_extract(s.data_json, '$.procedure_code') = ?)"
+                )
+                params.extend([cpt_code, cpt_code])
+            sql += " AND ".join(cond) + ")"
+        sql += " ORDER BY s.created_at ASC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out: list[dict] = []
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            data = json.loads(row["data_json"])
+            created_at = row["created_at"]
+            age_days: int | None = None
+            try:
+                age_days = (now - datetime.fromisoformat(created_at)).days
+            except Exception:
+                age_days = None
+            out.append({
+                "submission_id": row["submission_id"],
+                "status": row["status"],
+                "submitted_at": created_at,
+                "age_days": age_days,
+                "patient_id": data.get("patient_id", ""),
+                "patient_name": data.get("patient_name", ""),
+                "payer": data.get("payer", ""),
+                "cpt_code": data.get("cpt_code", "") or data.get("procedure_code", ""),
+                "procedure": data.get("procedure", ""),
+                "approval_label": data.get("approval_label", ""),
+                "approval_score": data.get("approval_score"),
+            })
+        return out
+
+    def list_all_rolling_stats(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT payer, cpt_code, total, approved, denied, pending,
+                          last_outcome_at
+                   FROM stats_rollup
+                   WHERE total > 0
+                   ORDER BY total DESC""",
+            ).fetchall()
+        return [
+            {
+                "payer": r["payer"],
+                "cpt_code": r["cpt_code"],
+                "total": r["total"],
+                "approved": r["approved"],
+                "denied": r["denied"],
+                "pending": r["pending"],
+                "approval_rate": round(r["approved"] / r["total"], 3) if r["total"] else None,
+                "last_outcome_at": r["last_outcome_at"],
+            }
+            for r in rows
+        ]
+
+    def count_outcomes(self) -> dict:
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT
+                     COUNT(*) AS total,
+                     SUM(CASE WHEN outcome = 'APPROVED' THEN 1 ELSE 0 END) AS approved,
+                     SUM(CASE WHEN outcome = 'DENIED' THEN 1 ELSE 0 END) AS denied,
+                     SUM(CASE WHEN outcome IN ('PENDING','INFO_REQUESTED') THEN 1 ELSE 0 END) AS pending,
+                     MAX(created_at) AS last_outcome_at
+                   FROM outcomes""",
+            ).fetchone()
+        total = int(row["total"] or 0)
+        approved = int(row["approved"] or 0)
+        denied = int(row["denied"] or 0)
+        pending = int(row["pending"] or 0)
+        return {
+            "total": total,
+            "approved": approved,
+            "denied": denied,
+            "pending": pending,
+            "approval_rate": round(approved / total, 3) if total else None,
+            "denial_rate": round(denied / total, 3) if total else None,
+            "last_outcome_at": row["last_outcome_at"],
+        }
 
 
 # ────────────────────────────────────────────────────────────────────────

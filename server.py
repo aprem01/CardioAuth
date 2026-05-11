@@ -1159,6 +1159,47 @@ def get_outcome_record(submission_id: str, user: AuthUser = Depends(get_current_
     return outcome
 
 
+@app.get("/api/outcomes/pending")
+def list_pending_outcomes(
+    payer: str = "",
+    cpt_code: str = "",
+    limit: int = 100,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Submissions awaiting payer decision capture.
+
+    This is the queue Peter's PA staff work each morning: every submission
+    that's been transmitted but doesn't yet have a recorded outcome.
+    Ordered oldest-first so aged cases bubble up.
+    """
+    from cardioauth.persistence import get_store
+    items = get_store().list_pending_outcome_submissions(
+        payer=payer, cpt_code=cpt_code, limit=max(1, min(limit, 500)),
+    )
+    return {
+        "items": items,
+        "total": len(items),
+        "filters": {"payer": payer, "cpt_code": cpt_code},
+    }
+
+
+@app.get("/api/outcomes/stats")
+def get_outcome_stats(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Aggregate outcome metrics: headline counts + per-(payer, cpt) breakdown.
+
+    Headline numbers answer Peter's question — "how many did we actually
+    get approved?" The per-payer-per-cpt grid tells the operational story:
+    where are we strong, where are we leaking denials, where do we have
+    no data yet.
+    """
+    from cardioauth.persistence import get_store
+    store = get_store()
+    return {
+        "headline": store.count_outcomes(),
+        "by_payer_cpt": store.list_all_rolling_stats(),
+    }
+
+
 class E2EDemoRequest(BaseModel):
     patient_id: str = "DEMO-001"
     procedure_code: str = "78492"
