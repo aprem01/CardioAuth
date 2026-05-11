@@ -7973,47 +7973,75 @@ This procedure is essential for determining whether percutaneous coronary interv
     const denialRatePct = (h.denial_rate != null) ? Math.round(h.denial_rate * 100) : null;
 
     const pendingRows = items.length === 0
-      ? `<tr><td colspan="7" class="px-4 py-6 text-center text-slate-500">No submissions awaiting outcome — queue is clean.</td></tr>`
+      ? `<tr><td colspan="7" class="px-5 py-10 text-center">
+           <div class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-emerald-50 mb-3">
+             <svg class="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+           </div>
+           <div class="text-sm font-medium text-slate-700">Queue is clean</div>
+           <div class="text-xs text-slate-500 mt-1">No submissions awaiting outcome capture.</div>
+         </td></tr>`
       : items.map(it => {
-          const ageBadge = (it.age_days == null) ? '' : (
-            it.age_days >= 14 ? `<span class="text-red-400">${it.age_days}d</span>` :
-            it.age_days >= 7  ? `<span class="text-amber-400">${it.age_days}d</span>` :
-                                 `<span class="text-slate-400">${it.age_days}d</span>`
-          );
+          let ageBadge = '';
+          if (it.age_days != null) {
+            const cls = it.age_days >= 14
+              ? 'bg-red-50 text-red-700 ring-1 ring-red-200'
+              : it.age_days >= 7
+                ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
+                : 'bg-slate-100 text-slate-600 ring-1 ring-slate-200';
+            ageBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${cls}">${it.age_days}d</span>`;
+          }
           const escId = (it.submission_id || '').replace(/'/g, "\\'");
+          const escPayer = (it.payer || '').replace(/'/g, "\\'");
           return `
-          <tr class="border-t border-slate-800 hover:bg-slate-800/40">
-            <td class="px-4 py-2 text-slate-200 font-mono text-xs">${it.submission_id || ''}</td>
-            <td class="px-4 py-2 text-slate-300">${it.patient_name || it.patient_id || '—'}</td>
-            <td class="px-4 py-2 text-slate-300">${it.payer || '—'}</td>
-            <td class="px-4 py-2 text-slate-300">${it.cpt_code || '—'}</td>
-            <td class="px-4 py-2 text-slate-300">${(it.submitted_at || '').slice(0, 10)}</td>
-            <td class="px-4 py-2">${ageBadge}</td>
-            <td class="px-4 py-2 text-right">
-              <button onclick="openOutcomeForm('${escId}', '${(it.payer || '').replace(/'/g, "\\'")}', '${it.cpt_code || ''}')"
-                      class="px-2 py-1 text-xs rounded bg-accent-cyan/20 hover:bg-accent-cyan/30 text-accent-cyan">
-                Record outcome
+          <tr class="border-t border-slate-100 hover:bg-indigo-50/40 transition">
+            <td class="px-5 py-3 font-mono text-xs text-slate-500">${it.submission_id || ''}</td>
+            <td class="px-5 py-3 text-sm font-medium text-slate-800">${it.patient_name || it.patient_id || '—'}</td>
+            <td class="px-5 py-3 text-sm text-slate-700">${it.payer || '—'}</td>
+            <td class="px-5 py-3 text-sm text-slate-700 font-mono">${it.cpt_code || '—'}</td>
+            <td class="px-5 py-3 text-sm text-slate-600">${(it.submitted_at || '').slice(0, 10)}</td>
+            <td class="px-5 py-3">${ageBadge}</td>
+            <td class="px-5 py-3 text-right">
+              <button onclick="openOutcomeForm('${escId}', '${escPayer}', '${it.cpt_code || ''}')"
+                      class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                Record
               </button>
             </td>
           </tr>`;
         }).join('');
 
     const gridRows = grid.length === 0
-      ? `<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">No outcomes recorded yet — record one to seed the rollup.</td></tr>`
+      ? `<tr><td colspan="6" class="px-5 py-10 text-center">
+           <div class="text-sm font-medium text-slate-700">No outcomes recorded yet</div>
+           <div class="text-xs text-slate-500 mt-1">Record one above to start the rollup.</div>
+         </td></tr>`
       : grid.map(s => {
-          const pct = s.approval_rate != null ? Math.round(s.approval_rate * 100) + '%' : '—';
-          const color = s.approval_rate == null ? 'text-slate-400' :
-                        s.approval_rate >= 0.8 ? 'text-emerald-400' :
-                        s.approval_rate >= 0.5 ? 'text-amber-400' :
-                                                  'text-red-400';
+          const r = s.approval_rate;
+          const pct = r != null ? Math.round(r * 100) + '%' : '—';
+          const barColor = r == null ? 'bg-slate-300' :
+                           r >= 0.8 ? 'bg-emerald-500' :
+                           r >= 0.5 ? 'bg-amber-500' :
+                                      'bg-red-500';
+          const pctColor = r == null ? 'text-slate-500' :
+                           r >= 0.8 ? 'text-emerald-700' :
+                           r >= 0.5 ? 'text-amber-700' :
+                                      'text-red-700';
+          const barWidth = r != null ? Math.max(2, Math.round(r * 100)) : 0;
           return `
-          <tr class="border-t border-slate-800">
-            <td class="px-4 py-2 text-slate-200">${s.payer || '—'}</td>
-            <td class="px-4 py-2 text-slate-200">${s.cpt_code || '—'}</td>
-            <td class="px-4 py-2 text-right text-slate-300">${s.total}</td>
-            <td class="px-4 py-2 text-right text-emerald-400">${s.approved}</td>
-            <td class="px-4 py-2 text-right text-red-400">${s.denied}</td>
-            <td class="px-4 py-2 text-right font-semibold ${color}">${pct}</td>
+          <tr class="border-t border-slate-100 hover:bg-slate-50/60 transition">
+            <td class="px-5 py-3 text-sm font-medium text-slate-800">${s.payer || '—'}</td>
+            <td class="px-5 py-3 text-sm text-slate-700 font-mono">${s.cpt_code || '—'}</td>
+            <td class="px-5 py-3 text-right text-sm text-slate-700 tabular-nums">${s.total}</td>
+            <td class="px-5 py-3 text-right text-sm text-emerald-700 font-semibold tabular-nums">${s.approved}</td>
+            <td class="px-5 py-3 text-right text-sm text-red-700 font-semibold tabular-nums">${s.denied}</td>
+            <td class="px-5 py-3">
+              <div class="flex items-center gap-2 justify-end">
+                <div class="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div class="h-full ${barColor} rounded-full" style="width:${barWidth}%"></div>
+                </div>
+                <span class="text-sm font-semibold ${pctColor} tabular-nums w-10 text-right">${pct}</span>
+              </div>
+            </td>
           </tr>`;
         }).join('');
 
@@ -8021,56 +8049,67 @@ This procedure is essential for determining whether percutaneous coronary interv
     <div class="fade-in space-y-6">
       ${breadcrumb('Outcomes & Tracking')}
 
-      <div class="bg-slate-900/60 border border-slate-800 rounded-lg p-4">
-        <p class="text-sm text-slate-400">
-          Close the loop on every PA. Record each payer decision here; the system
-          updates rolling stats, files denial-driven precedents, and drafts appeals when needed.
-        </p>
+      <!-- Intro / explainer -->
+      <div class="bg-gradient-to-br from-indigo-50 via-white to-cyan-50 border border-indigo-100 rounded-xl p-5 flex items-start gap-4">
+        <div class="flex-shrink-0 w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center shadow-sm">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+        </div>
+        <div>
+          <h2 class="text-base font-semibold text-slate-900">Close the loop on every PA</h2>
+          <p class="text-sm text-slate-600 mt-0.5">
+            Record each payer decision here. The system updates rolling stats, files
+            denial-driven precedents in Pinecone, and drafts appeals when needed.
+          </p>
+        </div>
       </div>
 
-      <!-- Headline -->
+      <!-- Headline KPIs -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <div class="text-xs uppercase text-slate-500">Outcomes recorded</div>
-          <div class="text-2xl font-bold text-white mt-1">${h.total || 0}</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-slate-500 font-semibold">Outcomes recorded</div>
+          <div class="text-3xl font-bold text-slate-900 mt-2 tabular-nums">${h.total || 0}</div>
+          <div class="text-xs text-slate-500 mt-1">All time</div>
         </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <div class="text-xs uppercase text-slate-500">Approval rate</div>
-          <div class="text-2xl font-bold text-emerald-400 mt-1">${approvalRatePct != null ? approvalRatePct + '%' : '—'}</div>
-          <div class="text-xs text-slate-500 mt-1">${h.approved || 0} approved</div>
+        <div class="bg-gradient-to-br from-emerald-50 to-white border border-emerald-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-emerald-700 font-semibold">Approval rate</div>
+          <div class="text-3xl font-bold text-emerald-700 mt-2 tabular-nums">${approvalRatePct != null ? approvalRatePct + '%' : '—'}</div>
+          <div class="text-xs text-emerald-700/80 mt-1">${h.approved || 0} approved</div>
         </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <div class="text-xs uppercase text-slate-500">Denial rate</div>
-          <div class="text-2xl font-bold text-red-400 mt-1">${denialRatePct != null ? denialRatePct + '%' : '—'}</div>
-          <div class="text-xs text-slate-500 mt-1">${h.denied || 0} denied</div>
+        <div class="bg-gradient-to-br from-red-50 to-white border border-red-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-red-700 font-semibold">Denial rate</div>
+          <div class="text-3xl font-bold text-red-700 mt-2 tabular-nums">${denialRatePct != null ? denialRatePct + '%' : '—'}</div>
+          <div class="text-xs text-red-700/80 mt-1">${h.denied || 0} denied</div>
         </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <div class="text-xs uppercase text-slate-500">Awaiting decision</div>
-          <div class="text-2xl font-bold text-amber-400 mt-1">${items.length}</div>
-          <div class="text-xs text-slate-500 mt-1">in queue</div>
+        <div class="bg-gradient-to-br from-amber-50 to-white border border-amber-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-amber-700 font-semibold">Awaiting decision</div>
+          <div class="text-3xl font-bold text-amber-700 mt-2 tabular-nums">${items.length}</div>
+          <div class="text-xs text-amber-700/80 mt-1">In queue</div>
         </div>
       </div>
 
       <!-- Pending queue -->
-      <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-        <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
           <div>
-            <h2 class="text-lg font-semibold text-white">Pending payer decisions</h2>
-            <p class="text-xs text-slate-500">Submitted but no outcome recorded yet. Oldest first.</p>
+            <h2 class="text-base font-semibold text-slate-900">Pending payer decisions</h2>
+            <p class="text-xs text-slate-500 mt-0.5">Submitted but no outcome recorded yet — oldest first.</p>
           </div>
-          <button onclick="loadOutcomes()" class="text-xs text-slate-400 hover:text-accent-cyan">Refresh</button>
+          <button onclick="loadOutcomes()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-indigo-600 hover:bg-white border border-slate-200 rounded-md transition">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M4 9a9 9 0 0114.13-4.36L20 7M20 15a9 9 0 01-14.13 4.36L4 17"/></svg>
+            Refresh
+          </button>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
-            <thead class="bg-slate-800/50">
+            <thead class="bg-slate-50/70">
               <tr>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">Submission</th>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">Patient</th>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">Payer</th>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">CPT</th>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">Submitted</th>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">Age</th>
-                <th class="px-4 py-2 text-right text-slate-400 font-medium">Action</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Submission</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Patient</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Payer</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">CPT</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Submitted</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Age</th>
+                <th class="px-5 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Action</th>
               </tr>
             </thead>
             <tbody>${pendingRows}</tbody>
@@ -8079,21 +8118,21 @@ This procedure is essential for determining whether percutaneous coronary interv
       </div>
 
       <!-- Per (payer, cpt) rollup -->
-      <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-        <div class="px-4 py-3 border-b border-slate-800">
-          <h2 class="text-lg font-semibold text-white">Approval rates by payer × CPT</h2>
-          <p class="text-xs text-slate-500">Live rollup. Each recorded outcome moves the needle for that pair.</p>
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-200 bg-slate-50/50">
+          <h2 class="text-base font-semibold text-slate-900">Approval rates by payer × CPT</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Live rollup — each recorded outcome moves the needle for that pair.</p>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
-            <thead class="bg-slate-800/50">
+            <thead class="bg-slate-50/70">
               <tr>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">Payer</th>
-                <th class="px-4 py-2 text-left text-slate-400 font-medium">CPT</th>
-                <th class="px-4 py-2 text-right text-slate-400 font-medium">Total</th>
-                <th class="px-4 py-2 text-right text-slate-400 font-medium">Approved</th>
-                <th class="px-4 py-2 text-right text-slate-400 font-medium">Denied</th>
-                <th class="px-4 py-2 text-right text-slate-400 font-medium">Rate</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Payer</th>
+                <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">CPT</th>
+                <th class="px-5 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Total</th>
+                <th class="px-5 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Approved</th>
+                <th class="px-5 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Denied</th>
+                <th class="px-5 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Approval rate</th>
               </tr>
             </thead>
             <tbody>${gridRows}</tbody>
@@ -8102,41 +8141,48 @@ This procedure is essential for determining whether percutaneous coronary interv
       </div>
 
       <!-- Record-outcome modal -->
-      <div id="outcomeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-        <div class="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-md p-6 space-y-4">
-          <div class="flex items-center justify-between">
-            <h3 class="text-lg font-semibold text-white">Record payer decision</h3>
-            <button onclick="closeOutcomeForm()" class="text-slate-400 hover:text-white">&times;</button>
+      <div id="outcomeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-cyan-50">
+            <div>
+              <h3 class="text-base font-semibold text-slate-900">Record payer decision</h3>
+              <p class="text-xs text-slate-600 mt-0.5">Closes the loop on this submission.</p>
+            </div>
+            <button onclick="closeOutcomeForm()" class="text-slate-400 hover:text-slate-700 transition w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-white/60">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
           </div>
-          <div class="text-xs text-slate-400">
-            <div>Submission: <span id="outcomeModalSubId" class="font-mono"></span></div>
-            <div>Payer / CPT: <span id="outcomeModalPayerCpt"></span></div>
+          <div class="px-6 py-5 space-y-4">
+            <div class="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-600 space-y-0.5">
+              <div>Submission: <span id="outcomeModalSubId" class="font-mono text-slate-800"></span></div>
+              <div>Payer / CPT: <span id="outcomeModalPayerCpt" class="text-slate-800"></span></div>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1.5">Outcome</label>
+              <select id="outcomeFormStatus" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                <option value="APPROVED">✓ Approved</option>
+                <option value="DENIED">✗ Denied</option>
+                <option value="PENDING">⏱ Pending</option>
+                <option value="INFO_REQUESTED">📋 Information requested</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1.5">Authorization # <span class="text-slate-400 font-normal">(if approved)</span></label>
+              <input id="outcomeFormAuth" type="text" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" placeholder="e.g. UHC-12345" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1.5">Denial reason <span class="text-slate-400 font-normal">(if denied)</span></label>
+              <textarea id="outcomeFormDenialReason" rows="2" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" placeholder="e.g. Medical necessity not met..."></textarea>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1.5">Notes</label>
+              <textarea id="outcomeFormNotes" rows="2" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+            </div>
+            <div id="outcomeFormError" class="hidden text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2"></div>
           </div>
-          <div>
-            <label class="block text-xs text-slate-400 mb-1">Outcome</label>
-            <select id="outcomeFormStatus" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white">
-              <option value="APPROVED">APPROVED</option>
-              <option value="DENIED">DENIED</option>
-              <option value="PENDING">PENDING</option>
-              <option value="INFO_REQUESTED">INFO_REQUESTED</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs text-slate-400 mb-1">Authorization # (if approved)</label>
-            <input id="outcomeFormAuth" type="text" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white" placeholder="e.g. UHC-12345" />
-          </div>
-          <div>
-            <label class="block text-xs text-slate-400 mb-1">Denial reason (if denied)</label>
-            <textarea id="outcomeFormDenialReason" rows="2" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white" placeholder="e.g. Medical necessity not met..."></textarea>
-          </div>
-          <div>
-            <label class="block text-xs text-slate-400 mb-1">Notes</label>
-            <textarea id="outcomeFormNotes" rows="2" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded text-white"></textarea>
-          </div>
-          <div id="outcomeFormError" class="hidden text-xs text-red-400"></div>
-          <div class="flex justify-end gap-2">
-            <button onclick="closeOutcomeForm()" class="px-3 py-2 text-sm rounded bg-slate-800 hover:bg-slate-700 text-slate-300">Cancel</button>
-            <button id="outcomeFormSubmit" onclick="submitOutcome()" class="px-3 py-2 text-sm rounded bg-accent-cyan/30 hover:bg-accent-cyan/50 text-white">Save outcome</button>
+          <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2">
+            <button onclick="closeOutcomeForm()" class="px-4 py-2 text-sm font-medium rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 transition">Cancel</button>
+            <button id="outcomeFormSubmit" onclick="submitOutcome()" class="px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition">Save outcome</button>
           </div>
         </div>
       </div>
