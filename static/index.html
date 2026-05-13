@@ -9361,6 +9361,26 @@ This procedure is essential for determining whether percutaneous coronary interv
   // Initialize auth on page load
   setTimeout(initAuth, 200);
 
+  // Belt-and-suspenders: aggressively kill the login modal if anything
+  // creates it. Multiple safety nets because earlier attempts to disable
+  // it via initAuth flags didn't stop a stale-cached version from
+  // showing the modal in users' browsers. This MutationObserver removes
+  // any DOM node with id="auth-modal" the moment it appears.
+  (function killAuthModal() {
+    const remove = () => {
+      const m = document.getElementById('auth-modal');
+      if (m) m.remove();
+    };
+    remove();
+    // Repeat for a few seconds in case it's added asynchronously
+    let n = 0;
+    const interval = setInterval(() => { remove(); if (++n > 40) clearInterval(interval); }, 100);
+    // And catch any future additions
+    if (window.MutationObserver) {
+      new MutationObserver(remove).observe(document.documentElement, {childList: true, subtree: true});
+    }
+  })();
+
   </script>
 </body>
 </html>
