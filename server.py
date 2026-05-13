@@ -297,17 +297,13 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/.well-known/jwks.json")
-def jwks() -> dict[str, Any]:
-    """Public JWK Set Epic fetches to verify our backend-services JWT.
+def _load_jwks() -> dict[str, Any]:
+    """Single source of truth for the JWKS payload.
 
-    Epic's JWT auth flow needs our public key reachable at a stable URL.
-    The matching private key signs the assertion at runtime (loaded from
-    EPIC_PRIVATE_KEY env var). The `kid` here must match the one in the
-    JWT header set by cardioauth/fhir/client.py.
-
-    On the Epic vendor portal, paste the URL of this endpoint into both
-    the Non-Production JWK Set URL and Production JWK Set URL fields.
+    Served from two distinct URLs because Epic's vendor portal refuses
+    identical Non-Production and Production JWK Set URLs. Same content
+    behind each URL today — when we go to real production we'll generate
+    a separate prod keypair and split this into two distinct documents.
     """
     jwks_b64 = os.environ.get("EPIC_FHIR_JWKS_B64", "")
     if jwks_b64:
@@ -326,6 +322,28 @@ def jwks() -> dict[str, Any]:
             status_code=503,
             detail=f"JWKS not configured. Set EPIC_FHIR_JWKS_B64 env var or place file at {jwks_path}.",
         )
+
+
+@app.get("/.well-known/jwks.json")
+def jwks_non_production() -> dict[str, Any]:
+    """Public JWK Set for the Epic non-production sandbox.
+
+    Paste into the Non-Production JWK Set URL field on the Epic vendor
+    portal. Epic fetches this to verify our backend-services JWT.
+    """
+    return _load_jwks()
+
+
+@app.get("/.well-known/jwks-prod.json")
+def jwks_production() -> dict[str, Any]:
+    """Public JWK Set for the Epic production environment.
+
+    Epic's vendor portal requires the Production JWK Set URL be distinct
+    from the Non-Production URL even though the underlying key material
+    can be identical at this stage. When we promote to real production
+    we'll generate a separate prod keypair and split this document.
+    """
+    return _load_jwks()
 
 
 @app.get("/api/auth/status")
