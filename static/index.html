@@ -8041,6 +8041,11 @@ This procedure is essential for determining whether percutaneous coronary interv
     const opts = _EPIC_TEST_PATIENTS.map(p =>
       `<option value="${p.id}">${p.name} — ${p.hint}</option>`
     ).join('');
+    // Detect a SMART session ID handed back by /api/epic/callback
+    const qs = new URLSearchParams(window.location.hash.split('?')[1] || '');
+    const sessionId = qs.get('session') || '';
+    const launchError = qs.get('launch_error') || '';
+
     return `
     <div class="fade-in space-y-6">
       ${breadcrumb('Epic FHIR Sandbox')}
@@ -8052,12 +8057,47 @@ This procedure is essential for determining whether percutaneous coronary interv
         <div>
           <h2 class="text-base font-semibold text-slate-900">Live Epic FHIR R4 integration</h2>
           <p class="text-sm text-slate-600 mt-0.5">
-            Pulls the full chart for a synthetic patient from <code class="text-xs bg-white px-1 rounded border border-slate-200">fhir.epic.com</code>,
-            maps DocumentReference + Encounter into the longitudinal corpus, and runs the lean pipeline against it.
-            Same proof point Peter asked for: does the chart-read story hold up on Epic's actual data, not just handcrafted JSON.
+            Two integration modes: <strong>SMART App Launch</strong> (user-driven — physician clicks Launch in chart, app reads patient data with their token) and <strong>Backend Services</strong> (headless — JWT private_key_jwt for nightly batches).
           </p>
         </div>
       </div>
+
+      ${launchError ? `
+        <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
+          <strong>Launch error from Epic:</strong> ${escapeHtml(launchError)}
+        </div>` : ''}
+
+      <!-- SMART launch card -->
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h3 class="text-base font-semibold text-slate-900">SMART App Launch</h3>
+            <p class="text-xs text-slate-500 mt-0.5">User-driven OAuth. Epic prompts you to pick a test patient, then this app reads the chart with your token.</p>
+          </div>
+          ${sessionId ? `
+            <div class="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
+              Active session · <span class="font-mono">${escapeHtml(sessionId.slice(0, 10))}…</span>
+            </div>` : ''}
+        </div>
+        <div id="smart-session-info" class="text-xs text-slate-500 mb-3">${sessionId ? 'Loading session…' : 'No session yet. Click "Launch from Epic" to start.'}</div>
+        <div class="flex gap-2 flex-wrap items-center">
+          <a href="/api/epic/launch" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+            Launch from Epic
+          </a>
+          ${sessionId ? `
+            <button onclick="runEpicSmartPipeline('${sessionId}')" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
+              Run pipeline on this patient
+            </button>` : ''}
+          <span class="text-xs text-slate-500">Standalone launch — works against open.epic test patients.</span>
+        </div>
+        <script>setTimeout(() => _loadSmartSession('${sessionId}'), 50);</script>
+      </div>
+
+      <hr class="border-slate-200"/>
+
+      <div class="text-xs text-slate-500 uppercase tracking-wide font-semibold">Backend Services (headless) — same flow, server-issued token</div>
 
       <!-- Form -->
       <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
@@ -8123,6 +8163,57 @@ This procedure is essential for determining whether percutaneous coronary interv
       }
       const data = await r.json();
       out.innerHTML = _renderEpicInspect(data);
+    } catch (e) {
+      out.innerHTML = _epicErrorPanel(0, e.message);
+    }
+  };
+
+  window._loadSmartSession = async function(sessionId) {
+    if (!sessionId) return;
+    const el = document.getElementById('smart-session-info');
+    if (!el) return;
+    try {
+      const r = await fetch(`/api/epic/session/${encodeURIComponent(sessionId)}`);
+      if (!r.ok) {
+        el.innerHTML = `<span class="text-amber-700">Session ${sessionId.slice(0,8)}… not found (expired?). Click <strong>Launch from Epic</strong> to start fresh.</span>`;
+        return;
+      }
+      const s = await r.json();
+      el.innerHTML = `
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div><span class="text-slate-400">Patient:</span> <span class="font-mono text-slate-800">${escapeHtml(s.patient_id || '—')}</span></div>
+          <div><span class="text-slate-400">Encounter:</span> <span class="font-mono text-slate-800">${escapeHtml(s.encounter_id || '—')}</span></div>
+          <div><span class="text-slate-400">FHIR user:</span> <span class="font-mono text-slate-800">${escapeHtml(s.fhir_user || '—')}</span></div>
+          <div><span class="text-slate-400">Expires:</span> <span class="text-slate-800">${s.expires_in_seconds}s</span></div>
+        </div>
+        <details class="mt-2">
+          <summary class="cursor-pointer text-slate-500 hover:text-slate-700">Granted scopes</summary>
+          <pre class="text-xs text-slate-600 mt-1 whitespace-pre-wrap">${escapeHtml(s.scope || '(none)')}</pre>
+        </details>`;
+    } catch (e) {
+      el.innerHTML = `<span class="text-red-700">Failed to load session: ${escapeHtml(e.message)}</span>`;
+    }
+  };
+
+  window.runEpicSmartPipeline = async function(sessionId) {
+    const out = document.getElementById('epic-result');
+    const cpt = document.getElementById('epic-cpt').value;
+    const payer = document.getElementById('epic-payer').value;
+    const note = document.getElementById('epic-note').value || '';
+    out.innerHTML = `<div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 flex items-center gap-3 text-slate-600"><svg class="animate-spin w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>Pulling chart with SMART token + running pipeline…</div>`;
+    try {
+      const r = await fetch('/api/epic/run-pipeline', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_id: sessionId, procedure_code: cpt, payer_name: payer, raw_note: note}),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        out.innerHTML = _epicErrorPanel(r.status, t);
+        return;
+      }
+      const data = await r.json();
+      out.innerHTML = _renderEpicResult(data, {patient: data.chart_summary.patient_id, cpt, payer, note});
     } catch (e) {
       out.innerHTML = _epicErrorPanel(0, e.message);
     }

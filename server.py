@@ -15,7 +15,7 @@ import tempfile
 import anthropic
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1653,6 +1653,164 @@ def epic_sandbox_debug(patient_id: str = "erXuFYUfucBZaryVksYEcMg3", user: AuthU
 
     summary["docref_attachment_inspection"] = docref_attachments
     return summary
+
+
+# ─── SMART on FHIR App Launch ─────────────────────────────────────────────
+# The user-driven Epic integration: physician clicks 'Launch CardioAuth'
+# in their Epic chart, Epic redirects here, we OAuth back and get an
+# access token plus the patient context. Backend Services (above) stays
+# for headless workflows.
+
+
+@app.get("/api/epic/launch")
+def epic_smart_launch(iss: str = "", launch: str = "") -> Any:
+    """Entry point Epic redirects to when the physician launches our app.
+
+    Epic supplies:
+      - iss:    base URL of their FHIR server
+      - launch: opaque token tying this launch to a specific chart context
+
+    We bounce to Epic's authorize endpoint with our redirect_uri and
+    scopes; Epic eventually redirects back to /api/epic/callback with a
+    code we exchange for an access token.
+
+    No `launch` param → standalone launch (used in dev). Epic will let
+    the user pick a test patient after sign-in.
+    """
+    from cardioauth.fhir.smart_launch import get_manager
+    if not iss:
+        # Default to Epic's public R4 sandbox for standalone launches
+        iss = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
+    manager = get_manager()
+    if not manager.client_id:
+        raise HTTPException(
+            status_code=503,
+            detail="EPIC_CLIENT_ID not configured — cannot start SMART launch.",
+        )
+    try:
+        target = (manager.begin_ehr_launch(iss, launch)
+                  if launch
+                  else manager.begin_standalone_launch(iss))
+    except Exception as e:
+        logging.exception("SMART launch initiation failed")
+        raise HTTPException(status_code=502, detail=f"Launch failed: {e}")
+    return RedirectResponse(url=target, status_code=302)
+
+
+@app.get("/api/epic/callback")
+def epic_smart_callback(code: str = "", state: str = "", error: str = "", error_description: str = "") -> Any:
+    """OAuth callback from Epic. Exchanges the code for an access token,
+    opens a session, and redirects the browser back to /#epic-sandbox
+    with the session_id appended.
+    """
+    if error:
+        msg = f"Epic returned error '{error}': {error_description}"
+        return RedirectResponse(url=f"/#epic-sandbox?launch_error={error}", status_code=302)
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state in callback")
+
+    from cardioauth.fhir.smart_launch import get_manager
+    manager = get_manager()
+    try:
+        session = manager.complete_callback(code=code, state=state)
+    except Exception as e:
+        logging.exception("SMART callback exchange failed")
+        return RedirectResponse(url=f"/#epic-sandbox?launch_error={str(e)[:80]}", status_code=302)
+
+    return RedirectResponse(
+        url=f"/#epic-sandbox?session={session.session_id}",
+        status_code=302,
+    )
+
+
+@app.get("/api/epic/session/{session_id}")
+def epic_session_info(session_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Inspect a SMART session — patient context, scopes granted, expiry."""
+    from cardioauth.fhir.smart_launch import get_manager
+    s = get_manager().get_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+    return s.to_dict()
+
+
+@app.get("/api/epic/sessions")
+def list_epic_sessions(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """List all active SMART sessions on this server. Useful for debug
+    and a session picker in the UI."""
+    from cardioauth.fhir.smart_launch import get_manager
+    return {"sessions": [s.to_dict() for s in get_manager().list_sessions()]}
+
+
+class SmartPipelineRequest(BaseModel):
+    """Run the lean pipeline against a chart pulled via a SMART session."""
+    session_id: str
+    procedure_code: str = "78452"
+    payer_name: str = "UnitedHealthcare"
+    raw_note: str = ""
+
+
+@app.post("/api/epic/run-pipeline")
+def epic_smart_run_pipeline(req: SmartPipelineRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """End-to-end SMART workflow: take a session's token + patient context,
+    pull the chart from Epic with that user-scoped token, run the lean
+    pipeline, return chart_summary + lean_result.
+
+    This is what eventually backs the 'Launch from Epic' button —
+    physician launches → callback opens session → this endpoint runs
+    the pipeline against the patient in their session context.
+    """
+    from cardioauth.fhir.smart_launch import get_manager
+    from cardioauth.fhir.client import FHIRClient
+    from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus
+    from cardioauth.lean_pipeline import run_lean_pipeline
+
+    s = get_manager().get_session(req.session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="SMART session not found or expired")
+    if not s.patient_id:
+        raise HTTPException(status_code=400,
+                            detail="SMART session has no patient context — launch came without a patient")
+
+    log_audit(user, "epic_smart_pipeline",
+              f"session={req.session_id[:8]} patient={s.patient_id[:8]} cpt={req.procedure_code}")
+
+    fhir = FHIRClient(config, user_token=s.access_token, base_url=s.iss)
+    try:
+        bundle = fhir.get_patient_bundle(s.patient_id, req.procedure_code)
+    except Exception as e:
+        logging.exception("FHIR fetch with SMART token failed")
+        raise HTTPException(status_code=502, detail=f"FHIR fetch failed: {e}")
+
+    corpus = bundle_to_patient_corpus(bundle, current_note_text=req.raw_note)
+
+    note_text = req.raw_note
+    if not note_text and corpus.documents:
+        latest = max(corpus.documents, key=lambda d: d.date or "")
+        note_text = latest.text
+
+    chart_summary = {
+        "patient_id": s.patient_id,
+        "encounter_id": s.encounter_id,
+        "resources_pulled": sorted(list((bundle.get("resources") or {}).keys())),
+        "documents_indexed": len(corpus.documents),
+        "doc_types": sorted({d.doc_type for d in corpus.documents}),
+        "earliest_doc_date": min((d.date for d in corpus.documents if d.date), default=""),
+        "latest_doc_date": max((d.date for d in corpus.documents if d.date), default=""),
+    }
+
+    try:
+        result = run_lean_pipeline(
+            case_id=f"SMART-{s.session_id[:8]}-{req.procedure_code}",
+            raw_note=note_text,
+            request_cpt=req.procedure_code,
+            payer=req.payer_name,
+            patient_corpus=corpus,
+        )
+    except Exception as e:
+        logging.exception("Lean pipeline against SMART bundle failed")
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+
+    return {"chart_summary": chart_summary, "lean_result": result.to_dict()}
 
 
 @app.post("/api/demo/epic-sandbox")

@@ -29,16 +29,39 @@ RESOURCE_TYPES = [
 
 
 class FHIRClient:
-    def __init__(self, config: Config) -> None:
+    """FHIR R4 client supporting two authentication modes.
+
+    * Backend Services (default): self-signs a JWT with the configured
+      private key and exchanges it for a system-level bearer token.
+      Used for headless workflows (batch jobs, cross-patient analytics).
+    * User-token mode: caller supplies an access token already obtained
+      via SMART App Launch. Used in user-driven workflows where the
+      physician launched the app from inside Epic; the token comes
+      pre-attached to a patient context.
+
+    Per-request override: get_patient_bundle(..., user_token=...) and
+    fetch_binary(..., user_token=...) take an optional token that wins
+    over both modes for a single call. Lets a request handler pass in
+    the SMART session token without mutating shared client state.
+    """
+
+    def __init__(self, config: Config, *, user_token: str = "", base_url: str = "") -> None:
         self.config = config
-        self.base_url = config.epic_base_url.rstrip("/")
+        # Base URL: explicit arg wins (e.g., the iss from a SMART launch),
+        # otherwise fall back to the configured Epic FHIR R4 endpoint.
+        self.base_url = (base_url or config.epic_base_url).rstrip("/")
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/fhir+json"})
+        # Stored user token bypasses the JWT exchange when set
+        self._user_token: str = user_token
         self._token: str | None = None
         self._token_expires: float = 0
 
     def _get_token(self) -> str:
-        """Get a bearer token using Epic's Backend System JWT flow."""
+        """Return an access token. User token wins; else exchange via JWT."""
+        if self._user_token:
+            return self._user_token
+
         if self._token and time.time() < self._token_expires - 30:
             return self._token
 
@@ -118,22 +141,58 @@ class FHIRClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_patient_bundle(self, patient_id: str, procedure_code: str) -> dict[str, Any]:
-        """Fetch all clinically relevant FHIR resources for a patient."""
+    def get_patient_bundle(
+        self, patient_id: str, procedure_code: str,
+        *, user_token: str = "",
+    ) -> dict[str, Any]:
+        """Fetch all clinically relevant FHIR resources for a patient.
+
+        If `user_token` is provided, it's used for this call only (a
+        SMART-launch session token) — overrides any backend-services
+        token the client may have. With a user token, Patient lookup
+        skips the search (the patient context is already implicit).
+        """
+        prev_user_token = self._user_token
+        if user_token:
+            self._user_token = user_token
         bundle: dict[str, Any] = {"patient_id": patient_id, "resources": {}}
 
-        for resource_type in RESOURCE_TYPES:
-            try:
-                if resource_type == "Patient":
-                    data = self._get(resource_type, {"_id": patient_id})
-                else:
-                    data = self._get(resource_type, {"patient": patient_id})
-                bundle["resources"][resource_type] = data
-            except requests.RequestException as e:
-                logger.warning("FHIR: failed to fetch %s for patient %s: %s", resource_type, patient_id[:4] + "***", e)
-                bundle["resources"][resource_type] = {"error": str(e)}
+        try:
+            for resource_type in RESOURCE_TYPES:
+                try:
+                    if resource_type == "Patient":
+                        # With a user token, the patient context is already
+                        # bound to the token — fetch by ID directly rather
+                        # than searching (faster + works in patient/* scope).
+                        if user_token and patient_id:
+                            data = self._get_resource_direct(f"Patient/{patient_id}")
+                        else:
+                            data = self._get(resource_type, {"_id": patient_id})
+                    else:
+                        data = self._get(resource_type, {"patient": patient_id})
+                    bundle["resources"][resource_type] = data
+                except requests.RequestException as e:
+                    logger.warning("FHIR: failed to fetch %s for patient %s: %s",
+                                   resource_type, patient_id[:4] + "***", e)
+                    bundle["resources"][resource_type] = {"error": str(e)}
+            return bundle
+        finally:
+            self._user_token = prev_user_token
 
-        return bundle
+    def _get_resource_direct(self, path: str) -> dict[str, Any]:
+        """Read a single resource by ID (e.g., 'Patient/abc'). Returns a
+        single-entry bundle to match the shape of search results."""
+        token = self._get_token()
+        self.session.headers["Authorization"] = f"Bearer {token}"
+        resp = self.session.get(f"{self.base_url}/{path}", timeout=30)
+        resp.raise_for_status()
+        resource = resp.json()
+        return {
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": 1,
+            "entry": [{"resource": resource}],
+        }
 
     def fetch_binary(self, binary_url: str) -> tuple[str, bytes]:
         """Fetch a Binary resource (typically a DocumentReference attachment).
