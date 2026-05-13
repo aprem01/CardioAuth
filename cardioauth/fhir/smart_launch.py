@@ -142,19 +142,48 @@ class SmartLaunchManager:
     # ── Callback handling ──────────────────────────────────────────
 
     def complete_callback(self, *, code: str, state: str) -> SmartSession:
-        """Exchange the auth code for an access token + patient context."""
+        """Exchange the auth code for an access token + patient context.
+
+        Epic registers our app with a JWK Set URL (cardioauth-smart on the
+        vendor portal), so even the SMART App Launch token exchange has
+        to be authenticated via private_key_jwt — not just bare client_id.
+        We sign the same shape of assertion as Backend Services but with
+        grant_type=authorization_code.
+        """
         attempt = self._pending.pop(state, None)
         if not attempt:
             raise ValueError(f"Unknown or expired state '{state[:8]}…' — replay or session lost")
 
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": attempt.redirect_uri,
+            "client_id": self.client_id,
+        }
+
+        # If a private key is available, sign a JWT assertion. Epic requires
+        # this for clients registered with a JWK Set URL. Falls back to
+        # public-client (client_id only) if no key configured.
+        private_key = _load_private_key()
+        if private_key:
+            import jwt as _jwt
+            import uuid as _uuid
+            now = int(time.time())
+            claims = {
+                "iss": self.client_id,
+                "sub": self.client_id,
+                "aud": attempt.token_url,
+                "jti": str(_uuid.uuid4()),
+                "iat": now,
+                "exp": now + 300,
+            }
+            assertion = _jwt.encode(claims, private_key, algorithm="RS384", headers={"kid": "cardioauth-1"})
+            data["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            data["client_assertion"] = assertion
+
         resp = requests.post(
             attempt.token_url,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": attempt.redirect_uri,
-                "client_id": self.client_id,
-            },
+            data=data,
             headers={"Content-Type": "application/x-www-form-urlencoded",
                      "Accept": "application/json"},
             timeout=30,
@@ -202,6 +231,26 @@ class SmartLaunchManager:
 
     def end_session(self, session_id: str) -> bool:
         return self._sessions.pop(session_id, None) is not None
+
+
+# ── Private-key loader (shared with Backend Services) ──────────────────
+
+
+def _load_private_key() -> str:
+    """Load the Epic private key from the same env var Backend Services uses.
+    Returns empty string if no key is configured.
+    """
+    key = os.environ.get("EPIC_PRIVATE_KEY", "")
+    if key:
+        return key
+    path = os.environ.get("EPIC_PRIVATE_KEY_PATH", "")
+    if path:
+        try:
+            with open(path) as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
+    return ""
 
 
 # ── SMART discovery ─────────────────────────────────────────────────────
