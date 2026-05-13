@@ -9259,7 +9259,16 @@ This procedure is essential for determining whether percutaneous coronary interv
   };
 
   function showLoginUI() {
-    // Only show if auth is actually enabled
+    // Hard disable: the login modal blocked Peter mid-SMART test even
+    // though /api/auth/status returns auth_enabled=false. Until we have
+    // a real reason to gate the app behind Supabase, this is a no-op
+    // and any caller falls through to demo-user mode.
+    updateUserDisplay({ name: 'Dr. Demo', email: 'demo@cardioauth.app', role: 'demo', is_authenticated: false });
+    const existing = document.getElementById('auth-modal');
+    if (existing) existing.remove();
+    return;
+
+    // Unreachable — kept below for reference if we ever re-enable.
     if (!supabaseClient) return;
 
     let modal = document.getElementById('auth-modal');
