@@ -125,6 +125,20 @@ class Store(ABC):
     def list_packets(self, *, payer: str = "", resolved_cpt: str = "",
                      decision: str = "", limit: int = 50) -> list[dict]: ...
 
+    # ── Shadow-testing helpers ──
+
+    @abstractmethod
+    def save_shadow_review(self, review: dict) -> str:
+        """Persist one shadow-testing review. Returns the review_id."""
+
+    @abstractmethod
+    def list_shadow_reviews(self, *, limit: int = 50) -> list[dict]:
+        """Recent shadow reviews, newest first."""
+
+    @abstractmethod
+    def shadow_review_stats(self) -> dict:
+        """Aggregate agreement / edit / reject rates across all reviews."""
+
     # ── Outcome dashboard helpers ──
 
     @abstractmethod
@@ -279,6 +293,32 @@ CREATE TABLE IF NOT EXISTS submission_packets (
 CREATE INDEX IF NOT EXISTS idx_packets_payer_cpt ON submission_packets(payer, resolved_cpt, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_packets_decision ON submission_packets(decision, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_packets_severity ON submission_packets(highest_finding_severity);
+
+-- Shadow-testing reviews. Staff runs a real case through the pipeline,
+-- reviews the produced packet against what they would have submitted
+-- manually, and logs the diff. Aggregate over 20-25 cases gives us the
+-- agreement rate Peter wants to see before production rollout. Captures
+-- staff feedback, never submits anything, never modifies the chart.
+CREATE TABLE IF NOT EXISTS shadow_reviews (
+    review_id TEXT PRIMARY KEY,
+    case_id TEXT,                        -- links to lean_run_result if known
+    payer TEXT,
+    cpt_code TEXT,
+    patient_id TEXT,
+    cardio_decision TEXT,                -- what CardioAuth recommended (transmit/hold/block)
+    cardio_score REAL,
+    cardio_label TEXT,                   -- HIGH/MEDIUM/LOW/INSUFFICIENT
+    submission_outcome TEXT NOT NULL,    -- submitted_as_is | submitted_with_edits | did_not_submit
+    edits_summary TEXT,                  -- what staff changed (if any)
+    not_submitted_reason TEXT,           -- why staff didn't submit (if any)
+    confidence_score INTEGER,            -- staff's 1-5 confidence in CardioAuth's output
+    notes TEXT,
+    reviewer_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_reviewer ON shadow_reviews(reviewer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shadow_payer_cpt ON shadow_reviews(payer, cpt_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shadow_outcome ON shadow_reviews(submission_outcome, created_at DESC);
 """
 
 
@@ -818,6 +858,90 @@ class SQLiteStore(Store):
             "approval_rate": round(approved / total, 3) if total else None,
             "denial_rate": round(denied / total, 3) if total else None,
             "last_outcome_at": row["last_outcome_at"],
+        }
+
+    # ── shadow-testing helpers ─────────────────────────────────────────
+
+    def save_shadow_review(self, review: dict) -> str:
+        import uuid as _uuid
+        review_id = review.get("review_id") or _uuid.uuid4().hex[:12]
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO shadow_reviews
+                   (review_id, case_id, payer, cpt_code, patient_id,
+                    cardio_decision, cardio_score, cardio_label,
+                    submission_outcome, edits_summary, not_submitted_reason,
+                    confidence_score, notes, reviewer_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    review_id,
+                    review.get("case_id", ""),
+                    review.get("payer", ""),
+                    review.get("cpt_code", ""),
+                    review.get("patient_id", ""),
+                    review.get("cardio_decision", ""),
+                    float(review.get("cardio_score") or 0),
+                    review.get("cardio_label", ""),
+                    review.get("submission_outcome", ""),
+                    review.get("edits_summary", ""),
+                    review.get("not_submitted_reason", ""),
+                    int(review.get("confidence_score") or 0),
+                    review.get("notes", ""),
+                    review.get("reviewer_id", ""),
+                    self._now(),
+                ),
+            )
+        return review_id
+
+    def list_shadow_reviews(self, *, limit: int = 50) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM shadow_reviews
+                   ORDER BY created_at DESC LIMIT ?""",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def shadow_review_stats(self) -> dict:
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT
+                     COUNT(*) AS total,
+                     SUM(CASE WHEN submission_outcome = 'submitted_as_is' THEN 1 ELSE 0 END) AS as_is,
+                     SUM(CASE WHEN submission_outcome = 'submitted_with_edits' THEN 1 ELSE 0 END) AS edited,
+                     SUM(CASE WHEN submission_outcome = 'did_not_submit' THEN 1 ELSE 0 END) AS rejected,
+                     AVG(confidence_score) AS avg_confidence,
+                     MAX(created_at) AS last_review_at
+                   FROM shadow_reviews""",
+            ).fetchone()
+            by_payer = conn.execute(
+                """SELECT payer,
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN submission_outcome = 'submitted_as_is' THEN 1 ELSE 0 END) AS as_is
+                   FROM shadow_reviews
+                   WHERE payer != ''
+                   GROUP BY payer
+                   ORDER BY total DESC""",
+            ).fetchall()
+        total = int(row["total"] or 0)
+        as_is = int(row["as_is"] or 0)
+        edited = int(row["edited"] or 0)
+        rejected = int(row["rejected"] or 0)
+        return {
+            "total": total,
+            "submitted_as_is": as_is,
+            "submitted_with_edits": edited,
+            "did_not_submit": rejected,
+            "agreement_rate": round(as_is / total, 3) if total else None,
+            "edit_rate": round(edited / total, 3) if total else None,
+            "reject_rate": round(rejected / total, 3) if total else None,
+            "avg_confidence": round(float(row["avg_confidence"] or 0), 2) if total else None,
+            "last_review_at": row["last_review_at"],
+            "by_payer": [
+                {"payer": r["payer"], "total": r["total"],
+                 "agreement_rate": round(r["as_is"] / r["total"], 3) if r["total"] else None}
+                for r in by_payer
+            ],
         }
 
 

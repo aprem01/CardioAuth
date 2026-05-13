@@ -195,6 +195,77 @@ def test_count_outcomes_empty_returns_zeros_not_none() -> None:
     assert counts["denial_rate"] is None
 
 
+# ── Shadow-testing reviews ──────────────────────────────────────────────
+
+
+def test_save_shadow_review_returns_id_and_persists() -> None:
+    store = _fresh_store()
+    review_id = store.save_shadow_review({
+        "payer": "UHC", "cpt_code": "78452",
+        "submission_outcome": "submitted_as_is",
+        "confidence_score": 5,
+    })
+    assert review_id
+    items = store.list_shadow_reviews()
+    assert len(items) == 1
+    assert items[0]["review_id"] == review_id
+    assert items[0]["submission_outcome"] == "submitted_as_is"
+
+
+def test_shadow_review_stats_aggregates_outcomes() -> None:
+    store = _fresh_store()
+    store.save_shadow_review({"payer": "UHC", "submission_outcome": "submitted_as_is", "confidence_score": 5})
+    store.save_shadow_review({"payer": "UHC", "submission_outcome": "submitted_as_is", "confidence_score": 4})
+    store.save_shadow_review({"payer": "UHC", "submission_outcome": "submitted_with_edits", "confidence_score": 3})
+    store.save_shadow_review({"payer": "Aetna", "submission_outcome": "did_not_submit", "confidence_score": 2})
+    stats = store.shadow_review_stats()
+    assert stats["total"] == 4
+    assert stats["submitted_as_is"] == 2
+    assert stats["submitted_with_edits"] == 1
+    assert stats["did_not_submit"] == 1
+    assert stats["agreement_rate"] == 0.5
+    assert stats["edit_rate"] == 0.25
+    assert stats["reject_rate"] == 0.25
+    # by-payer
+    by = {p["payer"]: p for p in stats["by_payer"]}
+    assert by["UHC"]["total"] == 3
+    assert by["UHC"]["agreement_rate"] == round(2 / 3, 3)
+    assert by["Aetna"]["agreement_rate"] == 0.0
+
+
+def test_shadow_review_stats_empty_state_safe() -> None:
+    store = _fresh_store()
+    stats = store.shadow_review_stats()
+    assert stats["total"] == 0
+    assert stats["agreement_rate"] is None
+    assert stats["by_payer"] == []
+
+
+def test_shadow_review_idempotent_on_explicit_id() -> None:
+    """Caller can pass a review_id (e.g. to upsert) and the save respects it.
+    Without an ID, one is generated."""
+    store = _fresh_store()
+    r1 = store.save_shadow_review({"review_id": "fixed-1", "submission_outcome": "submitted_as_is"})
+    r2 = store.save_shadow_review({"submission_outcome": "did_not_submit"})
+    assert r1 == "fixed-1"
+    assert r2 != "fixed-1" and len(r2) >= 8
+
+
+def test_shadow_review_list_newest_first() -> None:
+    """Recent list must be ordered by created_at DESC so the UI shows
+    the freshest cases at the top."""
+    import time as _time
+    store = _fresh_store()
+    store.save_shadow_review({"payer": "A", "submission_outcome": "submitted_as_is"})
+    _time.sleep(0.01)
+    store.save_shadow_review({"payer": "B", "submission_outcome": "submitted_as_is"})
+    _time.sleep(0.01)
+    store.save_shadow_review({"payer": "C", "submission_outcome": "submitted_as_is"})
+    items = store.list_shadow_reviews(limit=10)
+    payers = [r["payer"] for r in items]
+    assert payers == ["C", "B", "A"]
+
+
 # ── Submission channels ─────────────────────────────────────────────────
 
 def _sample_package() -> SubmissionPackage:

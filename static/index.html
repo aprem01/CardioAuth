@@ -577,6 +577,10 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
         Outcomes
       </a>
+      <a href="#shadow" class="sidebar-link" data-route="shadow">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+        Shadow Testing
+      </a>
       <a href="#auth-tracker" class="sidebar-link" data-route="auth-tracker">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         Auth Tracker
@@ -742,6 +746,7 @@
     }
     else if (hash === '#outcomes') { app.innerHTML = renderLoading('Outcomes'); loadOutcomes(); }
     else if (hash === '#epic-sandbox') { app.innerHTML = renderEpicSandbox(); }
+    else if (hash === '#shadow') { app.innerHTML = renderLoading('Shadow Testing'); loadShadow(); }
     else { app.innerHTML = renderDashboard(); }
   }
 
@@ -8324,6 +8329,250 @@ This procedure is essential for determining whether percutaneous coronary interv
       URL.revokeObjectURL(url);
     } catch (e) {
       alert('PDF generation failed: ' + e.message);
+    }
+  };
+
+  // ──────────────────────────── Shadow Testing (#shadow) ────────────────────────────
+  // Peter's stated #2 priority after the packet PDF: 20-25 cases of full
+  // human review (no auto-submit, no chart writes) so we can measure
+  // staff agreement with CardioAuth's output before any production
+  // rollout. Captures whether staff submitted as-is / with edits / not
+  // at all, plus their confidence and notes.
+
+  async function loadShadow() {
+    const app = document.getElementById('app');
+    try {
+      const [stats, recent] = await Promise.all([
+        apiFetch('/api/shadow/stats'),
+        apiFetch('/api/shadow/recent?limit=50'),
+      ]);
+      app.innerHTML = renderShadowPage(stats, recent.items || []);
+    } catch (e) {
+      app.innerHTML = renderError('Shadow Testing', e.message);
+    }
+  }
+
+  function renderShadowPage(stats, recent) {
+    const total = stats.total || 0;
+    const agreePct = stats.agreement_rate != null ? Math.round(stats.agreement_rate * 100) : null;
+    const editPct = stats.edit_rate != null ? Math.round(stats.edit_rate * 100) : null;
+    const rejectPct = stats.reject_rate != null ? Math.round(stats.reject_rate * 100) : null;
+    const conf = stats.avg_confidence != null ? stats.avg_confidence.toFixed(1) : '—';
+
+    const recentRows = recent.length === 0
+      ? `<tr><td colspan="7" class="px-5 py-8 text-center text-sm text-slate-500">No shadow reviews recorded yet. Start by running a case through <a href="#corpus-demo" class="text-indigo-600 hover:underline">Whole-chart Demo</a> and recording the outcome below.</td></tr>`
+      : recent.map(r => {
+          const outcomeLabel = {
+            'submitted_as_is': '✓ As-is',
+            'submitted_with_edits': '✎ With edits',
+            'did_not_submit': '✗ Not submitted',
+          }[r.submission_outcome] || r.submission_outcome;
+          const outcomeColor = r.submission_outcome === 'submitted_as_is' ? 'text-emerald-700 bg-emerald-50 ring-emerald-200'
+            : r.submission_outcome === 'submitted_with_edits' ? 'text-amber-700 bg-amber-50 ring-amber-200'
+            : 'text-red-700 bg-red-50 ring-red-200';
+          const stars = '★'.repeat(r.confidence_score || 0) + '☆'.repeat(5 - (r.confidence_score || 0));
+          return `
+          <tr class="border-t border-slate-100 hover:bg-slate-50/60">
+            <td class="px-5 py-3 text-xs text-slate-500 font-mono">${escapeHtml((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
+            <td class="px-5 py-3 text-sm text-slate-700">${escapeHtml(r.payer || '—')}</td>
+            <td class="px-5 py-3 text-sm font-mono text-slate-700">${escapeHtml(r.cpt_code || '—')}</td>
+            <td class="px-5 py-3 text-xs text-slate-600">${r.cardio_score != null ? Math.round(r.cardio_score * 100) + '% ' + escapeHtml(r.cardio_label || '') : '—'}</td>
+            <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ring-1 ${outcomeColor}">${outcomeLabel}</span></td>
+            <td class="px-5 py-3 text-xs text-amber-600">${stars}</td>
+            <td class="px-5 py-3 text-xs text-slate-600">${escapeHtml((r.edits_summary || r.not_submitted_reason || r.notes || '').slice(0, 60))}</td>
+          </tr>`;
+        }).join('');
+
+    const byPayerRows = (stats.by_payer || []).map(p => {
+      const rate = p.agreement_rate != null ? Math.round(p.agreement_rate * 100) + '%' : '—';
+      return `<tr class="border-t border-slate-100">
+        <td class="px-5 py-2 text-sm text-slate-800">${escapeHtml(p.payer || '—')}</td>
+        <td class="px-5 py-2 text-right text-sm text-slate-700 tabular-nums">${p.total}</td>
+        <td class="px-5 py-2 text-right text-sm font-semibold tabular-nums">${rate}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Shadow Testing')}
+
+      <div class="bg-gradient-to-br from-indigo-50 via-white to-cyan-50 border border-indigo-100 rounded-xl p-5 flex items-start gap-4">
+        <div class="flex-shrink-0 w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center shadow-sm">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+        </div>
+        <div>
+          <h2 class="text-base font-semibold text-slate-900">Shadow review — no auto-submit, no chart writes</h2>
+          <p class="text-sm text-slate-600 mt-0.5">
+            For each real case staff runs through CardioAuth, log whether they submitted what CardioAuth produced as-is, edited it, or didn't submit at all. After 20–25 cases we have an agreement rate and a list of the gaps that matter most. Read-only by design — CardioAuth never touches the chart or the payer portal in this mode.
+          </p>
+        </div>
+      </div>
+
+      <!-- Headline metrics -->
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-slate-500 font-semibold">Reviews</div>
+          <div class="text-3xl font-bold text-slate-900 mt-2 tabular-nums">${total}</div>
+          <div class="text-xs text-slate-500 mt-1">Total cases</div>
+        </div>
+        <div class="bg-gradient-to-br from-emerald-50 to-white border border-emerald-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-emerald-700 font-semibold">Agreement</div>
+          <div class="text-3xl font-bold text-emerald-700 mt-2 tabular-nums">${agreePct != null ? agreePct + '%' : '—'}</div>
+          <div class="text-xs text-emerald-700/80 mt-1">${stats.submitted_as_is || 0} as-is</div>
+        </div>
+        <div class="bg-gradient-to-br from-amber-50 to-white border border-amber-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-amber-700 font-semibold">Edit rate</div>
+          <div class="text-3xl font-bold text-amber-700 mt-2 tabular-nums">${editPct != null ? editPct + '%' : '—'}</div>
+          <div class="text-xs text-amber-700/80 mt-1">${stats.submitted_with_edits || 0} edited</div>
+        </div>
+        <div class="bg-gradient-to-br from-red-50 to-white border border-red-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-red-700 font-semibold">Reject rate</div>
+          <div class="text-3xl font-bold text-red-700 mt-2 tabular-nums">${rejectPct != null ? rejectPct + '%' : '—'}</div>
+          <div class="text-xs text-red-700/80 mt-1">${stats.did_not_submit || 0} not submitted</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+          <div class="text-xs uppercase tracking-wide text-slate-500 font-semibold">Avg confidence</div>
+          <div class="text-3xl font-bold text-slate-900 mt-2 tabular-nums">${conf}</div>
+          <div class="text-xs text-slate-500 mt-1">out of 5</div>
+        </div>
+      </div>
+
+      <!-- Record review form + recent list -->
+      <div class="grid lg:grid-cols-3 gap-6">
+        <!-- Form -->
+        <div class="lg:col-span-1 bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-3">
+          <h3 class="text-base font-semibold text-slate-900">Record a shadow review</h3>
+          <p class="text-xs text-slate-500">Fill after staff submits (or chooses not to) for one real case.</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">Payer</label>
+              <input id="shadow-payer" type="text" placeholder="UnitedHealthcare" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">CPT</label>
+              <input id="shadow-cpt" type="text" placeholder="78452" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">CardioAuth label</label>
+              <select id="shadow-label" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">—</option>
+                <option>HIGH</option>
+                <option>MEDIUM</option>
+                <option>LOW</option>
+                <option>INSUFFICIENT</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">CardioAuth score %</label>
+              <input id="shadow-score" type="number" min="0" max="100" placeholder="88" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">What did staff actually do?</label>
+            <select id="shadow-outcome" onchange="_updateShadowFollowup()" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">Select…</option>
+              <option value="submitted_as_is">✓ Submitted exactly what CardioAuth produced</option>
+              <option value="submitted_with_edits">✎ Submitted with edits</option>
+              <option value="did_not_submit">✗ Did not submit</option>
+            </select>
+          </div>
+          <div id="shadow-edits-wrap" class="hidden">
+            <label class="block text-xs font-semibold text-slate-700 mb-1">What did you change?</label>
+            <textarea id="shadow-edits" rows="3" placeholder="e.g. Reworded medical-necessity statement; added BMI clarification…" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+          </div>
+          <div id="shadow-reason-wrap" class="hidden">
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Why didn't you submit?</label>
+            <textarea id="shadow-reason" rows="3" placeholder="e.g. Decided to order echo first; patient cancelled; criteria not met…" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Confidence in CardioAuth's output</label>
+            <div class="flex gap-1" id="shadow-stars">
+              ${[1,2,3,4,5].map(n => `<button type="button" onclick="_setShadowStars(${n})" data-star="${n}" class="text-2xl text-slate-300 hover:text-amber-500 transition">★</button>`).join('')}
+            </div>
+            <input id="shadow-confidence" type="hidden" value="0" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Notes (optional)</label>
+            <textarea id="shadow-notes" rows="2" class="w-full px-2 py-1.5 text-sm bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+          </div>
+          <div id="shadow-error" class="hidden text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2"></div>
+          <button onclick="submitShadowReview()" class="w-full px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">Save review</button>
+        </div>
+
+        <!-- Recent reviews list -->
+        <div class="lg:col-span-2 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div class="px-5 py-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between">
+            <div>
+              <h3 class="text-base font-semibold text-slate-900">Recent reviews</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Newest first. Hover for full notes.</p>
+            </div>
+            ${stats.by_payer && stats.by_payer.length ? `<div class="text-xs text-slate-500">By payer: ${stats.by_payer.map(p => `${escapeHtml(p.payer)} ${p.agreement_rate != null ? Math.round(p.agreement_rate*100)+'%' : '—'}`).join(' · ')}</div>` : ''}
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-50/70">
+                <tr>
+                  <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">When</th>
+                  <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Payer</th>
+                  <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">CPT</th>
+                  <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">CardioAuth</th>
+                  <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Staff did</th>
+                  <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Conf.</th>
+                  <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Note</th>
+                </tr>
+              </thead>
+              <tbody>${recentRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  window._updateShadowFollowup = function() {
+    const v = document.getElementById('shadow-outcome').value;
+    document.getElementById('shadow-edits-wrap').classList.toggle('hidden', v !== 'submitted_with_edits');
+    document.getElementById('shadow-reason-wrap').classList.toggle('hidden', v !== 'did_not_submit');
+  };
+
+  window._setShadowStars = function(n) {
+    document.getElementById('shadow-confidence').value = n;
+    const btns = document.querySelectorAll('#shadow-stars button');
+    btns.forEach((b, i) => {
+      b.classList.toggle('text-amber-500', i < n);
+      b.classList.toggle('text-slate-300', i >= n);
+    });
+  };
+
+  window.submitShadowReview = async function() {
+    const err = document.getElementById('shadow-error');
+    err.classList.add('hidden');
+    const outcome = document.getElementById('shadow-outcome').value;
+    if (!outcome) {
+      err.textContent = 'Please select what staff actually did.';
+      err.classList.remove('hidden');
+      return;
+    }
+    const scorePct = parseFloat(document.getElementById('shadow-score').value || '0');
+    const payload = {
+      payer: document.getElementById('shadow-payer').value || '',
+      cpt_code: document.getElementById('shadow-cpt').value || '',
+      cardio_label: document.getElementById('shadow-label').value || '',
+      cardio_score: scorePct ? scorePct / 100 : 0,
+      submission_outcome: outcome,
+      edits_summary: document.getElementById('shadow-edits').value || '',
+      not_submitted_reason: document.getElementById('shadow-reason').value || '',
+      confidence_score: parseInt(document.getElementById('shadow-confidence').value || '0', 10),
+      notes: document.getElementById('shadow-notes').value || '',
+    };
+    try {
+      await apiPost('/api/shadow/review', payload);
+      loadShadow();
+    } catch (e) {
+      err.textContent = e.message;
+      err.classList.remove('hidden');
     }
   };
 

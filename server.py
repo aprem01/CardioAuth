@@ -1249,6 +1249,64 @@ def get_outcome_stats(user: AuthUser = Depends(get_current_user)) -> dict[str, A
     }
 
 
+class ShadowReviewRequest(BaseModel):
+    """Staff feedback after reviewing a CardioAuth packet against a real case.
+
+    Peter's stated next priority after the packet PDF: 20-25 cases of
+    full human review (no auto-submit, no chart writes) before any
+    production rollout. Each entry captures whether staff agreed with
+    CardioAuth's output, what they changed if not, and their confidence
+    in the result.
+    """
+    case_id: str = ""
+    payer: str = ""
+    cpt_code: str = ""
+    patient_id: str = ""
+    cardio_decision: str = ""              # transmit | hold_for_review | block
+    cardio_score: float = 0.0
+    cardio_label: str = ""                 # HIGH | MEDIUM | LOW | INSUFFICIENT
+    submission_outcome: str                # submitted_as_is | submitted_with_edits | did_not_submit
+    edits_summary: str = ""
+    not_submitted_reason: str = ""
+    confidence_score: int = 0              # 1-5
+    notes: str = ""
+
+
+@app.post("/api/shadow/review")
+def record_shadow_review(req: ShadowReviewRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Log a shadow-testing review. Returns the review_id."""
+    allowed = {"submitted_as_is", "submitted_with_edits", "did_not_submit"}
+    if req.submission_outcome not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"submission_outcome must be one of {sorted(allowed)}",
+        )
+    if req.confidence_score and not (1 <= req.confidence_score <= 5):
+        raise HTTPException(status_code=400, detail="confidence_score must be 1-5")
+
+    from cardioauth.persistence import get_store
+    review_dict = req.model_dump()
+    review_dict["reviewer_id"] = user.id
+    review_id = get_store().save_shadow_review(review_dict)
+    log_audit(user, "shadow_review", f"case={req.case_id} outcome={req.submission_outcome}")
+    return {"review_id": review_id, "saved": True}
+
+
+@app.get("/api/shadow/stats")
+def get_shadow_stats(user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Aggregate agreement / edit / reject rates from shadow reviews."""
+    from cardioauth.persistence import get_store
+    return get_store().shadow_review_stats()
+
+
+@app.get("/api/shadow/recent")
+def list_recent_shadow_reviews(limit: int = 50, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Recent shadow reviews, newest first. Caps at 500."""
+    from cardioauth.persistence import get_store
+    items = get_store().list_shadow_reviews(limit=limit)
+    return {"items": items, "total": len(items)}
+
+
 class E2EDemoRequest(BaseModel):
     patient_id: str = "DEMO-001"
     procedure_code: str = "78492"
