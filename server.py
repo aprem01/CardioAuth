@@ -1492,6 +1492,48 @@ class EpicSandboxRequest(BaseModel):
     raw_note: str = ""   # if empty, treat the encounter note as the most-recent DocumentReference
 
 
+@app.get("/api/demo/epic-sandbox-debug")
+def epic_sandbox_debug(patient_id: str = "erXuFYUfucBZaryVksYEcMg3", user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Diagnostic: show what Epic returns for each resource type without
+    running the pipeline. Lets us see whether documents_indexed=0 is
+    because the patient has zero DocumentReferences or because the
+    attachments are Binary refs we haven't resolved yet."""
+    if not config.epic_client_id or not config.get_private_key():
+        raise HTTPException(status_code=503, detail="Epic creds not configured")
+
+    from cardioauth.fhir.client import FHIRClient
+    fhir = FHIRClient(config)
+    bundle = fhir.get_patient_bundle(patient_id, "")
+
+    summary: dict[str, Any] = {"patient_id": patient_id, "resources": {}}
+    docref_attachments: list[dict[str, Any]] = []
+
+    for rtype, payload in (bundle.get("resources") or {}).items():
+        if isinstance(payload, dict) and "error" in payload:
+            summary["resources"][rtype] = {"error": payload["error"][:200]}
+            continue
+        entries = (payload or {}).get("entry") or []
+        info: dict[str, Any] = {"entry_count": len(entries)}
+        if rtype == "DocumentReference" and entries:
+            for e in entries[:20]:
+                r = e.get("resource") or {}
+                for c in (r.get("content") or []):
+                    att = c.get("attachment") or {}
+                    docref_attachments.append({
+                        "docref_id": r.get("id"),
+                        "type_display": (((r.get("type") or {}).get("coding") or [{}])[0]).get("display"),
+                        "date": r.get("date", "")[:10],
+                        "contentType": att.get("contentType"),
+                        "has_inline_data": bool(att.get("data")),
+                        "has_url": bool(att.get("url")),
+                        "url": att.get("url", "")[:120],
+                    })
+        summary["resources"][rtype] = info
+
+    summary["docref_attachment_inspection"] = docref_attachments
+    return summary
+
+
 @app.post("/api/demo/epic-sandbox")
 def epic_sandbox_demo(req: EpicSandboxRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """End-to-end against Epic's R4 sandbox: pull chart → build corpus → run lean pipeline.
