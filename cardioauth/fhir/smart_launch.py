@@ -243,7 +243,16 @@ def get_manager(*, redirect_uri: str = "", client_id: str = "") -> SmartLaunchMa
     global _manager
     if _manager is None:
         if not client_id:
-            client_id = os.environ.get("EPIC_CLIENT_ID", "")
+            # Prefer a SMART-specific client_id so the SMART App Launch
+            # flow and the Backend Services flow can register as
+            # separate Epic apps (different Application Audience,
+            # different scopes). Fall back to EPIC_CLIENT_ID if
+            # SMART-specific isn't set so single-app deployments still
+            # work.
+            client_id = (
+                os.environ.get("EPIC_SMART_CLIENT_ID", "")
+                or os.environ.get("EPIC_CLIENT_ID", "")
+            )
         if not redirect_uri:
             redirect_uri = os.environ.get(
                 "EPIC_SMART_REDIRECT_URI",
