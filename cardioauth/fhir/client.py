@@ -64,13 +64,29 @@ class FHIRClient:
             headers={"kid": "cardioauth-1"},
         )
 
-        # Exchange JWT for access token
+        # Exchange JWT for access token. Request the SMART v2 system-level
+        # scopes for every resource we read — Epic issues a no-permission
+        # token if scope isn't asked for, so reads come back 403. The set
+        # below matches the Incoming APIs selected on the vendor portal.
+        scopes = " ".join([
+            "system/Patient.read",
+            "system/Condition.read",
+            "system/Observation.read",
+            "system/MedicationRequest.read",
+            "system/DiagnosticReport.read",
+            "system/Procedure.read",
+            "system/Coverage.read",
+            "system/Encounter.read",
+            "system/DocumentReference.read",
+            "system/Binary.read",
+        ])
         resp = requests.post(
             self.config.epic_token_url,
             data={
                 "grant_type": "client_credentials",
                 "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
                 "client_assertion": assertion,
+                "scope": scopes,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=30,
