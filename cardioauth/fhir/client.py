@@ -168,6 +168,12 @@ class FHIRClient:
                             data = self._get_resource_direct(f"Patient/{patient_id}")
                         else:
                             data = self._get(resource_type, {"_id": patient_id})
+                    elif resource_type == "Observation":
+                        # Epic rejects unfiltered Observation searches (400).
+                        # Their R4 API requires either `category=` or `code=`
+                        # to avoid pulling the full observation graph.
+                        # Fetch each clinically relevant category and merge.
+                        data = self._fetch_observations(patient_id)
                     else:
                         data = self._get(resource_type, {"patient": patient_id})
                     bundle["resources"][resource_type] = data
@@ -178,6 +184,40 @@ class FHIRClient:
             return bundle
         finally:
             self._user_token = prev_user_token
+
+    # Observation categories the lean pipeline actually uses. Vital signs
+    # cover BMI / BP / HR / weight; labs cover cardiac biomarkers, lipids,
+    # A1c, BNP; social-history catches smoking status.
+    _OBSERVATION_CATEGORIES = ["vital-signs", "laboratory", "social-history"]
+
+    def _fetch_observations(self, patient_id: str) -> dict[str, Any]:
+        """Pull Observations per-category and merge into one searchset.
+
+        Epic's R4 Observation endpoint won't accept an unfiltered search
+        — must specify category or code. We fan out across the three
+        categories the pipeline reads and union the entries so callers
+        see one bundle shaped like a normal search response.
+        """
+        merged_entries: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for cat in self._OBSERVATION_CATEGORIES:
+            try:
+                resp = self._get("Observation",
+                                 {"patient": patient_id, "category": cat})
+                for e in (resp.get("entry") or []):
+                    merged_entries.append(e)
+            except requests.RequestException as e:
+                errors.append(f"{cat}: {str(e)[:80]}")
+                logger.warning("FHIR: Observation category=%s failed: %s", cat, e)
+        result: dict[str, Any] = {
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": len(merged_entries),
+            "entry": merged_entries,
+        }
+        if errors:
+            result["_category_errors"] = errors
+        return result
 
     def _get_resource_direct(self, path: str) -> dict[str, Any]:
         """Read a single resource by ID (e.g., 'Patient/abc'). Returns a
