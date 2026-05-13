@@ -75,7 +75,17 @@ class FHIRClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=30,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            # OAuth error responses come as JSON {error, error_description}
+            # — surface that explicitly instead of the bare HTTP code so
+            # diagnostic output tells us WHY Epic rejected the assertion
+            # (invalid_client = JWKS unfetched/key unknown; invalid_grant
+            # = signature can't be verified; invalid_request = malformed).
+            err_body = (resp.text or "")[:400]
+            raise requests.HTTPError(
+                f"Epic token exchange failed: HTTP {resp.status_code} body={err_body}",
+                response=resp,
+            )
         token_data = resp.json()
 
         self._token = token_data["access_token"]
