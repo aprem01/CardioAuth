@@ -745,7 +745,13 @@
       }, 0);
     }
     else if (hash === '#outcomes') { app.innerHTML = renderLoading('Outcomes'); loadOutcomes(); }
-    else if (hash === '#epic-sandbox') { app.innerHTML = renderEpicSandbox(); }
+    else if (hash === '#epic-sandbox') {
+      app.innerHTML = renderEpicSandbox();
+      // If the callback handed us a session_id, load it after the DOM mounts.
+      const qs2 = new URLSearchParams(window.location.hash.split('?')[1] || '');
+      const sid = qs2.get('session');
+      if (sid) setTimeout(() => _loadSmartSession(sid), 50);
+    }
     else if (hash === '#shadow') { app.innerHTML = renderLoading('Shadow Testing'); loadShadow(); }
     else { app.innerHTML = renderDashboard(); }
   }
@@ -8092,7 +8098,6 @@ This procedure is essential for determining whether percutaneous coronary interv
             </button>` : ''}
           <span class="text-xs text-slate-500">Standalone launch — works against open.epic test patients.</span>
         </div>
-        <script>setTimeout(() => _loadSmartSession('${sessionId}'), 50);</script>
       </div>
 
       <hr class="border-slate-200"/>
