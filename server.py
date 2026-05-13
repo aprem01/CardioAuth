@@ -297,6 +297,37 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/.well-known/jwks.json")
+def jwks() -> dict[str, Any]:
+    """Public JWK Set Epic fetches to verify our backend-services JWT.
+
+    Epic's JWT auth flow needs our public key reachable at a stable URL.
+    The matching private key signs the assertion at runtime (loaded from
+    EPIC_PRIVATE_KEY env var). The `kid` here must match the one in the
+    JWT header set by cardioauth/fhir/client.py.
+
+    On the Epic vendor portal, paste the URL of this endpoint into both
+    the Non-Production JWK Set URL and Production JWK Set URL fields.
+    """
+    jwks_b64 = os.environ.get("EPIC_FHIR_JWKS_B64", "")
+    if jwks_b64:
+        try:
+            import base64 as _b64
+            return json.loads(_b64.b64decode(jwks_b64).decode("utf-8"))
+        except Exception as e:
+            logging.warning("EPIC_FHIR_JWKS_B64 unreadable: %s", e)
+
+    jwks_path = os.environ.get("EPIC_FHIR_JWKS_PATH", "secrets/epic-fhir-jwks.json")
+    try:
+        with open(jwks_path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"JWKS not configured. Set EPIC_FHIR_JWKS_B64 env var or place file at {jwks_path}.",
+        )
+
+
 @app.get("/api/auth/status")
 def auth_status() -> dict[str, Any]:
     """Return auth configuration status for the frontend."""
@@ -1429,6 +1460,98 @@ def end_to_end_lean_corpus(req: E2ELeanCorpusRequest, user: AuthUser = Depends(g
         raise HTTPException(status_code=500, detail=f"Lean corpus pipeline failed: {e}")
 
     return result.to_dict()
+
+
+class EpicSandboxRequest(BaseModel):
+    """Run the lean pipeline against Epic's R4 sandbox.
+
+    The vendor app must already be registered (EPIC_CLIENT_ID set + JWKS
+    URL hosted at /.well-known/jwks.json + private key in EPIC_PRIVATE_KEY).
+    """
+    patient_id: str = "erXuFYUfucBZaryVksYEcMg3"      # Epic FHIR test pt
+    procedure_code: str = "78452"
+    payer_name: str = "UnitedHealthcare"
+    raw_note: str = ""   # if empty, treat the encounter note as the most-recent DocumentReference
+
+
+@app.post("/api/demo/epic-sandbox")
+def epic_sandbox_demo(req: EpicSandboxRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """End-to-end against Epic's R4 sandbox: pull chart → build corpus → run lean pipeline.
+
+    This is the Epic-integration proof point. It validates three claims:
+      1. Our JWT auth + JWKS hosting actually works against a real Epic server
+      2. The Bundle shape we get from Epic maps cleanly into our PatientCorpus
+      3. The corpus-aware lean pipeline retrieves the right historical
+         documents and assembles a packet — same behavior as the
+         handcrafted /#corpus-demo, but driven entirely off Epic data
+
+    Returns the standard LeanRunResult plus a `chart_summary` block so
+    you can see what came back from FHIR before the LLM ran.
+    """
+    log_audit(user, "epic_sandbox_demo", f"patient={req.patient_id} cpt={req.procedure_code}")
+    if not config.epic_client_id:
+        raise HTTPException(
+            status_code=503,
+            detail="EPIC_CLIENT_ID not set. Register the app on the Epic vendor portal first.",
+        )
+    if not config.get_private_key():
+        raise HTTPException(
+            status_code=503,
+            detail="No Epic private key configured. Set EPIC_PRIVATE_KEY env var (PEM contents).",
+        )
+
+    from cardioauth.fhir.client import FHIRClient
+    from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus
+    from cardioauth.lean_pipeline import run_lean_pipeline
+
+    fhir = FHIRClient(config)
+    try:
+        bundle = fhir.get_patient_bundle(req.patient_id, req.procedure_code)
+    except Exception as e:
+        logging.exception("Epic FHIR fetch failed")
+        raise HTTPException(status_code=502, detail=f"Epic FHIR fetch failed: {e}")
+
+    corpus = bundle_to_patient_corpus(
+        bundle,
+        current_note_text=req.raw_note,
+    )
+
+    chart_summary = {
+        "patient_id": req.patient_id,
+        "resources_pulled": sorted(list((bundle.get("resources") or {}).keys())),
+        "documents_indexed": len(corpus.documents),
+        "doc_types": sorted({d.doc_type for d in corpus.documents}),
+        "earliest_doc_date": min(
+            (d.date for d in corpus.documents if d.date), default="",
+        ),
+        "latest_doc_date": max(
+            (d.date for d in corpus.documents if d.date), default="",
+        ),
+    }
+
+    # Use the most-recent DocumentReference body as the current note if
+    # the caller didn't pass one — common path for sandbox testing.
+    note_text = req.raw_note
+    if not note_text and corpus.documents:
+        latest = max(corpus.documents, key=lambda d: d.date or "")
+        note_text = latest.text
+
+    try:
+        result = run_lean_pipeline(
+            case_id=f"EPIC-{req.patient_id}-{req.procedure_code}",
+            raw_note=note_text,
+            request_cpt=req.procedure_code,
+            payer=req.payer_name,
+            patient_corpus=corpus,
+        )
+    except Exception as e:
+        logging.exception("Lean pipeline against Epic bundle failed")
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+
+    return {
+        "chart_summary": chart_summary,
+        "lean_result": result.to_dict(),
+    }
 
 
 @app.post("/api/demo/end-to-end-lean")

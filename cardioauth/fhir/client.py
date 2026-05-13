@@ -23,6 +23,8 @@ RESOURCE_TYPES = [
     "DiagnosticReport",
     "Procedure",
     "Coverage",
+    "Encounter",
+    "DocumentReference",
 ]
 
 
@@ -106,3 +108,33 @@ class FHIRClient:
                 bundle["resources"][resource_type] = {"error": str(e)}
 
         return bundle
+
+    def fetch_binary(self, binary_url: str) -> tuple[str, bytes]:
+        """Fetch a Binary resource (typically a DocumentReference attachment).
+
+        Epic returns Binary resources either as JSON wrapping base64 data or
+        as a raw bytestream depending on the Accept header. We negotiate JSON
+        because that gives us mime-type metadata too.
+
+        Returns (content_type, raw_bytes).
+        """
+        import base64
+
+        token = self._get_token()
+        self.session.headers["Authorization"] = f"Bearer {token}"
+        # Allow either FHIR-wrapped JSON or raw octet-stream
+        headers = {"Accept": "application/fhir+json, application/octet-stream;q=0.8"}
+        # Binary may come as an absolute URL on the FHIR server or a relative
+        # reference like "Binary/abc-123" — normalize either way.
+        if binary_url.startswith("http://") or binary_url.startswith("https://"):
+            url = binary_url
+        else:
+            url = f"{self.base_url}/{binary_url.lstrip('/')}"
+        resp = self.session.get(url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        ctype = resp.headers.get("Content-Type", "")
+        if "json" in ctype.lower():
+            body = resp.json()
+            data_b64 = body.get("data", "")
+            return body.get("contentType", "application/octet-stream"), base64.b64decode(data_b64) if data_b64 else b""
+        return ctype, resp.content
