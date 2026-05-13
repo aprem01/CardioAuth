@@ -636,3 +636,256 @@ def generate_submission_packet(
 
     doc.build(story)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Lean-pipeline submission packet
+# ---------------------------------------------------------------------------
+
+
+def _esc(s: str) -> str:
+    """HTML-escape for reportlab Paragraph (which renders HTML-like tags)."""
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _status_label(status: str) -> tuple[str, str]:
+    """(display_label, hex_color) for a criterion status."""
+    s = (status or "").lower().replace("-", "_").replace(" ", "_")
+    if s == "met":
+        return "MET", "#047857"
+    if s == "not_met":
+        return "NOT MET", "#b91c1c"
+    if s == "partially_met":
+        return "PARTIAL", "#d97706"
+    if s == "not_evaluated":
+        return "N/EVAL", "#6b7280"
+    if s == "not_applicable":
+        return "N/A", "#6b7280"
+    return (s.upper() or "—"), "#374151"
+
+
+def generate_lean_packet_pdf(
+    lean_result: dict,
+    *,
+    payer: str = "",
+    cpt_code: str = "",
+) -> bytes:
+    """Build a staff-submittable PA packet PDF from a lean-pipeline result.
+
+    This is the deliverable Peter described as 'the critical bridge between
+    a good demo and a useful workflow product' — staff can pick this PDF
+    up and submit through their existing portal/fax workflow without
+    rework. Five sections, payer-agnostic layout:
+
+      1. Cover sheet — patient/payer/procedure summary + medical-necessity
+         narrative paragraph
+      2. PA form fields — populated values from the lean pipeline's typed
+         form_field_values; staff transcribes into the payer portal or
+         attaches as backup
+      3. Criterion evaluation — each criterion code + status + rationale
+         with quoted evidence (color-coded MET/NOT MET/etc.)
+      4. Historical evidence appendix — corpus_snippets retrieved from
+         prior documents, with [doc_type date] source citations (the
+         "treadmill 3 years ago" payload Peter asked for)
+      5. Audit footer — case_id, generation timestamp, FHIR Provenance ref
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        title="Prior Authorization Submission Packet",
+    )
+    styles = _build_styles()
+    story: list = []
+
+    # Header
+    story.append(Paragraph("PRIOR AUTHORIZATION SUBMISSION PACKET", styles["title"]))
+    story.append(HRFlowable(width="100%", thickness=1.2, color=_BRAND_BLUE, spaceAfter=8))
+
+    state2 = lean_result.get("state2_output") or {}
+    cpt_res = state2.get("cpt_resolution") or {}
+    fields = state2.get("form_field_values") or []
+    fields_by_key = {f.get("key"): f for f in fields}
+
+    def f(key: str, fallback: str = "—") -> str:
+        v = fields_by_key.get(key) or {}
+        val = v.get("value", "")
+        return val if val else fallback
+
+    case_id = lean_result.get("case_id", "")
+    payer_display = payer or state2.get("payer_name", "") or lean_result.get("payer", "")
+    cpt_display = cpt_code or state2.get("request_cpt", "") or lean_result.get("request_cpt", "")
+    proc_name = cpt_res.get("procedure_name", "") or f("procedure_name", "")
+
+    today = datetime.now().strftime("%B %d, %Y")
+    story.append(Paragraph(f"Submission date: <b>{today}</b>  ·  Case ID: <b>{_esc(case_id)}</b>", styles["small"]))
+    story.append(Spacer(1, 10))
+
+    # 1. Cover sheet — at-a-glance
+    cover_rows = [
+        ["Patient", f("patient_name")],
+        ["DOB / Sex", f"{f('patient_dob')} / {f('patient_sex')}"],
+        ["Insurance / Member ID", f"{_esc(payer_display)} · {f('member_id')}"],
+        ["Procedure", f"{_esc(proc_name)}  ({_esc(cpt_display)})"],
+        ["Ordering Physician", f"{f('ordering_physician')}  ·  NPI {f('ordering_npi')}"],
+        ["Primary ICD-10", f("primary_icd10")],
+    ]
+    cover_table = Table(cover_rows, colWidths=[1.7 * inch, 5.05 * inch])
+    cover_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), _BRAND_LIGHT),
+        ("TEXTCOLOR", (0, 0), (0, -1), _BRAND_BLUE),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.5, _BRAND_LIGHT),
+    ]))
+    story.append(cover_table)
+    story.append(Spacer(1, 12))
+
+    # Medical necessity narrative
+    narrative = (state2.get("narrative") or {}).get("text", "")
+    if narrative:
+        story.append(Paragraph("MEDICAL NECESSITY STATEMENT", styles["section"]))
+        story.append(Paragraph(_esc(narrative), styles["body"]))
+        story.append(Spacer(1, 12))
+
+    # 2. PA form fields table (populated values from the pipeline)
+    if fields:
+        story.append(Paragraph("PRIOR AUTHORIZATION FORM FIELDS", styles["section"]))
+        story.append(Paragraph(
+            "Populated values for the payer's PA form. Staff transcribes into the portal "
+            "or attaches this packet as supporting documentation.",
+            styles["small"],
+        ))
+        story.append(Spacer(1, 4))
+        header = [["Field", "Value", "Status"]]
+        rows: list[list[str]] = []
+        for fld in fields:
+            status = (fld.get("status") or "").lower()
+            status_label = {
+                "populated": "✓ populated",
+                "missing": "✗ missing",
+                "needs_verify": "⚠ verify",
+                "not_applicable": "—",
+            }.get(status, status or "—")
+            val = fld.get("value", "")
+            if not val and fld.get("missing_reason"):
+                val = f"({fld['missing_reason']})"
+            rows.append([
+                _esc(fld.get("key", "")),
+                _esc(val[:200] if isinstance(val, str) else str(val)),
+                status_label,
+            ])
+        form_table = Table(header + rows, colWidths=[1.9 * inch, 3.8 * inch, 1.05 * inch], repeatRows=1)
+        form_style = [
+            ("BACKGROUND", (0, 0), (-1, 0), _TABLE_HEADER_BG),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.3, _GREY),
+        ]
+        # Alternate row striping; color the status column
+        for i, row in enumerate(rows, start=1):
+            if i % 2 == 0:
+                form_style.append(("BACKGROUND", (0, i), (-1, i), _TABLE_ALT_ROW))
+            s = row[2]
+            if "populated" in s:
+                form_style.append(("TEXTCOLOR", (2, i), (2, i), colors.HexColor("#047857")))
+            elif "missing" in s:
+                form_style.append(("TEXTCOLOR", (2, i), (2, i), colors.HexColor("#b91c1c")))
+            elif "verify" in s:
+                form_style.append(("TEXTCOLOR", (2, i), (2, i), colors.HexColor("#d97706")))
+        form_table.setStyle(TableStyle(form_style))
+        story.append(form_table)
+        story.append(Spacer(1, 12))
+
+    # 3. Criterion evaluation table
+    criteria = (state2.get("criteria_evaluated") or []) + (state2.get("payer_specific_criteria_evaluated") or [])
+    if criteria:
+        story.append(Paragraph("CRITERION EVALUATION", styles["section"]))
+        approval = state2.get("approval_verdict") or {}
+        score = approval.get("score", 0)
+        label = approval.get("label", "")
+        if label:
+            story.append(Paragraph(
+                f"Verdict: <b>{_esc(label)}</b>  ·  Score: <b>{int(score * 100) if isinstance(score, float) else score}%</b>",
+                styles["small"],
+            ))
+            story.append(Spacer(1, 4))
+        header = [["Code", "Status", "Rationale"]]
+        crows: list[list[str]] = []
+        for c in criteria[:60]:
+            label_text, _ = _status_label(c.get("status", ""))
+            rationale = (c.get("rationale", "") or "")[:280]
+            crows.append([_esc(c.get("code", "")), label_text, _esc(rationale)])
+        crit_table = Table(header + crows, colWidths=[1.0 * inch, 0.9 * inch, 4.85 * inch], repeatRows=1)
+        crit_style = [
+            ("BACKGROUND", (0, 0), (-1, 0), _TABLE_HEADER_BG),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.3, _GREY),
+        ]
+        for i, row in enumerate(crows, start=1):
+            _, hex_color = _status_label(criteria[i - 1].get("status", ""))
+            crit_style.append(("TEXTCOLOR", (1, i), (1, i), colors.HexColor(hex_color)))
+            crit_style.append(("FONTNAME", (1, i), (1, i), "Helvetica-Bold"))
+        crit_table.setStyle(TableStyle(crit_style))
+        story.append(crit_table)
+        story.append(Spacer(1, 12))
+
+    # 4. Historical evidence appendix — Peter's "treadmill 3 years ago" payload
+    snippets = lean_result.get("corpus_snippets") or state2.get("corpus_snippets") or []
+    if snippets:
+        story.append(Paragraph("HISTORICAL EVIDENCE FROM PATIENT CHART", styles["section"]))
+        story.append(Paragraph(
+            "Facts retrieved from prior documents in the longitudinal chart and "
+            "cited in the medical-necessity statement above.",
+            styles["small"],
+        ))
+        story.append(Spacer(1, 6))
+        for i, snip in enumerate(snippets[:12], start=1):
+            doc_type = snip.get("doc_type", "")
+            date = snip.get("date", "")
+            title = snip.get("title", "") or snip.get("doc_id", "")
+            text = snip.get("text", "") or snip.get("snippet", "")
+            citation = f"[{doc_type} {date}]".strip() if doc_type or date else ""
+            story.append(Paragraph(
+                f"<b>{i}.</b>  <b>{_esc(title)}</b>  <font color='{_GREY.hexval()}'>{_esc(citation)}</font>",
+                styles["body"],
+            ))
+            story.append(Paragraph(_esc(text[:600]), styles["small"]))
+            story.append(Spacer(1, 6))
+        story.append(Spacer(1, 8))
+
+    # 5. Audit footer
+    story.append(HRFlowable(width="100%", thickness=0.5, color=_GREY, spaceAfter=4))
+    prov = state2.get("provenance") or {}
+    prov_id = prov.get("id", "") or ((lean_result.get("archive_paths") or {}).get("provenance_id", ""))
+    sig = (lean_result.get("archive_paths") or {}).get("signature_digest", "")[:16]
+    audit_line = "Generated by CardioAuth Lean Hybrid Pipeline (lean-hybrid-1.0)"
+    if prov_id:
+        audit_line += f"  ·  Provenance {prov_id}"
+    if sig:
+        audit_line += f"  ·  Sig {sig}…"
+    story.append(Paragraph(audit_line, styles["footer"]))
+    story.append(Paragraph(
+        "Confidential medical document — for authorized recipient only.",
+        styles["footer"],
+    ))
+
+    doc.build(story)
+    return buf.getvalue()

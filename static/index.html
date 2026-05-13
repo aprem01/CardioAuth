@@ -1120,6 +1120,19 @@
             <p class="text-sm font-semibold text-white">${(data.total_duration_ms/1000).toFixed(1)}s · ${data.state2_tokens || 0} tokens · $${(data.state2_cost_usd || 0).toFixed(4)}</p>
           </div>
         </div>
+
+        <!-- Download submission packet (Peter's staff-submittable PDF) -->
+        <div class="mt-4 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-4 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-sm font-semibold text-white">📄 Submission packet ready</div>
+            <div class="text-xs text-slate-400 mt-0.5">Filled PA form + cover letter + cited historical evidence. PDF your staff can submit through any payer portal.</div>
+          </div>
+          <button id="corpus-pdf-btn" onclick="downloadCorpusPacket()" class="flex-shrink-0 px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            Download PDF
+          </button>
+        </div>
+
         ${snippetPanel}
         ${critTable}
         <details class="mt-3">
@@ -1128,6 +1141,46 @@
         </details>
       </div>`;
   }
+
+  window.downloadCorpusPacket = async function() {
+    const btn = document.getElementById('corpus-pdf-btn');
+    if (!btn) return;
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg> Generating…';
+    try {
+      const payload = {
+        patient_id: document.getElementById('corpus-patient').value || 'CORPUS-DEMO',
+        procedure_code: document.getElementById('corpus-cpt').value,
+        payer_name: document.getElementById('corpus-payer').value,
+        raw_note: (document.getElementById('corpus-current-note').value || '').trim(),
+        corpus: _corpusDocs.filter(d => (d.text || '').trim().length > 30),
+      };
+      const res = await fetch('/api/lean/packet-pdf', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 200)}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `CardioAuth-${payload.patient_id}-${payload.procedure_code}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Packet generation failed: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+  };
 
   function renderGenerators() {
     return `

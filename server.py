@@ -1480,6 +1480,69 @@ def end_to_end_lean_corpus(req: E2ELeanCorpusRequest, user: AuthUser = Depends(g
     return result.to_dict()
 
 
+@app.post("/api/lean/packet-pdf")
+def lean_packet_pdf(req: E2ELeanCorpusRequest, user: AuthUser = Depends(get_current_user)):
+    """Generate a staff-submittable PDF packet for a PA request.
+
+    Runs the same lean+corpus pipeline as /api/demo/end-to-end-lean-corpus,
+    then renders the result into a downloadable PDF — cover sheet, populated
+    PA form fields, criterion evaluation with rationale, historical evidence
+    appendix from the longitudinal chart, and audit footer.
+
+    This is Peter's stated "critical bridge between a good demo and a useful
+    workflow product" — staff can pick this PDF up and submit through their
+    existing portal/fax workflow without rework.
+    """
+    log_audit(user, "lean_packet_pdf", f"patient={req.patient_id} cpt={req.procedure_code}")
+
+    from cardioauth.lean_pipeline import run_lean_pipeline
+    from cardioauth.patient_corpus import CorpusDocument, PatientCorpus
+    from cardioauth.pdf_generator import generate_lean_packet_pdf
+    from fastapi.responses import Response
+
+    if not (req.raw_note or "").strip():
+        raise HTTPException(status_code=400, detail="raw_note required to generate packet")
+
+    documents: list[CorpusDocument] = [CorpusDocument(
+        doc_id="current", doc_type="current_note", date="",
+        title="Current encounter note", text=req.raw_note,
+    )]
+    for i, d in enumerate(req.corpus or []):
+        documents.append(CorpusDocument(
+            doc_id=d.doc_id or f"hist-{i+1}",
+            doc_type=(d.doc_type or "other"),  # type: ignore[arg-type]
+            date=d.date or "",
+            title=d.title or f"Historical document #{i+1}",
+            text=d.text or "",
+            source=d.source or "",
+        ))
+    corpus = PatientCorpus(patient_id=req.patient_id, documents=documents)
+
+    try:
+        result = run_lean_pipeline(
+            case_id=f"{req.patient_id}-{req.procedure_code}",
+            raw_note=req.raw_note,
+            request_cpt=req.procedure_code,
+            payer=req.payer_name,
+            patient_corpus=corpus,
+        )
+        pdf_bytes = generate_lean_packet_pdf(
+            result.to_dict(),
+            payer=req.payer_name,
+            cpt_code=req.procedure_code,
+        )
+    except Exception as e:
+        logging.exception("Lean packet PDF generation failed")
+        raise HTTPException(status_code=500, detail=f"Packet generation failed: {e}")
+
+    filename = f"CardioAuth-{req.patient_id}-{req.procedure_code}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 class EpicSandboxRequest(BaseModel):
     """Run the lean pipeline against Epic's R4 sandbox.
 
