@@ -725,7 +725,14 @@
     else if (hash === '#generators') app.innerHTML = renderGenerators();
     else if (hash === '#corpus-demo') {
       app.innerHTML = renderCorpusDemo();
-      setTimeout(_renderCorpusDocList, 0);
+      setTimeout(() => {
+        _renderCorpusDocList();
+        // Auto-load the demo case so first-time visitors see a populated
+        // form instead of staring at an empty textarea. They can still
+        // clear and paste their own note over it.
+        const noteEl = document.getElementById('corpus-current-note');
+        if (noteEl && !noteEl.value) loadDemoCorpus();
+      }, 0);
     }
     else if (hash === '#outcomes') { app.innerHTML = renderLoading('Outcomes'); loadOutcomes(); }
     else { app.innerHTML = renderDashboard(); }
@@ -997,7 +1004,11 @@
 
     const raw_note = (document.getElementById('corpus-current-note').value || '').trim();
     if (raw_note.length < 30) {
-      out.innerHTML = `<div class="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-amber-300">Paste the current encounter note first (at least 30 characters).</div>`;
+      out.innerHTML = `
+        <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-800 flex items-center justify-between gap-3">
+          <span>Paste the current encounter note first (at least 30 characters), or load the synthetic demo case to see how it works.</span>
+          <button onclick="loadDemoCorpus()" class="flex-shrink-0 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white shadow-sm">Load demo case</button>
+        </div>`;
       return;
     }
 
