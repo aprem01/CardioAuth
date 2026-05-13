@@ -8051,6 +8051,7 @@ This procedure is essential for determining whether percutaneous coronary interv
     const qs = new URLSearchParams(window.location.hash.split('?')[1] || '');
     const sessionId = qs.get('session') || '';
     const launchError = qs.get('launch_error') || '';
+    const launchMsg = qs.get('launch_msg') || '';
 
     return `
     <div class="fade-in space-y-6">
@@ -8070,7 +8071,12 @@ This procedure is essential for determining whether percutaneous coronary interv
 
       ${launchError ? `
         <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
-          <strong>Launch error from Epic:</strong> ${escapeHtml(launchError)}
+          <div><strong>Launch error from Epic:</strong> <code class="text-xs">${escapeHtml(launchError)}</code></div>
+          ${launchMsg ? `<div class="mt-1 text-amber-800">${escapeHtml(launchMsg)}</div>` : ''}
+          ${launchError === 'server_error' && launchMsg.includes('another process') ? `
+            <div class="mt-2 text-xs text-amber-700">
+              <strong>Fix:</strong> close all incognito/private windows entirely and open a fresh one, OR sign out of any open Epic tab first, then try again.
+            </div>` : ''}
         </div>` : ''}
 
       <!-- SMART launch card -->

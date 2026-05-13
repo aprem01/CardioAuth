@@ -1704,8 +1704,15 @@ def epic_smart_callback(code: str = "", state: str = "", error: str = "", error_
     with the session_id appended.
     """
     if error:
-        msg = f"Epic returned error '{error}': {error_description}"
-        return RedirectResponse(url=f"/#epic-sandbox?launch_error={error}", status_code=302)
+        from urllib.parse import quote
+        logging.warning("Epic OAuth callback returned error=%s description=%s", error, error_description)
+        # Pass the human-readable description through to the UI so the
+        # error panel can show what Epic actually complained about,
+        # not just the opaque error code.
+        return RedirectResponse(
+            url=f"/#epic-sandbox?launch_error={quote(error)}&launch_msg={quote(error_description or '')}",
+            status_code=302,
+        )
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing code or state in callback")
 
