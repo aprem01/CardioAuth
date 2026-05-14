@@ -745,7 +745,7 @@
       }, 0);
     }
     else if (hash === '#outcomes') { app.innerHTML = renderLoading('Outcomes'); loadOutcomes(); }
-    else if (hash === '#epic-sandbox') {
+    else if (hash === '#epic-sandbox' || hash.startsWith('#epic-sandbox?')) {
       app.innerHTML = renderEpicSandbox();
       // If the callback handed us a session_id, load it after the DOM mounts.
       const qs2 = new URLSearchParams(window.location.hash.split('?')[1] || '');
