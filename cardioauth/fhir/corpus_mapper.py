@@ -288,3 +288,137 @@ def bundle_to_patient_corpus(
             documents.append(cd)
 
     return PatientCorpus(patient_id=patient_id, documents=documents)
+
+
+# ── Binary attachment resolution ────────────────────────────────────────
+# Epic returns DocumentReference attachments as Binary URL refs, not
+# inline data. Without resolving them, the corpus only sees encounter
+# headers and document metadata — never the actual clinical note text.
+# This is what made Peter's first real test produce a packet with blank
+# fields. resolve_document_attachments() does the network fetches.
+
+import re as _re
+from html.parser import HTMLParser as _HTMLParser
+
+
+class _TextExtractor(_HTMLParser):
+    """Minimal HTML → plaintext. Clinical notes from Epic come as
+    text/html; we want the readable text, not the markup."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag in ("script", "style"):
+            self._skip += 1
+        if tag in ("br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4"):
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style") and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        raw = "".join(self._parts)
+        # Collapse runs of whitespace within lines, keep paragraph breaks
+        lines = [_re.sub(r"[ \t]+", " ", ln).strip() for ln in raw.splitlines()]
+        return "\n".join(ln for ln in lines if ln)
+
+
+def _strip_html(html: str) -> str:
+    """Best-effort HTML → plaintext for clinical note bodies."""
+    try:
+        parser = _TextExtractor()
+        parser.feed(html)
+        return parser.text()
+    except Exception as e:
+        logger.warning("HTML strip failed, returning raw: %s", e)
+        return html
+
+
+def _decode_attachment_bytes(content_type: str, raw: bytes) -> str:
+    """Turn fetched Binary bytes into plaintext based on content type.
+
+    Handles text/html (strip tags), text/plain, text/xml. RTF and PDF
+    are skipped — Epic always offers an HTML variant alongside RTF, and
+    PDF parsing isn't wired yet.
+    """
+    ct = (content_type or "").lower()
+    if "rtf" in ct or "pdf" in ct:
+        return ""
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    if "html" in ct or text.lstrip().lower().startswith(("<!doctype", "<html", "<div", "<body")):
+        return _strip_html(text)
+    return text.strip()
+
+
+def resolve_document_attachments(
+    bundle: dict[str, Any],
+    fhir_client: Any,
+    *,
+    max_docs: int = 25,
+) -> dict[str, str]:
+    """Fetch the actual body text for every DocumentReference in the bundle.
+
+    For each DocumentReference, pick the best attachment (prefer HTML over
+    RTF/PDF), fetch the Binary it points at, decode to plaintext. Returns
+    {docref_id: text} for feeding into bundle_to_patient_corpus's
+    attachment_texts param.
+
+    Network-heavy — capped at max_docs. Failures on individual documents
+    are logged and skipped, never raised: a partial corpus beats no corpus.
+    """
+    resources = bundle.get("resources", {}) or {}
+    docref_bundle = resources.get("DocumentReference") or {}
+    entries = docref_bundle.get("entry") or []
+
+    resolved: dict[str, str] = {}
+    fetched = 0
+    for entry in entries:
+        if fetched >= max_docs:
+            break
+        docref = entry.get("resource") or {}
+        if docref.get("resourceType") != "DocumentReference":
+            continue
+        doc_id = docref.get("id", "")
+        if not doc_id:
+            continue
+
+        # Pick the best attachment: prefer text/html, then anything with a
+        # url, skip rtf/pdf if an html sibling exists.
+        contents = docref.get("content") or []
+        candidates = [c.get("attachment") or {} for c in contents]
+        html_att = next(
+            (a for a in candidates if "html" in (a.get("contentType") or "").lower() and a.get("url")),
+            None,
+        )
+        any_url_att = next((a for a in candidates if a.get("url")), None)
+        inline_att = next((a for a in candidates if a.get("data")), None)
+
+        text = ""
+        chosen = html_att or any_url_att
+        if chosen and chosen.get("url"):
+            try:
+                ctype, raw = fhir_client.fetch_binary(chosen["url"])
+                text = _decode_attachment_bytes(ctype or chosen.get("contentType", ""), raw)
+                fetched += 1
+            except Exception as e:
+                logger.warning("Binary fetch failed for DocumentReference %s: %s", doc_id, e)
+        elif inline_att and inline_att.get("data"):
+            text = _extract_attachment_text(inline_att)
+
+        if text.strip():
+            resolved[doc_id] = text
+
+    logger.info("Resolved %d/%d DocumentReference bodies (fetched %d Binaries)",
+                len(resolved), len(entries), fetched)
+    return resolved

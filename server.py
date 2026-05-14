@@ -1768,7 +1768,7 @@ def epic_smart_run_pipeline(req: SmartPipelineRequest, user: AuthUser = Depends(
     """
     from cardioauth.fhir.smart_launch import get_manager
     from cardioauth.fhir.client import FHIRClient
-    from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus
+    from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus, resolve_document_attachments
     from cardioauth.lean_pipeline import run_lean_pipeline
 
     s = get_manager().get_session(req.session_id)
@@ -1788,7 +1788,12 @@ def epic_smart_run_pipeline(req: SmartPipelineRequest, user: AuthUser = Depends(
         logging.exception("FHIR fetch with SMART token failed")
         raise HTTPException(status_code=502, detail=f"FHIR fetch failed: {e}")
 
-    corpus = bundle_to_patient_corpus(bundle, current_note_text=req.raw_note)
+    # Resolve Binary attachment bodies so the corpus has actual clinical
+    # note text, not just DocumentReference headers.
+    attachment_texts = resolve_document_attachments(bundle, fhir)
+    corpus = bundle_to_patient_corpus(
+        bundle, current_note_text=req.raw_note, attachment_texts=attachment_texts,
+    )
 
     note_text = req.raw_note
     if not note_text and corpus.documents:
@@ -1847,7 +1852,7 @@ def epic_sandbox_demo(req: EpicSandboxRequest, user: AuthUser = Depends(get_curr
         )
 
     from cardioauth.fhir.client import FHIRClient
-    from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus
+    from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus, resolve_document_attachments
     from cardioauth.lean_pipeline import run_lean_pipeline
 
     fhir = FHIRClient(config)
@@ -1857,9 +1862,13 @@ def epic_sandbox_demo(req: EpicSandboxRequest, user: AuthUser = Depends(get_curr
         logging.exception("Epic FHIR fetch failed")
         raise HTTPException(status_code=502, detail=f"Epic FHIR fetch failed: {e}")
 
+    # Resolve Binary attachment bodies so the corpus has actual clinical
+    # note text, not just DocumentReference headers.
+    attachment_texts = resolve_document_attachments(bundle, fhir)
     corpus = bundle_to_patient_corpus(
         bundle,
         current_note_text=req.raw_note,
+        attachment_texts=attachment_texts,
     )
 
     chart_summary = {
