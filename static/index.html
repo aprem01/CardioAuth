@@ -8064,7 +8064,7 @@ This procedure is essential for determining whether percutaneous coronary interv
         <div>
           <h2 class="text-base font-semibold text-slate-900">Live Epic FHIR R4 integration</h2>
           <p class="text-sm text-slate-600 mt-0.5">
-            Two integration modes: <strong>SMART App Launch</strong> (user-driven — physician clicks Launch in chart, app reads patient data with their token) and <strong>Backend Services</strong> (headless — JWT private_key_jwt for nightly batches).
+            Pick a test patient, click Run pipeline. Real chart from <code class="text-xs bg-white px-1 rounded border border-slate-200">fhir.epic.com</code> → corpus retrieval → lean pipeline → verdict + cited evidence. No bouncing through Epic's login.
           </p>
         </div>
       </div>
@@ -8079,38 +8079,7 @@ This procedure is essential for determining whether percutaneous coronary interv
             </div>` : ''}
         </div>` : ''}
 
-      <!-- SMART launch card -->
-      <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <h3 class="text-base font-semibold text-slate-900">SMART App Launch</h3>
-            <p class="text-xs text-slate-500 mt-0.5">User-driven OAuth. Epic prompts you to pick a test patient, then this app reads the chart with your token.</p>
-          </div>
-          ${sessionId ? `
-            <div class="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
-              Active session · <span class="font-mono">${escapeHtml(sessionId.slice(0, 10))}…</span>
-            </div>` : ''}
-        </div>
-        <div id="smart-session-info" class="text-xs text-slate-500 mb-3">${sessionId ? 'Loading session…' : 'No session yet. Click "Launch from Epic" to start.'}</div>
-        <div class="flex gap-2 flex-wrap items-center">
-          <a href="/api/epic/launch" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-            Launch from Epic
-          </a>
-          ${sessionId ? `
-            <button onclick="runEpicSmartPipeline('${sessionId}')" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
-              Run pipeline on this patient
-            </button>` : ''}
-          <span class="text-xs text-slate-500">Standalone launch — works against open.epic test patients.</span>
-        </div>
-      </div>
-
-      <hr class="border-slate-200"/>
-
-      <div class="text-xs text-slate-500 uppercase tracking-wide font-semibold">Backend Services (headless) — same flow, server-issued token</div>
-
-      <!-- Form -->
+      <!-- PRIMARY workflow: pick a patient and run the pipeline (no OAuth) -->
       <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
         <div class="grid md:grid-cols-3 gap-4">
           <div>
@@ -8158,6 +8127,37 @@ This procedure is essential for determining whether percutaneous coronary interv
 
       <!-- Result -->
       <div id="epic-result"></div>
+
+      <!-- Secondary: SMART launch (production flow simulator). Kept below
+           the primary form so the easy patient-picker path is what users
+           hit first. -->
+      <details class="bg-white border border-slate-200 rounded-xl shadow-sm">
+        <summary class="cursor-pointer px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50">
+          ▸ Production flow simulator — SMART App Launch (clinician OAuth)
+        </summary>
+        <div class="px-5 pb-5 pt-1 border-t border-slate-100 space-y-3">
+          <p class="text-xs text-slate-500">
+            Simulates how a physician would launch CardioAuth from inside Epic — they sign in to Hyperspace (test credentials <code>FHIR</code> / <code>EpicFhir11!</code>), Epic prompts to authorize scopes, then redirects back here with a session token + patient context. Useful for validating the production-deployment OAuth flow. The patient-picker form above does the same chart pull without the OAuth dance.
+          </p>
+          ${sessionId ? `
+            <div class="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs">
+              <strong class="text-emerald-800">Active session</strong> · <span class="font-mono text-emerald-700">${escapeHtml(sessionId.slice(0, 10))}…</span>
+              <div id="smart-session-info" class="text-slate-600 mt-1">Loading session…</div>
+            </div>` : `
+            <div id="smart-session-info" class="text-xs text-slate-500">No session yet.</div>`}
+          <div class="flex gap-2 flex-wrap items-center">
+            <a href="/api/epic/launch" class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-white border border-indigo-300 hover:bg-indigo-50 text-indigo-700 transition">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+              Launch from Epic
+            </a>
+            ${sessionId ? `
+              <button onclick="runEpicSmartPipeline('${sessionId}')" class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
+                Run pipeline using session token
+              </button>` : ''}
+          </div>
+        </div>
+      </details>
     </div>`;
   }
 
