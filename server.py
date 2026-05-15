@@ -1613,6 +1613,118 @@ class EpicSandboxRequest(BaseModel):
     raw_note: str = ""   # if empty, treat the encounter note as the most-recent DocumentReference
 
 
+@app.get("/api/synthetic/cases")
+def list_synthetic_cases() -> dict[str, Any]:
+    """List available synthetic chart cases authored under
+    tests/fixtures/synthetic_cases/. Each one renders as a FHIR Bundle
+    shape-identical to real Epic, so the pipeline can't tell the
+    difference."""
+    from cardioauth.synthetic import list_available_cases
+    return {"cases": list_available_cases()}
+
+
+class SyntheticRunRequest(BaseModel):
+    case_id: str                              # file stem, e.g. 'whitford-spect'
+    payer_name: str = ""                      # overrides case payer if provided
+    procedure_code: str = ""                  # overrides case CPT if provided
+
+
+@app.post("/api/synthetic/run")
+def run_synthetic_case(req: SyntheticRunRequest, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Run the full lean pipeline against a synthetic chart case.
+
+    Loads the markdown case file, assembles a FHIR Bundle, runs the
+    same Binary-resolution + corpus mapping path as the Epic-connected
+    endpoints. Result shape matches /api/demo/epic-sandbox so the UI
+    can reuse the same renderer.
+    """
+    from cardioauth.synthetic import load_case_by_id, case_to_bundle
+    from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus
+    from cardioauth.lean_pipeline import run_lean_pipeline
+
+    try:
+        case = load_case_by_id(req.case_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"No synthetic case '{req.case_id}'")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Case load failed: {e}")
+
+    bundle = case_to_bundle(case)
+    corpus = bundle_to_patient_corpus(bundle)
+
+    # Use the section tagged as the current encounter note as raw_note
+    current_note = ""
+    if corpus.current_note():
+        current_note = corpus.current_note().text
+    elif corpus.documents:
+        # Fall back to most recent doc as the encounter note
+        latest = max(corpus.documents, key=lambda d: d.date or "")
+        current_note = latest.text
+
+    chart_summary = {
+        "patient_id": case.patient_id,
+        "patient_name": case.patient_name,
+        "resources_pulled": sorted(list((bundle.get("resources") or {}).keys())),
+        "documents_indexed": len(corpus.documents),
+        "doc_types": sorted({d.doc_type for d in corpus.documents}),
+        "earliest_doc_date": min((d.date for d in corpus.documents if d.date), default=""),
+        "latest_doc_date": max((d.date for d in corpus.documents if d.date), default=""),
+        "pdf_sections": sum(1 for s in case.sections if s.format == "pdf"),
+    }
+
+    cpt = req.procedure_code or case.procedure_code
+    payer = req.payer_name or case.payer
+    log_audit(user, "synthetic_run",
+              f"case={req.case_id} patient={case.patient_id[:12]} cpt={cpt}")
+
+    try:
+        result = run_lean_pipeline(
+            case_id=f"SYNTH-{case.patient_id}-{cpt}",
+            raw_note=current_note,
+            request_cpt=cpt,
+            payer=payer,
+            patient_corpus=corpus,
+        )
+    except Exception as e:
+        logging.exception("Synthetic case pipeline failed")
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+
+    return {
+        "case_id": req.case_id,
+        "chart_summary": chart_summary,
+        "lean_result": result.to_dict(),
+    }
+
+
+@app.get("/api/synthetic/cases/{case_id}/section/{section_index}")
+def download_synthetic_section_pdf(case_id: str, section_index: int):
+    """Stream a synthetic case's PDF section back so the UI can offer a
+    'Download as PDF' link that opens the same artifact the corpus indexed."""
+    from cardioauth.synthetic import load_case_by_id
+    from cardioauth.synthetic.pdf_renderer import render_section_pdf
+    from fastapi.responses import Response
+
+    try:
+        case = load_case_by_id(case_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if section_index < 0 or section_index >= len(case.sections):
+        raise HTTPException(status_code=404, detail="Section index out of range")
+
+    section = case.sections[section_index]
+    if section.format != "pdf":
+        raise HTTPException(status_code=400, detail="Section is not in PDF format")
+
+    pdf_bytes = render_section_pdf(case, section)
+    filename = f"{case_id}-{section_index:02d}-{section.doc_type}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @app.get("/api/demo/epic-sandbox-debug")
 def epic_sandbox_debug(patient_id: str = "erXuFYUfucBZaryVksYEcMg3", user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
     """Diagnostic: show what Epic returns for each resource type without

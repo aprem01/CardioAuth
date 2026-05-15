@@ -21,6 +21,7 @@ attachment's inline `data` if present.
 from __future__ import annotations
 
 import base64
+import io
 import logging
 from typing import Any
 
@@ -88,23 +89,22 @@ def _extract_attachment_text(attachment: dict) -> str:
     """Pull text out of a DocumentReference.content[].attachment.
 
     The attachment may have:
-      - `data`: base64-encoded inline body (Epic does this for short docs)
-      - `url`: pointer to a Binary resource (Epic does this for everything else)
+      - `data`: base64-encoded inline body (Epic does this for short docs;
+        synthetic-chart feeder uses this for everything including PDFs)
+      - `url`: pointer to a Binary resource (Epic does this for most real
+        clinical docs)
 
-    For url-only attachments we cannot fetch here — caller must resolve
-    Binary refs separately and inject the text via `attachment_text_resolver`.
+    Routes through the same _decode_attachment_bytes helper as the Binary
+    resolution path, so HTML/PDF/text are all decoded the same way
+    regardless of whether they arrived inline or via URL.
     """
     data_b64 = attachment.get("data", "")
     if not data_b64:
         return ""
     try:
         raw = base64.b64decode(data_b64)
-        # Most clinical attachments are plain text or HTML; ignore non-text
-        # mime types — caller can layer in PDF parsing if needed.
         ctype = (attachment.get("contentType") or "").lower()
-        if "text" in ctype or "xml" in ctype or "html" in ctype or not ctype:
-            return raw.decode("utf-8", errors="replace")
-        return ""
+        return _decode_attachment_bytes(ctype, raw)
     except Exception as e:
         logger.warning("DocumentReference attachment decode failed: %s", e)
         return ""
@@ -345,12 +345,14 @@ def _strip_html(html: str) -> str:
 def _decode_attachment_bytes(content_type: str, raw: bytes) -> str:
     """Turn fetched Binary bytes into plaintext based on content type.
 
-    Handles text/html (strip tags), text/plain, text/xml. RTF and PDF
-    are skipped — Epic always offers an HTML variant alongside RTF, and
-    PDF parsing isn't wired yet.
+    Handles text/html (strip tags), text/plain, text/xml, application/pdf
+    (pypdf text extraction). RTF still skipped — Epic always offers an
+    HTML sibling for RTF, so there's no information loss.
     """
     ct = (content_type or "").lower()
-    if "rtf" in ct or "pdf" in ct:
+    if "pdf" in ct or raw[:5] == b"%PDF-":
+        return _extract_pdf_text(raw)
+    if "rtf" in ct:
         return ""
     try:
         text = raw.decode("utf-8", errors="replace")
@@ -359,6 +361,23 @@ def _decode_attachment_bytes(content_type: str, raw: bytes) -> str:
     if "html" in ct or text.lstrip().lower().startswith(("<!doctype", "<html", "<div", "<body")):
         return _strip_html(text)
     return text.strip()
+
+
+def _extract_pdf_text(raw: bytes) -> str:
+    """Extract plaintext from PDF bytes. Used for synthetic PDFs generated
+    by the synthetic-chart feeder AND real Epic PDF attachments (common
+    in older charts and cardiology sections). Returns empty string on
+    failure rather than raising — one unreadable PDF shouldn't sink
+    the whole corpus build.
+    """
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(raw))
+        pages = [p.extract_text() or "" for p in reader.pages]
+        return "\n\n".join(p.strip() for p in pages if p.strip())
+    except Exception as e:
+        logger.warning("PDF text extraction failed: %s", e)
+        return ""
 
 
 def resolve_document_attachments(
