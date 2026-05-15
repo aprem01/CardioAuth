@@ -12,6 +12,7 @@ synthetic suite is a real regression in the production pipeline.
 from cardioauth.synthetic.loader import (
     SyntheticCase,
     load_case_markdown,
+    load_case_by_id,
     list_available_cases,
     case_to_bundle,
 )
@@ -19,6 +20,7 @@ from cardioauth.synthetic.loader import (
 __all__ = [
     "SyntheticCase",
     "load_case_markdown",
+    "load_case_by_id",
     "list_available_cases",
     "case_to_bundle",
 ]
