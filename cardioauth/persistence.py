@@ -139,6 +139,28 @@ class Store(ABC):
     def shadow_review_stats(self) -> dict:
         """Aggregate agreement / edit / reject rates across all reviews."""
 
+    # ── Synthetic chart cases (user-uploaded) ──
+
+    @abstractmethod
+    def save_synthetic_case(
+        self, *, case_id: str, markdown: str, author_id: str = "",
+        patient_name: str = "", procedure_code: str = "", payer: str = "",
+        section_count: int = 0, pdf_section_count: int = 0,
+    ) -> None:
+        """Persist a user-authored synthetic chart case. Upsert by case_id."""
+
+    @abstractmethod
+    def get_synthetic_case(self, case_id: str) -> dict | None:
+        """Return the stored case (including markdown body) or None."""
+
+    @abstractmethod
+    def list_synthetic_cases(self) -> list[dict]:
+        """Summary metadata for every user-authored case, newest first."""
+
+    @abstractmethod
+    def delete_synthetic_case(self, case_id: str) -> bool:
+        """Delete a user-authored case. Returns True if it existed."""
+
     # ── Outcome dashboard helpers ──
 
     @abstractmethod
@@ -319,6 +341,24 @@ CREATE TABLE IF NOT EXISTS shadow_reviews (
 CREATE INDEX IF NOT EXISTS idx_shadow_reviewer ON shadow_reviews(reviewer_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shadow_payer_cpt ON shadow_reviews(payer, cpt_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shadow_outcome ON shadow_reviews(submission_outcome, created_at DESC);
+
+-- User-authored synthetic chart cases. Disk-shipped templates under
+-- tests/fixtures/synthetic_cases/ stay read-only; everything Peter
+-- writes through the UI lives here. Survives Railway redeploys
+-- (SQLiteStore is mounted on /app/data which persists).
+CREATE TABLE IF NOT EXISTS synthetic_cases (
+    case_id TEXT PRIMARY KEY,
+    markdown TEXT NOT NULL,
+    author_id TEXT,
+    patient_name TEXT,
+    procedure_code TEXT,
+    payer TEXT,
+    section_count INTEGER DEFAULT 0,
+    pdf_section_count INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_synth_author ON synthetic_cases(author_id, created_at DESC);
 """
 
 
@@ -943,6 +983,56 @@ class SQLiteStore(Store):
                 for r in by_payer
             ],
         }
+
+    # ── synthetic chart cases (user-authored) ──────────────────────────
+
+    def save_synthetic_case(
+        self, *, case_id: str, markdown: str, author_id: str = "",
+        patient_name: str = "", procedure_code: str = "", payer: str = "",
+        section_count: int = 0, pdf_section_count: int = 0,
+    ) -> None:
+        now = self._now()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO synthetic_cases
+                   (case_id, markdown, author_id, patient_name, procedure_code,
+                    payer, section_count, pdf_section_count, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(case_id) DO UPDATE SET
+                     markdown=excluded.markdown,
+                     patient_name=excluded.patient_name,
+                     procedure_code=excluded.procedure_code,
+                     payer=excluded.payer,
+                     section_count=excluded.section_count,
+                     pdf_section_count=excluded.pdf_section_count,
+                     updated_at=excluded.updated_at""",
+                (case_id, markdown, author_id, patient_name, procedure_code,
+                 payer, int(section_count), int(pdf_section_count), now, now),
+            )
+
+    def get_synthetic_case(self, case_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM synthetic_cases WHERE case_id = ?", (case_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_synthetic_cases(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT case_id, author_id, patient_name, procedure_code, payer,
+                          section_count, pdf_section_count, created_at, updated_at
+                   FROM synthetic_cases
+                   ORDER BY created_at DESC""",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_synthetic_case(self, case_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM synthetic_cases WHERE case_id = ?", (case_id,),
+            )
+        return (cur.rowcount or 0) > 0
 
 
 # ────────────────────────────────────────────────────────────────────────

@@ -8054,21 +8054,32 @@ This procedure is essential for determining whether percutaneous coronary interv
 
   function renderSyntheticPage(cases) {
     const caseRows = cases.length === 0
-      ? `<tr><td colspan="6" class="px-5 py-8 text-center text-sm text-slate-500">No synthetic cases authored yet. Drop markdown files under <code>tests/fixtures/synthetic_cases/</code>.</td></tr>`
-      : cases.map(c => `
-        <tr class="border-t border-slate-100 hover:bg-slate-50/60">
-          <td class="px-5 py-3 text-sm font-medium text-slate-800">${escapeHtml(c.patient_name || c.patient_id)}</td>
-          <td class="px-5 py-3 text-sm text-slate-600 font-mono text-xs">${escapeHtml(c.id)}</td>
-          <td class="px-5 py-3 text-sm text-slate-700 font-mono">${escapeHtml(c.procedure_code)}</td>
-          <td class="px-5 py-3 text-sm text-slate-700">${escapeHtml(c.payer)}</td>
-          <td class="px-5 py-3 text-xs text-slate-500">${c.section_count} sections (${c.pdf_section_count} PDF)</td>
-          <td class="px-5 py-3 text-right">
-            <button onclick="runSyntheticCase('${escapeHtml(c.id)}')" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
-              Run pipeline
-            </button>
-          </td>
-        </tr>`).join('');
+      ? `<tr><td colspan="7" class="px-5 py-8 text-center text-sm text-slate-500">No synthetic cases authored yet. Click <strong>+ Add case</strong> above to author one.</td></tr>`
+      : cases.map(c => {
+          const isBuiltin = c.source === 'builtin';
+          const badge = isBuiltin
+            ? `<span class="text-[10px] uppercase tracking-wide font-semibold text-indigo-700 bg-indigo-50 ring-1 ring-indigo-200 rounded px-1.5 py-0.5">Built-in</span>`
+            : `<span class="text-[10px] uppercase tracking-wide font-semibold text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200 rounded px-1.5 py-0.5">Custom</span>`;
+          const escId = escapeHtml(c.id).replace(/'/g, "\\'");
+          return `
+          <tr class="border-t border-slate-100 hover:bg-slate-50/60">
+            <td class="px-5 py-3 text-sm font-medium text-slate-800">${escapeHtml(c.patient_name || c.patient_id)}</td>
+            <td class="px-5 py-3"><div class="flex items-center gap-2"><span class="text-xs font-mono text-slate-600">${escapeHtml(c.id)}</span>${badge}</div></td>
+            <td class="px-5 py-3 text-sm text-slate-700 font-mono">${escapeHtml(c.procedure_code)}</td>
+            <td class="px-5 py-3 text-sm text-slate-700">${escapeHtml(c.payer)}</td>
+            <td class="px-5 py-3 text-xs text-slate-500">${c.section_count} sections (${c.pdf_section_count} PDF)</td>
+            <td class="px-5 py-3 text-right">
+              <div class="inline-flex items-center gap-1">
+                <button onclick="runSyntheticCase('${escId}')" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
+                  Run
+                </button>
+                <button onclick="editSyntheticCase('${escId}')" title="View / duplicate" class="px-2 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-slate-700">View</button>
+                ${!isBuiltin ? `<button onclick="deleteSyntheticCase('${escId}')" title="Delete custom case" class="px-2 py-1.5 text-xs rounded-md bg-white border border-red-300 hover:bg-red-50 text-red-700">Delete</button>` : ''}
+              </div>
+            </td>
+          </tr>`;
+        }).join('');
 
     return `
     <div class="fade-in space-y-6">
@@ -8091,8 +8102,12 @@ This procedure is essential for determining whether percutaneous coronary interv
         <div class="px-5 py-3 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between">
           <div>
             <h3 class="text-base font-semibold text-slate-900">Available cases (${cases.length})</h3>
-            <p class="text-xs text-slate-500 mt-0.5">Click Run pipeline to load the case as a FHIR Bundle and run the lean evaluator.</p>
+            <p class="text-xs text-slate-500 mt-0.5">Click Run to load the case as a FHIR Bundle and run the lean evaluator. Click + Add case to author a new one.</p>
           </div>
+          <button onclick="openSyntheticEditor()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            Add case
+          </button>
         </div>
         <table class="w-full text-sm">
           <thead class="bg-slate-50/70">
@@ -8102,11 +8117,43 @@ This procedure is essential for determining whether percutaneous coronary interv
               <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">CPT</th>
               <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Payer</th>
               <th class="px-5 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Sections</th>
-              <th class="px-5 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase">Action</th>
+              <th class="px-5 py-2.5 text-right text-xs font-semibold text-slate-500 uppercase">Actions</th>
             </tr>
           </thead>
           <tbody>${caseRows}</tbody>
         </table>
+      </div>
+
+      <!-- Author / edit case modal -->
+      <div id="synth-editor-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-200 bg-gradient-to-r from-indigo-50 to-cyan-50 flex items-center justify-between">
+            <div>
+              <h3 id="synth-editor-title" class="text-base font-semibold text-slate-900">Add a synthetic chart case</h3>
+              <p class="text-xs text-slate-600 mt-0.5">Markdown with YAML frontmatter. The Whitford template is pre-filled — edit the demographics + section bodies for your case.</p>
+            </div>
+            <button onclick="closeSyntheticEditor()" class="text-slate-400 hover:text-slate-700 transition w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-white/60">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="px-6 py-4 flex-1 overflow-hidden flex flex-col gap-3">
+            <div class="flex items-center gap-3">
+              <label class="text-xs font-semibold text-slate-700">Case ID (optional)</label>
+              <input id="synth-case-id" type="text" placeholder="auto-generated from patient name" class="flex-1 px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+              <button onclick="resetSyntheticEditor()" class="text-xs text-indigo-600 hover:text-indigo-800">↻ reset to template</button>
+            </div>
+            <textarea id="synth-md-body" rows="20" spellcheck="false"
+              class="flex-1 w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"></textarea>
+            <div id="synth-editor-error" class="hidden text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2"></div>
+          </div>
+          <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-between items-center">
+            <span class="text-xs text-slate-500">Tip: copy the Whitford built-in to start. Set <code>format: pdf</code> on any section to render it as a real PDF.</span>
+            <div class="flex gap-2">
+              <button onclick="closeSyntheticEditor()" class="px-4 py-2 text-sm font-medium rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-slate-700">Cancel</button>
+              <button id="synth-save-btn" onclick="saveSyntheticCase()" class="px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">Save case</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Result -->
@@ -8154,6 +8201,125 @@ format: pdf
       </details>
     </div>`;
   }
+
+  // Markdown editor for synthetic cases — open empty (uses Whitford
+  // built-in as the starter template), open with an existing case for
+  // view/duplicate, save POSTs to /api/synthetic/cases.
+
+  const _SYNTH_STARTER_TEMPLATE = `---\npatient_id: NEW-PATIENT-1\npatient_name: New Patient Name\ndob: 1955-01-01\nsex: female\nmember_id: PAYER-0000\npayer: UnitedHealthcare\nordering_physician: Your Name, MD\nordering_npi: 0000000000\nencounter_date: 2026-05-01\nprocedure_code: 78452\nprocedure_name: Cardiac SPECT MPI\ndiagnoses:\n  - code: I25.10\n    text: Atherosclerotic heart disease\n---\n\n# Current Encounter Note\ntype: progress_note\ndate: 2026-05-01\nauthor: Your Name, MD\n\nReplace this with the patient's current encounter note text.\n\n# Prior Stress Test\ntype: stress_test\ndate: 2023-06-01\nauthor: Prior Cardiologist, MD\nformat: pdf\n\nReplace this with the prior stress test report. format: pdf renders it as a real PDF.\n`;
+
+  window.openSyntheticEditor = async function(prefillFromCaseId) {
+    const modal = document.getElementById('synth-editor-modal');
+    const title = document.getElementById('synth-editor-title');
+    const body = document.getElementById('synth-md-body');
+    const idInput = document.getElementById('synth-case-id');
+    const err = document.getElementById('synth-editor-error');
+    err.classList.add('hidden');
+
+    if (prefillFromCaseId) {
+      title.textContent = `View / duplicate case: ${prefillFromCaseId}`;
+      try {
+        const r = await fetch(`/api/synthetic/cases/${encodeURIComponent(prefillFromCaseId)}/markdown`);
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        body.value = data.markdown;
+        idInput.value = data.source === 'custom' ? prefillFromCaseId : '';
+        if (data.source === 'builtin') {
+          err.textContent = "This is a built-in template — saving will create a NEW custom case (assign a fresh case_id).";
+          err.classList.remove('hidden');
+          err.classList.remove('text-red-700', 'bg-red-50', 'border-red-200');
+          err.classList.add('text-amber-800', 'bg-amber-50', 'border-amber-200');
+        }
+      } catch (e) {
+        body.value = _SYNTH_STARTER_TEMPLATE;
+      }
+    } else {
+      title.textContent = 'Add a synthetic chart case';
+      // Try to load the Whitford template as the starter; fall back to the embedded one
+      try {
+        const r = await fetch('/api/synthetic/cases/whitford-spect/markdown');
+        body.value = r.ok ? (await r.json()).markdown : _SYNTH_STARTER_TEMPLATE;
+      } catch (e) {
+        body.value = _SYNTH_STARTER_TEMPLATE;
+      }
+      idInput.value = '';
+    }
+    modal.classList.remove('hidden');
+  };
+
+  window.closeSyntheticEditor = function() {
+    document.getElementById('synth-editor-modal').classList.add('hidden');
+  };
+
+  window.resetSyntheticEditor = async function() {
+    try {
+      const r = await fetch('/api/synthetic/cases/whitford-spect/markdown');
+      document.getElementById('synth-md-body').value = r.ok ? (await r.json()).markdown : _SYNTH_STARTER_TEMPLATE;
+    } catch (e) {
+      document.getElementById('synth-md-body').value = _SYNTH_STARTER_TEMPLATE;
+    }
+  };
+
+  window.editSyntheticCase = function(caseId) {
+    openSyntheticEditor(caseId);
+  };
+
+  window.saveSyntheticCase = async function() {
+    const btn = document.getElementById('synth-save-btn');
+    const err = document.getElementById('synth-editor-error');
+    err.classList.add('hidden');
+    const markdown = document.getElementById('synth-md-body').value || '';
+    const caseId = document.getElementById('synth-case-id').value || '';
+    if (!markdown.trim()) {
+      err.textContent = 'Markdown body is required.';
+      err.classList.remove('hidden');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      const r = await fetch('/api/synthetic/cases', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({case_id: caseId, markdown}),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        let msg = txt;
+        try { msg = JSON.parse(txt).detail || txt; } catch (_) {}
+        err.textContent = msg;
+        err.classList.remove('hidden');
+        err.classList.remove('text-amber-800', 'bg-amber-50', 'border-amber-200');
+        err.classList.add('text-red-700', 'bg-red-50', 'border-red-200');
+        return;
+      }
+      closeSyntheticEditor();
+      loadSynthetic();  // refresh the list
+    } catch (e) {
+      err.textContent = e.message;
+      err.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save case';
+    }
+  };
+
+  window.deleteSyntheticCase = async function(caseId) {
+    if (!confirm(`Delete custom case "${caseId}"? This can't be undone.`)) return;
+    try {
+      const r = await fetch(`/api/synthetic/cases/${encodeURIComponent(caseId)}`, {method: 'DELETE'});
+      if (!r.ok) {
+        const txt = await r.text();
+        let msg = txt;
+        try { msg = JSON.parse(txt).detail || txt; } catch (_) {}
+        alert('Delete failed: ' + msg);
+        return;
+      }
+      loadSynthetic();
+    } catch (e) {
+      alert('Delete failed: ' + e.message);
+    }
+  };
 
   window.runSyntheticCase = async function(caseId) {
     const out = document.getElementById('synthetic-result');

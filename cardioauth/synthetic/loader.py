@@ -227,36 +227,80 @@ def _parse_sections(body: str) -> list[CaseSection]:
 
 
 def list_available_cases(cases_dir: Path | str | None = None) -> list[dict]:
-    """List markdown case files in the fixtures dir, return summary dicts."""
+    """List all available cases — both built-in (shipped on disk) and
+    custom (uploaded by users, stored in SQLite). Custom cases get
+    a `source: 'custom'` tag so the UI can show delete buttons for
+    those without exposing built-in templates to deletion.
+    """
     base = Path(cases_dir) if cases_dir else _CASES_DIR
-    if not base.exists():
-        return []
     out: list[dict] = []
-    for path in sorted(base.glob("*.md")):
-        try:
-            case = load_case_markdown(path.read_text(), source_path=str(path))
+    seen_ids: set[str] = set()
+
+    # Built-in templates from disk
+    if base.exists():
+        for path in sorted(base.glob("*.md")):
+            try:
+                case = load_case_markdown(path.read_text(), source_path=str(path))
+                out.append({
+                    "id": path.stem,
+                    "patient_id": case.patient_id,
+                    "patient_name": case.patient_name,
+                    "procedure_code": case.procedure_code,
+                    "procedure_name": case.procedure_name,
+                    "payer": case.payer,
+                    "section_count": len(case.sections),
+                    "pdf_section_count": sum(1 for s in case.sections if s.format == "pdf"),
+                    "source": "builtin",
+                })
+                seen_ids.add(path.stem)
+            except Exception as e:
+                logger.warning("Skipping unparseable case %s: %s", path, e)
+
+    # User-authored custom cases from the DB. Lazy-import to avoid a
+    # circular dep — persistence.py doesn't depend on synthetic, and we
+    # don't want synthetic to require persistence at module import time.
+    try:
+        from cardioauth.persistence import get_store
+        for row in get_store().list_synthetic_cases():
+            if row["case_id"] in seen_ids:
+                continue  # Custom case shadowed by a built-in of the same id
             out.append({
-                "id": path.stem,
-                "patient_id": case.patient_id,
-                "patient_name": case.patient_name,
-                "procedure_code": case.procedure_code,
-                "procedure_name": case.procedure_name,
-                "payer": case.payer,
-                "section_count": len(case.sections),
-                "pdf_section_count": sum(1 for s in case.sections if s.format == "pdf"),
+                "id": row["case_id"],
+                "patient_id": row.get("patient_name", ""),
+                "patient_name": row.get("patient_name", ""),
+                "procedure_code": row.get("procedure_code", ""),
+                "procedure_name": "",
+                "payer": row.get("payer", ""),
+                "section_count": int(row.get("section_count") or 0),
+                "pdf_section_count": int(row.get("pdf_section_count") or 0),
+                "source": "custom",
             })
-        except Exception as e:
-            logger.warning("Skipping unparseable case %s: %s", path, e)
+    except Exception as e:
+        logger.warning("Couldn't list custom synthetic cases: %s", e)
+
     return out
 
 
 def load_case_by_id(case_id: str, cases_dir: Path | str | None = None) -> SyntheticCase:
-    """Load by file-stem ID (e.g. 'whitford-spect')."""
+    """Load a case by ID. Tries the built-in templates on disk first;
+    falls back to the user-authored DB store. Built-ins win on conflict
+    so users can't shadow a template (which is the desired safety —
+    Peter's template should always be reproducible)."""
     base = Path(cases_dir) if cases_dir else _CASES_DIR
     path = base / f"{case_id}.md"
-    if not path.exists():
-        raise FileNotFoundError(f"No synthetic case at {path}")
-    return load_case_markdown(path.read_text(), source_path=str(path))
+    if path.exists():
+        return load_case_markdown(path.read_text(), source_path=str(path))
+
+    # Try user-authored DB store
+    try:
+        from cardioauth.persistence import get_store
+        row = get_store().get_synthetic_case(case_id)
+        if row and row.get("markdown"):
+            return load_case_markdown(row["markdown"], source_path=f"db:{case_id}")
+    except Exception as e:
+        logger.warning("DB lookup for case %s failed: %s", case_id, e)
+
+    raise FileNotFoundError(f"No synthetic case with id '{case_id}'")
 
 
 # ── Bundle assembly ─────────────────────────────────────────────────────

@@ -1615,12 +1615,123 @@ class EpicSandboxRequest(BaseModel):
 
 @app.get("/api/synthetic/cases")
 def list_synthetic_cases() -> dict[str, Any]:
-    """List available synthetic chart cases authored under
-    tests/fixtures/synthetic_cases/. Each one renders as a FHIR Bundle
-    shape-identical to real Epic, so the pipeline can't tell the
-    difference."""
+    """List available synthetic chart cases — both built-in templates
+    (shipped under tests/fixtures/synthetic_cases/) and user-uploaded
+    custom cases stored in SQLite. Each one renders as a FHIR Bundle
+    shape-identical to real Epic.
+    """
     from cardioauth.synthetic import list_available_cases
     return {"cases": list_available_cases()}
+
+
+class SyntheticCaseCreate(BaseModel):
+    """Upload a new synthetic case authored in markdown.
+
+    `case_id` is auto-generated from the patient name if not provided
+    (lowercase, hyphen-separated). Server parses the markdown to
+    validate shape + extract summary metadata before saving — if the
+    parse fails we return 400 with the specific error so the user can
+    fix it.
+    """
+    case_id: str = ""
+    markdown: str
+
+
+@app.post("/api/synthetic/cases")
+def create_synthetic_case(req: SyntheticCaseCreate, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Save a user-authored synthetic case. Validates the markdown by
+    parsing it before persisting. Returns the assigned case_id so the
+    UI can immediately link to it."""
+    from cardioauth.synthetic import load_case_markdown
+    from cardioauth.persistence import get_store
+    import re
+
+    if not (req.markdown or "").strip():
+        raise HTTPException(status_code=400, detail="Markdown body is required")
+
+    # Validate by parsing — surface the precise error if it fails.
+    try:
+        case = load_case_markdown(req.markdown)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Markdown parse failed: {e}")
+
+    case_id = req.case_id.strip()
+    if not case_id:
+        # Derive from patient name: "Eleanor R. Whitford" → "eleanor-whitford"
+        slug = re.sub(r"[^\w\s-]", "", case.patient_name.lower())
+        slug = re.sub(r"[\s_]+", "-", slug).strip("-")
+        case_id = f"{slug}-{case.procedure_code}" if slug else f"case-{int(case.procedure_code or 0)}"
+    case_id = case_id.lower()
+
+    # Reject if it would shadow a built-in case
+    from cardioauth.synthetic.loader import _CASES_DIR
+    if (_CASES_DIR / f"{case_id}.md").exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"case_id '{case_id}' conflicts with a built-in template. Pick a different one.",
+        )
+
+    store = get_store()
+    store.save_synthetic_case(
+        case_id=case_id,
+        markdown=req.markdown,
+        author_id=user.id,
+        patient_name=case.patient_name,
+        procedure_code=case.procedure_code,
+        payer=case.payer,
+        section_count=len(case.sections),
+        pdf_section_count=sum(1 for s in case.sections if s.format == "pdf"),
+    )
+    log_audit(user, "synthetic_case_save",
+              f"case={case_id} sections={len(case.sections)} patient={case.patient_id}")
+    return {
+        "case_id": case_id,
+        "patient_name": case.patient_name,
+        "section_count": len(case.sections),
+        "pdf_section_count": sum(1 for s in case.sections if s.format == "pdf"),
+        "saved": True,
+    }
+
+
+@app.delete("/api/synthetic/cases/{case_id}")
+def delete_synthetic_case(case_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Delete a user-authored synthetic case. Built-in templates are
+    on disk and not deletable via this endpoint — returns 409 if the
+    case_id matches a shipped template."""
+    from cardioauth.persistence import get_store
+    from cardioauth.synthetic.loader import _CASES_DIR
+
+    if (_CASES_DIR / f"{case_id}.md").exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{case_id}' is a built-in template and can't be deleted via the API.",
+        )
+
+    existed = get_store().delete_synthetic_case(case_id)
+    if not existed:
+        raise HTTPException(status_code=404, detail=f"No synthetic case '{case_id}'")
+    log_audit(user, "synthetic_case_delete", f"case={case_id}")
+    return {"case_id": case_id, "deleted": True}
+
+
+@app.get("/api/synthetic/cases/{case_id}/markdown")
+def get_synthetic_case_markdown(case_id: str, user: AuthUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Return the raw markdown for a case so the UI can pre-fill the
+    editor when the user wants to view or duplicate an existing case."""
+    from cardioauth.persistence import get_store
+    from cardioauth.synthetic.loader import _CASES_DIR
+
+    # Built-in template?
+    path = _CASES_DIR / f"{case_id}.md"
+    if path.exists():
+        return {"case_id": case_id, "source": "builtin", "markdown": path.read_text()}
+
+    # User-authored?
+    row = get_store().get_synthetic_case(case_id)
+    if row:
+        return {"case_id": case_id, "source": "custom", "markdown": row["markdown"]}
+
+    raise HTTPException(status_code=404, detail=f"No synthetic case '{case_id}'")
 
 
 class SyntheticRunRequest(BaseModel):

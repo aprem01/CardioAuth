@@ -216,3 +216,110 @@ def test_whitford_template_loads_and_produces_5_sections() -> None:
     stress = next(d for d in corpus.documents if "Stress" in d.title)
     assert stress.doc_type == "stress_test"
     assert "LBBB" in stress.text or "submaximal" in stress.text.lower()
+
+
+# ── User-authored cases (DB-stored) ─────────────────────────────────────
+
+
+def _fresh_store():
+    import tempfile
+    from cardioauth.persistence import SQLiteStore
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    return SQLiteStore(tmp.name)
+
+
+def test_db_save_and_load_synthetic_case() -> None:
+    """Save a case to the DB, retrieve it by ID, confirm round-trip."""
+    store = _fresh_store()
+    store.save_synthetic_case(
+        case_id="custom-1",
+        markdown=_MINIMAL_CASE,
+        author_id="u1",
+        patient_name="Test Patient",
+        procedure_code="78452",
+        payer="UnitedHealthcare",
+        section_count=2,
+        pdf_section_count=1,
+    )
+    got = store.get_synthetic_case("custom-1")
+    assert got is not None
+    assert got["case_id"] == "custom-1"
+    assert got["patient_name"] == "Test Patient"
+    assert got["pdf_section_count"] == 1
+    assert "TEST-PT-1" in got["markdown"]
+
+
+def test_db_upsert_overwrites_existing() -> None:
+    """Saving with the same case_id twice should update, not duplicate."""
+    store = _fresh_store()
+    md_a = _MINIMAL_CASE
+    md_b = _MINIMAL_CASE.replace("Test Patient", "Updated Patient")
+    store.save_synthetic_case(case_id="case-1", markdown=md_a, patient_name="A", section_count=2)
+    store.save_synthetic_case(case_id="case-1", markdown=md_b, patient_name="B", section_count=3)
+    items = store.list_synthetic_cases()
+    assert len(items) == 1
+    assert items[0]["patient_name"] == "B"
+    assert items[0]["section_count"] == 3
+    got = store.get_synthetic_case("case-1")
+    assert "Updated Patient" in got["markdown"]
+
+
+def test_db_list_orders_newest_first() -> None:
+    import time
+    store = _fresh_store()
+    store.save_synthetic_case(case_id="a", markdown=_MINIMAL_CASE, patient_name="A")
+    time.sleep(0.01)
+    store.save_synthetic_case(case_id="b", markdown=_MINIMAL_CASE, patient_name="B")
+    time.sleep(0.01)
+    store.save_synthetic_case(case_id="c", markdown=_MINIMAL_CASE, patient_name="C")
+    ids = [r["case_id"] for r in store.list_synthetic_cases()]
+    assert ids == ["c", "b", "a"]
+
+
+def test_db_delete_returns_existed_flag() -> None:
+    store = _fresh_store()
+    store.save_synthetic_case(case_id="x", markdown=_MINIMAL_CASE)
+    assert store.delete_synthetic_case("x") is True
+    assert store.delete_synthetic_case("x") is False
+    assert store.get_synthetic_case("x") is None
+
+
+def test_db_stored_case_loadable_via_load_case_by_id(monkeypatch, tmp_path) -> None:
+    """A case persisted in the DB must be loadable through the same
+    load_case_by_id entry point built-ins use, so the API doesn't have
+    two code paths."""
+    from cardioauth.persistence import SQLiteStore
+    from cardioauth import persistence as persistence_mod
+
+    # Point the singleton store at a fresh DB
+    fresh = SQLiteStore(str(tmp_path / "test.db"))
+    monkeypatch.setattr(persistence_mod, "_store_singleton", fresh)
+
+    fresh.save_synthetic_case(case_id="db-only-1", markdown=_MINIMAL_CASE)
+    case = load_case_by_id("db-only-1")
+    assert case.patient_id == "TEST-PT-1"
+    assert len(case.sections) == 2
+
+
+def test_list_available_cases_merges_builtin_and_custom(monkeypatch, tmp_path) -> None:
+    """list_available_cases must return both the shipped Whitford
+    template AND any DB-stored custom cases, with source tags."""
+    from cardioauth.persistence import SQLiteStore
+    from cardioauth import persistence as persistence_mod
+
+    fresh = SQLiteStore(str(tmp_path / "test.db"))
+    monkeypatch.setattr(persistence_mod, "_store_singleton", fresh)
+
+    fresh.save_synthetic_case(case_id="custom-foo", markdown=_MINIMAL_CASE,
+                              patient_name="Custom Foo", procedure_code="78452",
+                              payer="Aetna", section_count=2)
+
+    from cardioauth.synthetic import list_available_cases
+    cases = list_available_cases()
+    by_id = {c["id"]: c for c in cases}
+    assert "whitford-spect" in by_id, "built-in template missing"
+    assert by_id["whitford-spect"]["source"] == "builtin"
+    assert "custom-foo" in by_id, "custom case missing"
+    assert by_id["custom-foo"]["source"] == "custom"
+    assert by_id["custom-foo"]["patient_name"] == "Custom Foo"
