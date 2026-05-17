@@ -1992,6 +1992,7 @@ def epic_smart_run_pipeline(req: SmartPipelineRequest, user: AuthUser = Depends(
     from cardioauth.fhir.smart_launch import get_manager
     from cardioauth.fhir.client import FHIRClient
     from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus, resolve_document_attachments
+    from cardioauth.fhir.context_synth import synthesize_chart_context
     from cardioauth.lean_pipeline import run_lean_pipeline
 
     s = get_manager().get_session(req.session_id)
@@ -2023,6 +2024,16 @@ def epic_smart_run_pipeline(req: SmartPipelineRequest, user: AuthUser = Depends(
         latest = max(corpus.documents, key=lambda d: d.date or "")
         note_text = latest.text
 
+    # Synthesize a FHIR-derived context header. Without this, demographics
+    # and coverage details extracted from structured FHIR resources never
+    # reach the form-fill prompt — the LLM only sees clinical prose and
+    # the form fields go blank. Synthetic cases work because they inline
+    # demographics in the note; Epic notes don't. This header fixes the
+    # gap Peter flagged in his 2026-05-17 testing email.
+    enriched_note = synthesize_chart_context(
+        bundle, raw_note=note_text, corpus_documents=corpus.documents,
+    )
+
     chart_summary = {
         "patient_id": s.patient_id,
         "encounter_id": s.encounter_id,
@@ -2036,7 +2047,7 @@ def epic_smart_run_pipeline(req: SmartPipelineRequest, user: AuthUser = Depends(
     try:
         result = run_lean_pipeline(
             case_id=f"SMART-{s.session_id[:8]}-{req.procedure_code}",
-            raw_note=note_text,
+            raw_note=enriched_note,
             request_cpt=req.procedure_code,
             payer=req.payer_name,
             patient_corpus=corpus,
@@ -2076,6 +2087,7 @@ def epic_sandbox_demo(req: EpicSandboxRequest, user: AuthUser = Depends(get_curr
 
     from cardioauth.fhir.client import FHIRClient
     from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus, resolve_document_attachments
+    from cardioauth.fhir.context_synth import synthesize_chart_context
     from cardioauth.lean_pipeline import run_lean_pipeline
 
     fhir = FHIRClient(config)
@@ -2114,10 +2126,20 @@ def epic_sandbox_demo(req: EpicSandboxRequest, user: AuthUser = Depends(get_curr
         latest = max(corpus.documents, key=lambda d: d.date or "")
         note_text = latest.text
 
+    # Synthesize a FHIR-derived patient context header. Without this,
+    # demographics + coverage + ordering physician extracted from
+    # structured FHIR resources never reach the form-fill prompt, so the
+    # Epic pathway's packet renders with blank fields even when the data
+    # is right there in the bundle. Synthetic cases sidestep this by
+    # inlining demographics in the note body.
+    enriched_note = synthesize_chart_context(
+        bundle, raw_note=note_text, corpus_documents=corpus.documents,
+    )
+
     try:
         result = run_lean_pipeline(
             case_id=f"EPIC-{req.patient_id}-{req.procedure_code}",
-            raw_note=note_text,
+            raw_note=enriched_note,
             request_cpt=req.procedure_code,
             payer=req.payer_name,
             patient_corpus=corpus,
