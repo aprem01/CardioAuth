@@ -558,6 +558,12 @@
         Synthetic Charts
       </a>
 
+      <!-- Payer-form routing: pick the right PA form for a case -->
+      <a href="#payer-routing" class="sidebar-link" data-route="payer-routing">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+        Payer Routing
+      </a>
+
       <!-- Pre-Submission Tools -->
       <div class="sidebar-group-label mt-4">Pre-Submission Tools</div>
       <a href="#payer-matrix" class="sidebar-link" data-route="payer-matrix">
@@ -759,6 +765,7 @@
       if (sid) setTimeout(() => _loadSmartSession(sid), 50);
     }
     else if (hash === '#synthetic') { app.innerHTML = renderLoading('Synthetic Charts'); loadSynthetic(); }
+    else if (hash === '#payer-routing') { app.innerHTML = renderPayerRouting(); }
     else if (hash === '#shadow') { app.innerHTML = renderLoading('Shadow Testing'); loadShadow(); }
     else { app.innerHTML = renderDashboard(); }
   }
@@ -8411,6 +8418,226 @@ format: pdf
       alert(e.message);
     }
   };
+
+  // ──────────────────────────── Payer Routing (#payer-routing) ────────────────────────────
+  // Takes a case context (payer, state, plan_type, CPT, dx, test type)
+  // and picks the right PA form from the curated catalog. When no form
+  // matches, falls back to a portal-ready packet recommendation —
+  // Peter's 2026-05-18 ask.
+
+  function renderPayerRouting() {
+    return `
+    <div class="fade-in space-y-6">
+      ${breadcrumb('Payer Form Routing')}
+
+      <div class="bg-gradient-to-br from-indigo-50 via-white to-cyan-50 border border-indigo-100 rounded-xl p-5 flex items-start gap-4">
+        <div class="flex-shrink-0 w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center shadow-sm">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+        </div>
+        <div>
+          <h2 class="text-base font-semibold text-slate-900">Pick the right payer PA form</h2>
+          <p class="text-sm text-slate-600 mt-0.5">
+            Enter a case context (payer + state + plan + CPT + diagnosis) and the system picks the most likely PA form from each payer's public forms page. When no state-specific form exists or login is required, it returns a <strong>portal-ready packet</strong> recommendation with the same cited clinical evidence the lean pipeline produces.
+          </p>
+        </div>
+      </div>
+
+      <!-- Input form -->
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+        <div class="grid md:grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">Payer</label>
+            <select id="route-payer" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option>UnitedHealthcare</option>
+              <option>Aetna</option>
+              <option>Anthem</option>
+              <option>Cigna</option>
+              <option>Humana</option>
+              <option>Medicare</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">State</label>
+            <select id="route-state" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">(any)</option>
+              <option>MA</option>
+              <option>TX</option>
+              <option>NV</option>
+              <option>CA</option>
+              <option>NY</option>
+              <option>FL</option>
+              <option>IL</option>
+              <option>OH</option>
+              <option>PA</option>
+              <option>WA</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">Plan type</label>
+            <select id="route-plan" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">(any)</option>
+              <option>Commercial</option>
+              <option>Medicare Advantage</option>
+              <option>Medicaid</option>
+              <option>Community Plan</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid md:grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">CPT code</label>
+            <select id="route-cpt" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="78452">78452 — SPECT MPI (pharm)</option>
+              <option value="78451">78451 — SPECT MPI (single)</option>
+              <option value="78492">78492 — PET MPI</option>
+              <option value="78491">78491 — PET MPI (single)</option>
+              <option value="93306">93306 — Transthoracic echo</option>
+              <option value="93312">93312 — TEE</option>
+              <option value="93458">93458 — Left heart cath</option>
+              <option value="93880">93880 — Carotid duplex</option>
+              <option value="75574">75574 — Coronary CT angio</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">Primary ICD-10</label>
+            <input id="route-icd10" type="text" placeholder="I25.10" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">Test type (hint)</label>
+            <input id="route-test-type" type="text" placeholder="SPECT MPI, PET, echo, cath…" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+        </div>
+        <div class="flex gap-2 items-center">
+          <button onclick="runPayerRouting()" class="px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">▶ Route this case</button>
+          <span class="text-xs text-slate-500">Tries each payer's published forms first; falls back to portal recommendation when no state-specific form exists.</span>
+        </div>
+      </div>
+
+      <!-- Result -->
+      <div id="route-result"></div>
+
+      <!-- Catalog peek -->
+      <details class="bg-white border border-slate-200 rounded-xl shadow-sm">
+        <summary class="cursor-pointer px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50">▸ How routing works + what's in the catalog</summary>
+        <div class="px-5 pb-5 pt-1 border-t border-slate-100 space-y-2 text-xs text-slate-600">
+          <p><strong>Decision logic:</strong></p>
+          <ol class="list-decimal ml-5 space-y-1">
+            <li>Match payer (UHC, Aetna, etc.) — required.</li>
+            <li>Match state — state-specific forms (MA cardiac imaging, MA PET CT, etc.) win if the case state matches; mismatched state-specific forms are hard-rejected.</li>
+            <li>Match CPT code — exact match in the form's CPT list adds the biggest score boost.</li>
+            <li>Match plan type and category (soft signals).</li>
+            <li>If no form matches and the catalog has a fallback row → return portal-ready packet recommendation with the payer's portal URL.</li>
+            <li>If the payer itself isn't in the catalog → <code>no_match</code>, so we don't pretend.</li>
+          </ol>
+          <p class="pt-2"><strong>Catalog source:</strong> curated from each payer's public provider-forms page. UHC catalog seeded from <a href="https://www.uhcprovider.com/en/resource-library/provider-forms.html" target="_blank" rel="noopener" class="text-indigo-600 hover:underline">uhcprovider.com/.../provider-forms.html</a> (today's revision lists MA Cardiac Imaging, MA PET CT, MA Non-OB Ultrasound, plus state-agnostic portal fallback).</p>
+          <p><strong>Confidence levels:</strong> <code>high</code> = state + CPT both matched; <code>medium</code> = state matched but not CPT; <code>low</code> = matched on category only; <code>portal_fallback</code> = no specific form, use portal; <code>no_match</code> = payer unknown.</p>
+        </div>
+      </details>
+    </div>`;
+  }
+
+  window.runPayerRouting = async function() {
+    const out = document.getElementById('route-result');
+    out.innerHTML = `<div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 flex items-center gap-3 text-slate-600"><svg class="animate-spin w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>Routing…</div>`;
+    const payload = {
+      payer: document.getElementById('route-payer').value,
+      state: document.getElementById('route-state').value || '',
+      plan_type: document.getElementById('route-plan').value || '',
+      cpt_code: document.getElementById('route-cpt').value,
+      primary_icd10: document.getElementById('route-icd10').value || '',
+      test_type: document.getElementById('route-test-type').value || '',
+    };
+    try {
+      const data = await apiPost('/api/payer-routing/select-form', payload);
+      out.innerHTML = _renderPayerRoutingResult(data);
+    } catch (e) {
+      out.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">${escapeHtml(e.message)}</div>`;
+    }
+  };
+
+  function _renderPayerRoutingResult(data) {
+    const conf = data.confidence || 'no_match';
+    const top = data.top_pick;
+    const candidates = data.candidates || [];
+
+    const confColor = {
+      high: 'emerald', medium: 'indigo', low: 'amber',
+      portal_fallback: 'amber', no_match: 'red',
+    }[conf] || 'slate';
+
+    const confLabel = {
+      high: '✓ High confidence',
+      medium: '~ Medium confidence',
+      low: '? Low confidence',
+      portal_fallback: '⚠ Portal fallback',
+      no_match: '✗ No match',
+    }[conf] || conf;
+
+    let topCard = '';
+    if (top) {
+      const isFallback = top.is_fallback;
+      const linkHtml = top.pdf_url
+        ? `<a href="${escapeHtml(top.pdf_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-indigo-600 hover:underline font-medium">📄 Open form PDF →</a>`
+        : (top.portal_url
+            ? `<a href="${escapeHtml(top.portal_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-indigo-600 hover:underline font-medium">↗ Open payer portal</a>`
+            : '<span class="text-xs text-slate-500">No PDF — submit via portal</span>');
+      topCard = `
+        <div class="bg-white border-2 ${isFallback ? 'border-amber-300' : 'border-' + confColor + '-300'} rounded-xl shadow-sm p-5">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-xs uppercase tracking-wide font-semibold text-${confColor}-700">Top recommendation</div>
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ring-1 ring-${confColor}-200 bg-${confColor}-50 text-${confColor}-700">${confLabel}</span>
+          </div>
+          <h3 class="text-lg font-bold text-slate-900">${escapeHtml(top.name)}</h3>
+          <div class="text-xs text-slate-500 mt-1 font-mono">${escapeHtml(top.form_id)} · ${escapeHtml(top.state)} · ${escapeHtml(top.plan_type)} · score ${top.score.toFixed(0)}</div>
+          ${top.notes ? `<p class="text-sm text-slate-700 mt-3">${escapeHtml(top.notes)}</p>` : ''}
+          <div class="text-xs text-slate-500 mt-2">Match reasons: <span class="font-mono">${(top.match_reasons || []).map(escapeHtml).join(', ')}</span></div>
+          <div class="mt-4">${linkHtml}</div>
+        </div>`;
+    } else {
+      topCard = `
+        <div class="bg-red-50 border border-red-200 rounded-xl p-5">
+          <div class="text-sm font-semibold text-red-900">No form recommendation</div>
+          <p class="text-sm text-red-800 mt-1">${escapeHtml(data.explanation || '')}</p>
+        </div>`;
+    }
+
+    const candidateRows = candidates.length <= 1 ? '' : `
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div class="px-5 py-3 border-b border-slate-200 bg-slate-50/50">
+          <h4 class="text-sm font-semibold text-slate-900">All candidates considered (${candidates.length})</h4>
+        </div>
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50/70"><tr>
+            <th class="px-5 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Form</th>
+            <th class="px-5 py-2 text-left text-xs font-semibold text-slate-500 uppercase">State</th>
+            <th class="px-5 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Plan</th>
+            <th class="px-5 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Score</th>
+            <th class="px-5 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Reasons</th>
+          </tr></thead>
+          <tbody>
+            ${candidates.map(c => `
+              <tr class="border-t border-slate-100">
+                <td class="px-5 py-2 text-sm text-slate-800">${escapeHtml(c.name)}${c.is_fallback ? ' <span class="text-xs text-amber-700 font-medium">(fallback)</span>' : ''}</td>
+                <td class="px-5 py-2 text-sm text-slate-700">${escapeHtml(c.state)}</td>
+                <td class="px-5 py-2 text-sm text-slate-700">${escapeHtml(c.plan_type)}</td>
+                <td class="px-5 py-2 text-right text-sm font-mono tabular-nums text-slate-700">${c.score.toFixed(0)}</td>
+                <td class="px-5 py-2 text-xs text-slate-500 font-mono">${(c.match_reasons || []).join(', ')}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
+    return `
+    <div class="space-y-4">
+      ${topCard}
+      ${data.explanation && top ? `<div class="text-xs text-slate-500 italic px-5">${escapeHtml(data.explanation)}</div>` : ''}
+      ${candidateRows}
+      <details class="bg-white border border-slate-200 rounded-xl shadow-sm">
+        <summary class="cursor-pointer px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Full routing JSON</summary>
+        <pre class="text-xs text-slate-600 px-5 py-3 overflow-x-auto whitespace-pre-wrap max-h-96">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+      </details>
+    </div>`;
+  }
 
   // ──────────────────────────── Epic Sandbox (#epic-sandbox) ────────────────────────────
   // Live integration test against Epic's R4 sandbox: pick a test patient,

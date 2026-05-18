@@ -1613,6 +1613,49 @@ class EpicSandboxRequest(BaseModel):
     raw_note: str = ""   # if empty, treat the encounter note as the most-recent DocumentReference
 
 
+# ─── Payer-form routing ──────────────────────────────────────────────────
+# Take a case context (payer, state, plan_type, CPT, dx, test type), pick
+# the right PA form from the curated catalog. When no form matches, falls
+# back to a portal-ready packet recommendation. Peter's 2026-05-18 ask.
+
+
+class PayerRoutingRequest(BaseModel):
+    payer: str
+    state: str = ""
+    plan_type: str = ""
+    cpt_code: str = ""
+    primary_icd10: str = ""
+    test_type: str = ""
+
+
+@app.post("/api/payer-routing/select-form")
+def select_payer_form(req: PayerRoutingRequest) -> dict[str, Any]:
+    """Route a case context to a payer PA form (or portal fallback)."""
+    from cardioauth.payer_routing import CaseContext, route_case
+
+    case = CaseContext(
+        payer=req.payer, state=req.state, plan_type=req.plan_type,
+        cpt_code=req.cpt_code, primary_icd10=req.primary_icd10,
+        test_type=req.test_type,
+    )
+    return route_case(case).to_dict()
+
+
+@app.get("/api/payer-routing/payers")
+def list_routing_payers() -> dict[str, Any]:
+    """Catalog directory — which payers we have form data for."""
+    from cardioauth.payer_routing import list_payers, load_catalog
+    out = []
+    for pid in list_payers():
+        cat = load_catalog(pid) or {}
+        out.append({
+            "id": pid,
+            "name": cat.get("payer", pid),
+            "form_count": len(cat.get("forms") or []),
+        })
+    return {"payers": out}
+
+
 @app.get("/api/synthetic/cases")
 def list_synthetic_cases() -> dict[str, Any]:
     """List available synthetic chart cases — both built-in templates

@@ -1,0 +1,64 @@
+# UnitedHealthcare prior-authorization form catalog.
+#
+# Source: https://www.uhcprovider.com/en/resource-library/provider-forms.html
+# Form metadata curated 2026-05-18 from the public provider-forms index.
+#
+# Routing rules:
+#   - State match is the strongest signal. State-specific forms exist
+#     for MA, NV, TX (per the public index); other states fall back to
+#     the national portal-fallback entry.
+#   - plan_type matches narrow within state. UHC's public forms are
+#     predominantly Commercial. Medicare Advantage almost always routes
+#     through the portal (no per-state PDFs published).
+#   - CPT match is the surest indicator of category fit. If the
+#     ordered CPT is in cpt_codes, the form is the right one.
+#   - Forms with `fallback: true` are the "no specific form" recommendation:
+#     a portal-ready packet should be produced and staff submits via portal.
+
+payer: UnitedHealthcare
+payer_aliases: ["UHC", "United Healthcare", "United"]
+
+forms:
+  - id: uhc-ma-cardiac-imaging
+    name: Massachusetts Cardiac Imaging Prior Authorization
+    state: MA
+    plan_type: Commercial
+    categories: [cardiac_imaging, stress_test, spect, mpi, nuclear_cardiology]
+    cpt_codes: ["78451", "78452", "78453", "78454"]
+    pdf_url: "https://www.mass.gov/doc/cardiac-imaging-prior-authorization-form-to-be-used-with-myocardial-perfusion-imaging-mpi/download"
+    notes: "Use for SPECT MPI in Massachusetts commercial plans. Covers single-day and two-day protocols."
+    fallback: false
+
+  - id: uhc-ma-pet-ct
+    name: Massachusetts PET CT Prior Authorization
+    state: MA
+    plan_type: Commercial
+    categories: [pet, advanced_imaging, oncology_imaging, cardiac_pet]
+    cpt_codes: ["78429", "78430", "78431", "78432", "78433", "78434", "78491", "78492", "78451"]
+    pdf_url: "https://www.mass.gov/doc/pet-pet-ct-prior-authorization-form/download"
+    notes: "Cardiac PET MPI plus all PET/CT studies for MA commercial plans."
+    fallback: false
+
+  - id: uhc-ma-ultrasound
+    name: Massachusetts Non-OB Ultrasound Prior Authorization
+    state: MA
+    plan_type: Commercial
+    categories: [ultrasound, echo, vascular_imaging]
+    cpt_codes: ["93306", "93307", "93308", "93312", "93313", "93880", "93970", "93971"]
+    pdf_url: "https://www.mass.gov/doc/non-ob-ultrasound-authorization-form-0/download"
+    notes: "Covers transthoracic echo, TEE, and vascular ultrasound studies."
+    fallback: false
+
+  # Fallback row for any UHC PA request without a state-specific form.
+  # The agent should produce a portal-ready packet and route staff to
+  # the UHC Provider Portal.
+  - id: uhc-portal-fallback
+    name: UHC Provider Portal (no state-specific form available)
+    state: ANY
+    plan_type: ANY
+    categories: [any]
+    cpt_codes: []  # Matches anything
+    pdf_url: ""
+    notes: "Submit via UnitedHealthcare Provider Portal. Generate a portal-ready packet with all clinical answers and cited evidence."
+    fallback: true
+    portal_url: "https://www.uhcprovider.com/en/prior-auth-advance-notification.html"
