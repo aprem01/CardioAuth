@@ -26,7 +26,10 @@ forms:
     categories: [cardiac_imaging, stress_test, spect, mpi, nuclear_cardiology]
     cpt_codes: ["78451", "78452", "78453", "78454"]
     pdf_url: "https://www.mass.gov/doc/cardiac-imaging-prior-authorization-form-to-be-used-with-myocardial-perfusion-imaging-mpi/download"
-    notes: "Use for SPECT MPI in Massachusetts commercial plans. Covers single-day and two-day protocols."
+    pdf_path: "tests/fixtures/payer_forms/pdfs/uhc-ma-cardiac-imaging.pdf"
+    fillable: true                      # AcroForm — programmatic fill works
+    last_checked: "2026-05-18"          # source PDF inspected today
+    notes: "Use for SPECT MPI in Massachusetts commercial plans. Covers single-day and two-day protocols. 153 AcroForm fields, fully fillable via pypdf."
     fallback: false
 
   - id: uhc-ma-pet-ct

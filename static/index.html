@@ -8539,6 +8539,15 @@ format: pdf
   window.runPayerRouting = async function() {
     const out = document.getElementById('route-result');
     out.innerHTML = `<div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 flex items-center gap-3 text-slate-600"><svg class="animate-spin w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>Routing…</div>`;
+    // Cache fillable form IDs so the result renderer can show the Fill button.
+    if (!window._fillableFormIds) {
+      try {
+        const r = await apiFetch('/api/payer-routing/forms');
+        window._fillableFormIds = r.fillable_form_ids || [];
+      } catch (_) {
+        window._fillableFormIds = [];
+      }
+    }
     const payload = {
       payer: document.getElementById('route-payer').value,
       state: document.getElementById('route-state').value || '',
@@ -8552,6 +8561,96 @@ format: pdf
       out.innerHTML = _renderPayerRoutingResult(data);
     } catch (e) {
       out.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">${escapeHtml(e.message)}</div>`;
+    }
+  };
+
+  // ── Form-fill flow: pick a synthetic case, get back a filled payer PDF ──
+
+  window.openFillModal = async function(formId, formName) {
+    // Fetch the synthetic case list so the user can pick which case
+    // populates the form. Builds the modal inline.
+    let cases = [];
+    try {
+      const r = await apiFetch('/api/synthetic/cases');
+      cases = r.cases || [];
+    } catch (e) {
+      alert('Could not load synthetic cases: ' + e.message);
+      return;
+    }
+    const opts = cases.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.patient_name || c.patient_id)} — CPT ${escapeHtml(c.procedure_code)} — ${escapeHtml(c.payer)}</option>`).join('');
+    const modal = document.createElement('div');
+    modal.id = 'fill-form-modal';
+    modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4';
+    modal.innerHTML = `
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+        <div class="px-6 py-4 border-b border-slate-200 bg-gradient-to-r from-indigo-50 to-cyan-50">
+          <h3 class="text-base font-semibold text-slate-900">Fill ${escapeHtml(formName)}</h3>
+          <p class="text-xs text-slate-600 mt-0.5">Pick a synthetic chart to populate this form. The pipeline runs against the chart, then writes the values into the real payer PDF.</p>
+        </div>
+        <div class="px-6 py-5 space-y-3">
+          <label class="block text-xs font-semibold text-slate-700">Synthetic case</label>
+          <select id="fill-case-id" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">${opts}</select>
+          <div class="text-xs text-slate-500">Phase 1 fills demographics, member ID, payer, ordering provider + NPI, CPT, ICD-10, and encounter date. The ~70 clinical-indication checkboxes are blank for staff to mark (Phase 2 ships next).</div>
+          <div id="fill-error" class="hidden text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2"></div>
+        </div>
+        <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2">
+          <button onclick="closeFillModal()" class="px-4 py-2 text-sm font-medium rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-slate-700">Cancel</button>
+          <button id="fill-submit-btn" onclick="submitFormFill('${escapeHtml(formId).replace(/'/g, "\\'")}', '${escapeHtml(formName).replace(/'/g, "\\'")}')" class="px-4 py-2 text-sm font-semibold rounded-md bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">▶ Run + download filled PDF</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  };
+
+  window.closeFillModal = function() {
+    const m = document.getElementById('fill-form-modal');
+    if (m) m.remove();
+  };
+
+  window.submitFormFill = async function(formId, formName) {
+    const err = document.getElementById('fill-error');
+    err.classList.add('hidden');
+    const btn = document.getElementById('fill-submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<svg class="inline animate-spin w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg> Running pipeline + filling form…';
+    const caseId = document.getElementById('fill-case-id').value;
+    try {
+      const r = await fetch('/api/payer-routing/fill', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({form_id: formId, case_id: caseId}),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        let msg = txt;
+        try { msg = JSON.parse(txt).detail || txt; } catch (_) {}
+        err.textContent = msg;
+        err.classList.remove('hidden');
+        return;
+      }
+      const populated = r.headers.get('X-Fields-Populated') || '?';
+      const total = r.headers.get('X-Fields-Total') || '?';
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `CardioAuth-${formId}-${caseId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      closeFillModal();
+      // Surface a small toast so the user knows what was filled
+      const toast = document.createElement('div');
+      toast.className = 'fixed bottom-4 right-4 z-50 bg-emerald-600 text-white text-sm rounded-md shadow-lg px-4 py-3';
+      toast.textContent = `✓ Filled ${populated}/${total} fields. Checkboxes (~70) still blank — coming next phase.`;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 6000);
+    } catch (e) {
+      err.textContent = e.message;
+      err.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '▶ Run + download filled PDF';
     }
   };
 
@@ -8577,10 +8676,17 @@ format: pdf
     if (top) {
       const isFallback = top.is_fallback;
       const linkHtml = top.pdf_url
-        ? `<a href="${escapeHtml(top.pdf_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-indigo-600 hover:underline font-medium">📄 Open form PDF →</a>`
+        ? `<a href="${escapeHtml(top.pdf_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-indigo-600 hover:underline font-medium">📄 Open blank form PDF →</a>`
         : (top.portal_url
             ? `<a href="${escapeHtml(top.portal_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-indigo-600 hover:underline font-medium">↗ Open payer portal</a>`
             : '<span class="text-xs text-slate-500">No PDF — submit via portal</span>');
+      // Fillable forms get a "Fill with synthetic case" button alongside
+      const fillButton = (window._fillableFormIds || []).includes(top.form_id)
+        ? `<button onclick="openFillModal('${escapeHtml(top.form_id).replace(/'/g, "\\'")}', '${escapeHtml(top.name).replace(/'/g, "\\'")}')" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm">
+             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+             ✓ Fill this form with a synthetic case
+           </button>`
+        : '';
       topCard = `
         <div class="bg-white border-2 ${isFallback ? 'border-amber-300' : 'border-' + confColor + '-300'} rounded-xl shadow-sm p-5">
           <div class="flex items-center justify-between mb-2">
@@ -8591,7 +8697,7 @@ format: pdf
           <div class="text-xs text-slate-500 mt-1 font-mono">${escapeHtml(top.form_id)} · ${escapeHtml(top.state)} · ${escapeHtml(top.plan_type)} · score ${top.score.toFixed(0)}</div>
           ${top.notes ? `<p class="text-sm text-slate-700 mt-3">${escapeHtml(top.notes)}</p>` : ''}
           <div class="text-xs text-slate-500 mt-2">Match reasons: <span class="font-mono">${(top.match_reasons || []).map(escapeHtml).join(', ')}</span></div>
-          <div class="mt-4">${linkHtml}</div>
+          <div class="mt-4 flex flex-wrap gap-3 items-center">${linkHtml} ${fillButton}</div>
         </div>`;
     } else {
       topCard = `

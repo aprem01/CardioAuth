@@ -1656,6 +1656,104 @@ def list_routing_payers() -> dict[str, Any]:
     return {"payers": out}
 
 
+class PayerFormFillRequest(BaseModel):
+    """Fill a known payer PA form with values from a lean pipeline run.
+
+    Either pass a synthetic case_id (we'll re-run the synthetic pipeline)
+    OR pass lean_result directly (already-run output). Synthetic case_id
+    is the common path — staff picks a synthetic chart, picks the form,
+    gets a fully-filled PDF back.
+    """
+    form_id: str
+    case_id: str = ""                # synthetic case to run
+    lean_result: dict[str, Any] | None = None
+    chart_context: dict[str, Any] | None = None
+
+
+@app.get("/api/payer-routing/forms")
+def list_fillable_forms() -> dict[str, Any]:
+    """Which payer forms we can actually fill (have a registered filler).
+    Note: routing returns all known forms; this returns only the subset
+    we can populate AcroForm fields on. UI uses this to show or hide
+    the 'Fill this form' button."""
+    from cardioauth.payer_routing.form_filler import supported_form_ids
+    return {"fillable_form_ids": supported_form_ids()}
+
+
+@app.post("/api/payer-routing/fill")
+def fill_payer_form(req: PayerFormFillRequest, user: AuthUser = Depends(get_current_user)):
+    """Stream back a filled payer PA PDF.
+
+    Phase 1 today: demographics + coverage + ordering provider + CPT +
+    ICD + encounter date populate directly from form_field_values.
+    Clinical-reasoning checkboxes stay blank for staff. Phase 2 (next):
+    add rule-based + LLM-assisted checkbox inference for the ~70
+    clinical indication checkboxes.
+    """
+    from cardioauth.payer_routing.form_filler import fill_form
+    from fastapi.responses import Response
+
+    # Resolve lean_result: caller may pass it directly, or specify a
+    # synthetic case_id to run on demand.
+    lean_result = req.lean_result
+    chart_context = req.chart_context or {}
+    if not lean_result and req.case_id:
+        from cardioauth.synthetic import load_case_by_id, case_to_bundle
+        from cardioauth.fhir.corpus_mapper import bundle_to_patient_corpus
+        from cardioauth.lean_pipeline import run_lean_pipeline
+        try:
+            case = load_case_by_id(req.case_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"No synthetic case '{req.case_id}'")
+        bundle = case_to_bundle(case)
+        corpus = bundle_to_patient_corpus(bundle)
+        note_text = ""
+        if corpus.current_note():
+            note_text = corpus.current_note().text
+        elif corpus.documents:
+            latest = max(corpus.documents, key=lambda d: d.date or "")
+            note_text = latest.text
+        try:
+            result = run_lean_pipeline(
+                case_id=f"SYNTH-FILL-{case.patient_id}-{case.procedure_code}",
+                raw_note=note_text,
+                request_cpt=case.procedure_code,
+                payer=case.payer,
+                patient_corpus=corpus,
+            )
+            lean_result = result.to_dict()
+            chart_context = {
+                "encounter_date": case.encounter_date,
+                "patient_id": case.patient_id,
+            }
+        except Exception as e:
+            logging.exception("Lean pipeline (for form fill) failed")
+            raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+
+    if not lean_result:
+        raise HTTPException(status_code=400,
+                            detail="Pass either case_id (to run synthetic) or lean_result directly")
+
+    fill = fill_form(req.form_id, lean_result=lean_result, chart_context=chart_context)
+    if fill.errors:
+        raise HTTPException(status_code=500, detail=fill.errors[0])
+    if not fill.pdf_bytes:
+        raise HTTPException(status_code=500, detail="Filler produced no PDF bytes")
+
+    log_audit(user, "payer_form_fill",
+              f"form={req.form_id} case={req.case_id} populated={fill.fields_populated}/{fill.fields_total}")
+    filename = f"CardioAuth-{req.form_id}-{req.case_id or 'manual'}.pdf"
+    return Response(
+        content=fill.pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Fields-Populated": str(fill.fields_populated),
+            "X-Fields-Total": str(fill.fields_total),
+        },
+    )
+
+
 @app.get("/api/synthetic/cases")
 def list_synthetic_cases() -> dict[str, Any]:
     """List available synthetic chart cases — both built-in templates
